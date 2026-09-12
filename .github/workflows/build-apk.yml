@@ -25,11 +25,16 @@ jobs:
 
       - name: Proje Dizinini Duzenle ve Gradle Calistirma Izni Ver
         run: |
+          # Eger proje SoruArsivi alt klasorunde pushlandiysa:
           if [ -d "SoruArsivi" ] && [ ! -f "settings.gradle.kts" ]; then
-            echo "Proje SoruArsivi alt klasorunde tespit edildi, kok dizine tasiniyor..."
-            shopt -s dotglob
-            mv SoruArsivi/* .
+            echo "Proje SoruArsivi alt klasorunde tespit edildi, kok dizine kopyalaniyor..."
+            cp -rf SoruArsivi/* . 2>/dev/null || true
+            if [ -d "SoruArsivi/.github" ]; then
+              cp -rf SoruArsivi/.github/* .github/ 2>/dev/null || true
+            fi
+            rm -rf SoruArsivi
           fi
+
           if [ ! -f "gradlew" ]; then
             gradle wrapper
           fi
