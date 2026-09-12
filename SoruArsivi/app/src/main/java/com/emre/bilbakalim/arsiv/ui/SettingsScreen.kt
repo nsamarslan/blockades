@@ -1,134 +1,377 @@
 package com.emre.bilbakalim.arsiv.ui
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.TouchApp
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.emre.bilbakalim.arsiv.data.PlayMode
 
 @Composable
-fun SettingsScreen(viewModel: ArsivViewModel) {
-    val playMode by viewModel.playMode.collectAsState()
-    val clickDelayMs by viewModel.clickDelayMs.collectAsState()
-    val autoRestart by viewModel.autoRestartGame.collectAsState()
+fun SettingsScreen(
+    vm: ArsivViewModel,
+    onBack: () -> Unit,
+    onPickApp: () -> Unit,
+    onOpenDebug: () -> Unit
+) {
+    val context = LocalContext.current
+    val s by vm.settings.collectAsState()
+    var confirmWipe by remember { mutableStateOf(false) }
 
-    var delayInputText by remember(clickDelayMs) { mutableStateOf(clickDelayMs.toString()) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Text("ÇALIŞMA MODU", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    Scaffold(topBar = { ArsivTopBar("Ayarlar", onBack = onBack) }) { pad ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(pad),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    val isManual = playMode == PlayMode.MANUAL
-                    Button(
-                        onClick = { viewModel.setPlayMode(PlayMode.MANUAL) },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isManual) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Default.TouchApp, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Manuel", color = if (isManual) Color.White else MaterialTheme.colorScheme.onSurface)
-                    }
-
-                    val isAuto = playMode == PlayMode.AUTO
-                    Button(
-                        onClick = { viewModel.setPlayMode(PlayMode.AUTO) },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isAuto) Color(0xFF10B981) else MaterialTheme.colorScheme.surface
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Otomatik", color = if (isAuto) Color.White else MaterialTheme.colorScheme.onSurface)
+            item {
+                SectionCard("Hedef uygulama", Icons.Default.Apps) {
+                    Text(
+                        if (s.targetPackages.isEmpty()) "Henüz seçilmedi — yakalama çalışmaz."
+                        else s.targetPackages.joinToString("\n"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(onClick = onPickApp, modifier = Modifier.fillMaxWidth()) {
+                        Text("Uygulama seç")
                     }
                 }
             }
-        }
 
-        Text("TIKLAMA GECİKMESİ (Milisaniye)", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = delayInputText,
-                    onValueChange = { input ->
-                        delayInputText = input
-                        val parsed = input.toLongOrNull()
-                        if (parsed != null && parsed >= 200) {
-                            viewModel.setClickDelayMs(parsed)
-                        }
-                    },
-                    label = { Text("Gecikme (ms)") },
-                    suffix = { Text("ms") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp)
-                )
+            item {
+                SectionCard(
+                    "Oynatma modu",
+                    Icons.Default.SmartToy,
+                    container = if (s.autoPlay)
+                        MaterialTheme.colorScheme.tertiaryContainer else null
+                ) {
+                    Text(
+                        if (s.autoPlay)
+                            "Otomatik: uygulama oyunu kendisi oynuyor."
+                        else "Manuel: oyunu sen oynuyorsun, uygulama sadece okuyor.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                    SettingSwitch(
+                        "Otomatik oyna",
+                        "Soru ekrana gelince şıklardan biri rastgele seçilip dokunulur, " +
+                            "tur bitince \"Tekrar Oyna\" benzeri düğmeye basılır. Böylece " +
+                            "oyunun soru havuzu başında beklemeden arşivlenir.",
+                        s.autoPlay
+                    ) { vm.setAutoPlay(it) }
 
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(500L to "Hızlı (0.5s)", 1200L to "Normal (1.2s)", 2500L to "Doğal (2.5s)").forEach { (ms, label) ->
-                        FilterChip(
-                            selected = clickDelayMs == ms,
-                            onClick = {
-                                delayInputText = ms.toString()
-                                viewModel.setClickDelayMs(ms)
-                            },
-                            label = { Text(label, fontSize = 12.sp) },
-                            modifier = Modifier.weight(1f)
+                    if (s.autoPlay) {
+                        SettingSwitch(
+                            "Tur bitince yeniden başlat",
+                            "Kapalıysa uygulama soruları cevaplar ama tur bitince bekler.",
+                            s.autoRestart
+                        ) { vm.setAutoRestart(it) }
+
+                        SettingSwitch(
+                            "Cevabı bilinen sorularda doğru şıkka bas",
+                            "Arşivde cevabı olan bir soru yeniden çıkarsa rastgele değil " +
+                                "doğru şık seçilir. Oyunda daha uzun kalırsın, tur başına " +
+                                "daha çok yeni soru görürsün. Kapalıyken seçim hep rastgeledir.",
+                            s.autoUseKnownAnswer
+                        ) { vm.setAutoUseKnownAnswer(it) }
+
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Dokunmadan önce bekleme: ${s.autoAnswerDelayMs} ms",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            "Şıklar ekrana teker teker geliyor. Çok kısa tutarsan soru " +
+                                "dört şık tamamlanmadan cevaplanır; çok uzun tutarsan süre dolar.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Slider(
+                            value = s.autoAnswerDelayMs.toFloat(),
+                            onValueChange = { vm.setAutoAnswerDelay(it.toLong()) },
+                            valueRange = 300f..3000f,
+                            steps = 26
+                        )
+                        Text(
+                            "Not: otomatik mod ekrana dokunmak için erişilebilirlik " +
+                                "servisinin jest iznini kullanır. Servisi bu sürümden önce " +
+                                "açtıysan bir kez kapatıp yeniden açman gerekebilir.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
             }
-        }
 
-        Text("OYUN SONU & TEKRAR", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Otomatik 'Yeni Oyun' Başlat", fontWeight = FontWeight.SemiBold)
-                    Text("Oyun sonu ekranında 'Yeni Oyun' butonuna tıklar.", style = MaterialTheme.typography.bodySmall)
+            item {
+                SectionCard("Okuma yöntemi") {
+                    SettingSwitch(
+                        "Metin okunamazsa OCR'a düş",
+                        "Uygulama yazıyı normal metin olarak vermiyorsa ekran görüntüsü alınıp " +
+                            "karakter tanıma yapılır.",
+                        s.ocrFallback
+                    ) { vm.setOcrFallback(it) }
+
+                    SettingSwitch(
+                        "Her zaman OCR ile karşılaştır",
+                        "Daha doğru ama belirgin şekilde daha yavaş ve pil yiyici. " +
+                            "Sadece sonuçlar bozuksa aç.",
+                        s.ocrAlways
+                    ) { vm.setOcrAlways(it) }
+
+                    SettingSwitch(
+                        "Doğru cevabı renkten anla",
+                        "Cevap verildikten sonra yeşile dönen şıkkı doğru olarak işaretler.",
+                        s.detectAnswer
+                    ) { vm.setDetectAnswer(it) }
+
+                    SettingSwitch(
+                        "Ekran görüntüsünü sakla",
+                        "Her soru için küçültülmüş bir görüntü tutulur; yanlış okumaları " +
+                            "kontrol etmeyi kolaylaştırır.",
+                        s.saveScreenshots
+                    ) { vm.setSaveScreenshots(it) }
+
+                    SettingSwitch(
+                        "Dört şık tamamlanmadan kaydetme",
+                        "Şıklar ekrana teker teker geliyor. Bu açıkken uygulama " +
+                            "dördü de görünene kadar bekler, böylece soru üç şıkla " +
+                            "eksik kaydedilmez.",
+                        s.requireFourOptions
+                    ) { vm.setRequireFourOptions(it) }
+
+                    SettingSwitch(
+                        "Sadece soru cümlelerini kaydet",
+                        "Lobi ve skor ekranlarındaki \"Bilme Oranı\", \"Liderlik Tablosu\" " +
+                            "gibi başlıkların soru sanılıp kaydedilmesini engeller. " +
+                            "Gerçek sorular yakalanmıyorsa kapatıp deneyebilirsin.",
+                        s.requireQuestionShape
+                    ) { vm.setRequireQuestionShape(it) }
+
+                    SettingSwitch(
+                        "Kategoriyi ekrandan tanı",
+                        "Ekranda bilinen bir kategori adı görünürse kayda o yazılır.",
+                        s.autoDetectCategory
+                    ) { vm.setAutoDetectCategory(it) }
                 }
-                Switch(checked = autoRestart, onCheckedChange = { viewModel.setAutoRestartGame(it) })
+            }
+
+            item {
+                SectionCard("Kayıt eşiği") {
+                    Text(
+                        "Ayrıştırma güveni %${(s.minConfidence * 100).toInt()} altındaysa kaydetme.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        "Düşürürsen daha çok soru yakalanır ama çöp kayıt artar.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Slider(
+                        value = s.minConfidence,
+                        onValueChange = { vm.setMinConfidence(it) },
+                        valueRange = 0.2f..0.9f,
+                        steps = 13
+                    )
+                }
+            }
+
+            item {
+                SectionCard("Ekran bölgeleri") {
+                    Text(
+                        "Soru ve şıkların ekranın hangi bölümünde arandığını belirler. " +
+                            "Arayüz farklıysa buradan ayarlayabilirsin — Teşhis ekranı " +
+                            "hangi metnin nerede görüldüğünü gösterir.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    RegionSlider("Soru — üst", s.questionTop) {
+                        vm.setRegions(it, s.questionBottom, s.optionsTop, s.optionsBottom)
+                    }
+                    RegionSlider("Soru — alt", s.questionBottom) {
+                        vm.setRegions(s.questionTop, it, s.optionsTop, s.optionsBottom)
+                    }
+                    RegionSlider("Şıklar — üst", s.optionsTop) {
+                        vm.setRegions(s.questionTop, s.questionBottom, it, s.optionsBottom)
+                    }
+                    RegionSlider("Şıklar — alt", s.optionsBottom) {
+                        vm.setRegions(s.questionTop, s.questionBottom, s.optionsTop, it)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { vm.resetRegions() }, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Refresh, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Varsayılan")
+                        }
+                        OutlinedButton(onClick = onOpenDebug, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.BugReport, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Teşhis")
+                        }
+                    }
+                }
+            }
+
+            item {
+                val fastOn by vm.fastCaptureOn.collectAsState()
+                SectionCard(
+                    "Hızlı yakalama",
+                    container = if (fastOn) null else MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Text(
+                        if (fastOn) "Açık — ekran karesine istendiği an bakılabiliyor."
+                        else "Kapalı — saniyede yalnızca bir kare alınabiliyor.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Android, erişilebilirlik ekran görüntüsünü saniyede bir kereden " +
+                            "fazla almaya izin vermiyor. Şıklar ekrana teker teker geliyor " +
+                            "ve cevap yarım saniyede açılıp geçiyor; bu hızda ikisi de " +
+                            "kaçabiliyor. Ekran yansıtmada böyle bir sınır yok — açıkken " +
+                            "karar penceresine saniyede sekiz kez bakılıyor.\n\n" +
+                            "Görüntü telefondan dışarı gönderilmez. Telefonu yeniden " +
+                            "başlattığında kapanır, tekrar açman gerekir.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { ArsivViewModel.startFastCapture(context) },
+                            enabled = !fastOn,
+                            modifier = Modifier.weight(1f)
+                        ) { Text(if (fastOn) "Açık" else "Aç") }
+                        OutlinedButton(
+                            onClick = { ArsivViewModel.stopFastCapture(context) },
+                            enabled = fastOn,
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Durdur") }
+                    }
+                }
+            }
+
+            item {
+                SectionCard("Gizlilik") {
+                    Text(
+                        "• Okunan metin telefondan dışarı gönderilmez; her şey cihazdaki " +
+                            "yerel veritabanında durur.\n" +
+                            "• Metin tanıma çevrimdışı çalışır, internet gerekmez.\n" +
+                            "• Ekran yalnızca yukarıda işaretlediğin uygulamalar önplandayken okunur.\n" +
+                            "• Manuel modda uygulama hedef uygulamaya dokunmaz: tıklama, " +
+                            "kaydırma veya herhangi bir jest göndermez, sadece görüneni okur.\n" +
+                            "• Otomatik modda ise ekrana dokunur: şıklardan birine ve tur " +
+                            "sonundaki yeniden başlatma düğmesine. Başka hiçbir yere " +
+                            "dokunmaz, tanımadığı düğmeye basmaz.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
+            item {
+                SectionCard("Tehlikeli bölge") {
+                    Button(
+                        onClick = { confirmWipe = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Icon(Icons.Default.DeleteForever, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Tüm arşivi sil")
+                    }
+                }
             }
         }
+    }
+
+    if (confirmWipe) {
+        AlertDialog(
+            onDismissRequest = { confirmWipe = false },
+            title = { Text("Tüm sorular silinsin mi?") },
+            text = { Text("Bu işlem geri alınamaz. Önce dışa aktarmak isteyebilirsin.") },
+            confirmButton = {
+                TextButton(onClick = { confirmWipe = false; vm.deleteAll() }) { Text("Hepsini sil") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmWipe = false }) { Text("Vazgeç") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun SettingSwitch(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+@Composable
+private fun RegionSlider(label: String, value: Float, onChange: (Float) -> Unit) {
+    Column {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(label, style = MaterialTheme.typography.bodySmall)
+            Text("%${(value * 100).toInt()}", style = MaterialTheme.typography.bodySmall)
+        }
+        Slider(value = value, onValueChange = onChange, valueRange = 0f..1f)
     }
 }

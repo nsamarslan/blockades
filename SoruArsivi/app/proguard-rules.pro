@@ -1,2 +1,2 @@
-# Proguard rules for SoruArsivi
--keep class com.emre.bilbakalim.arsiv.data.** { *; }
+-keep class com.google.mlkit.** { *; }
+-dontwarn com.google.mlkit.**

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <files-path name="disa_aktarim" path="export/" />
+    <files-path name="ekran_goruntuleri" path="shots/" />
+    <cache-path name="onbellek" path="." />
+</paths>

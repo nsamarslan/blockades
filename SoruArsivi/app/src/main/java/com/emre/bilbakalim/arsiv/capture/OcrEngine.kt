@@ -1,0 +1,58 @@
+package com.emre.bilbakalim.arsiv.capture
+
+import android.graphics.Bitmap
+import android.graphics.Rect
+import android.util.Log
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+
+/**
+ * ML Kit metin tanıma — tamamen cihaz üzerinde, internetsiz çalışır.
+ * Latin modeli Türkçe'nin ı/ğ/ş/ö/ç/ü harflerini tanır; model APK'nın
+ * içinde geldiği için ilk açılışta indirme beklenmez.
+ */
+object OcrEngine {
+
+    private const val TAG = "SoruArsivi/OCR"
+
+    private val recognizer by lazy {
+        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    }
+
+    /**
+     * Görüntüdeki metin bloklarını konumlarıyla döndürür.
+     * Blok kullanıyoruz çünkü ML Kit çok satırlı bir soruyu tek blokta toplar —
+     * bu da satır satır birleştirme derdini büyük ölçüde ortadan kaldırır.
+     */
+    suspend fun recognize(bitmap: Bitmap): List<TextItem> =
+        suspendCancellableCoroutine { cont ->
+            try {
+                val image = InputImage.fromBitmap(bitmap, 0)
+                recognizer.process(image)
+                    .addOnSuccessListener { text ->
+                        val out = ArrayList<TextItem>(text.textBlocks.size)
+                        for (block in text.textBlocks) {
+                            val b: Rect = block.boundingBox ?: continue
+                            val t = block.text.trim()
+                            if (t.isNotEmpty()) out.add(TextItem(t, Rect(b), clickable = false))
+                        }
+                        if (cont.isActive) cont.resume(out)
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w(TAG, "OCR başarısız: ${e.message}")
+                        if (cont.isActive) cont.resume(emptyList())
+                    }
+            } catch (t: Throwable) {
+                Log.w(TAG, "OCR hatası: ${t.message}")
+                if (cont.isActive) cont.resume(emptyList())
+            }
+        }
+
+    /** Kaynakları serbest bırakır (servis kapanırken çağrılır). */
+    fun close() {
+        runCatching { recognizer.close() }
+    }
+}

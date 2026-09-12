@@ -1,215 +1,968 @@
 package com.emre.bilbakalim.arsiv.capture
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
-import android.graphics.Path
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.PendingIntent
+import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Rect
-import android.os.Handler
-import android.os.Looper
+import android.os.Build
+import android.os.SystemClock
 import android.util.Log
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
+import androidx.annotation.RequiresApi
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import com.emre.bilbakalim.arsiv.ArsivApp
-import com.emre.bilbakalim.arsiv.data.PlayMode
-import com.emre.bilbakalim.arsiv.data.QuestionEntity
+import com.emre.bilbakalim.arsiv.MainActivity
+import com.emre.bilbakalim.arsiv.R
+import com.emre.bilbakalim.arsiv.data.CaptureSource
+import com.emre.bilbakalim.arsiv.data.Prefs
+import com.emre.bilbakalim.arsiv.data.Repo
 import com.emre.bilbakalim.arsiv.util.TurkishText
-import kotlinx.coroutines.*
-import kotlin.random.Random
+import java.io.File
+import java.io.FileOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 
+/**
+ * Uygulamanın motoru.
+ *
+ * Seçilen uygulamada ekran her değiştiğinde:
+ *   1. Erişilebilirlik ağacından metinleri okur (hızlı, hatasız),
+ *   2. Yetersizse ekran görüntüsü alıp OCR'a düşer,
+ *   3. Soru + şıkları ayrıştırıp veritabanına yazar,
+ *   4. Cevap verilince yeşile dönen şıkkı doğru cevap olarak işaretler.
+ *
+ * İki mod var:
+ *
+ *  • **Manuel** (varsayılan): oyunu sen oynarsın. Servis ekrana hiçbir şekilde
+ *    dokunmaz — jest göndermez, tıklama yapmaz, hedef uygulamayı yönlendirmez.
+ *    Sadece görüneni okur ve kaydeder.
+ *
+ *  • **Otomatik**: oyunu [AutoPlayer] oynar. Soru geldiğinde şıklardan birini
+ *    rastgele seçip dokunur, tur bitince "Tekrar Oyna" düğmesine basar.
+ *    Okuma tarafı hiç değişmez; cevabı yine renkten anlarız, çünkü dokunuşun
+ *    kimden geldiğinin ekrandaki renkler açısından bir önemi yok.
+ */
 class CaptureAccessibilityService : AccessibilityService() {
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private val prefs by lazy { ArsivApp.instance.prefs }
-    private val repo by lazy { ArsivApp.instance.repo }
+    private lateinit var prefs: Prefs
+    private lateinit var repo: Repo
+    private lateinit var auto: AutoPlayer
 
-    private var lastHandledQuestion: String = ""
-    private var isAnsweringInProgress = false
-    private var lastRestartClickTime = 0L
+    @Volatile private var lastKey: String? = null
+    @Volatile private var lastShotAt = 0L
+    @Volatile private var lastOcrAt = 0L
+    @Volatile private var lastLoggedFront: String? = null
+    @Volatile private var currentEncounterId = -1L
+    @Volatile private var lastAnsweredId = -1L
+    @Volatile private var lastAnsweredAt = 0L
+    @Volatile private var dirty = false
+    @Volatile private var pollJob: Job? = null
+    @Volatile private var autoJob: Job? = null
+    @Volatile private var lastFrameSig: IntArray? = null
+    /** Ekranda en son ne zaman gerçek bir soru görüldü (otomatik mod için). */
+    @Volatile private var lastQuestionAt = 0L
+    /**
+     * Cevabı açılmayı bekleyen soru.
+     *
+     * [pendingIndex]: yeşil bantta görülen ama henüz onaylanmamış şık.
+     * Dokunduğun anda senin şıkkın da bu banda girdiği için tek bir
+     * okumaya güvenilemez — aynı şıkkı iki ardışık örnekte görmek gerekir.
+     */
+    private data class PendingAnswer(
+        val id: Long,
+        val rects: List<Rect>,
+        /**
+         * Soru ekrana ne zaman geldi. Otomatik dokunuş hem bu süreyi bekler
+         * hem de bu değeri karşılaşmanın kimliği olarak kullanır: aynı soru
+         * sonraki turda yeniden çıktığında veritabanı kimliği aynı kalır ama
+         * bu damga değişir, böylece yeniden cevaplanır.
+         */
+        val bornAt: Long = SystemClock.uptimeMillis(),
+        /** Kararın yeşili hangi şıkta ve ne zamandan beri görülüyor. */
+        var greenIndex: Int? = null,
+        var greenSince: Long = 0L,
+        /** Dokunuş turkuazı — karar açılmazsa geri düşüş için. */
+        var pendingIndex: Int? = null,
+        var pendingSince: Long = 0L,
+        /** Günlüğe aynı deseni tekrar tekrar yazmamak için. */
+        var lastSummary: String? = null
+    )
+    @Volatile private var pendingAnswer: PendingAnswer? = null
+    @Volatile private var burstJob: Job? = null
+    private val workerRunning = AtomicBoolean(false)
+    @Volatile private var totalSaved = 0
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        prefs = Prefs.get(this)
+        repo = Repo.get(this)
+        auto = AutoPlayer(this) { line -> log(line) }
+        running.value = true
+
+        applyTargets(prefs.state.value.targetPackages)
+        if (prefs.state.value.autoPlay) ensurePolling()
+
+        scope.launch {
+            var wasAuto = prefs.state.value.autoPlay
+            prefs.state.collect { s ->
+                applyTargets(s.targetPackages)
+                if (s.autoPlay != wasAuto) {
+                    wasAuto = s.autoPlay
+                    auto.reset()
+                    autoJob?.cancel()
+                    if (s.autoPlay) ensurePolling()
+                    log(if (s.autoPlay) "otomatik mod açıldı" else "manuel moda dönüldü")
+                }
+            }
+        }
+        scope.launch {
+            repo.totalCount.collect { totalSaved = it }
+        }
+        Log.i(TAG, "Servis bağlandı")
+    }
+
+    /** Sadece seçilen uygulamaları dinle — pil ve gizlilik açısından önemli. */
+    private fun applyTargets(targets: Set<String>) {
+        val info = serviceInfo ?: AccessibilityServiceInfo()
+        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+            // Oyun ekranı kendi yüzeyine çizdiği için genelde gelmez, ama
+            // geldiğinde karara bakmak için bedava bir tetikleyici oluyor.
+            AccessibilityEvent.TYPE_VIEW_CLICKED
+        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+        info.notificationTimeout = 200
+        info.flags = info.flags or
+            AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+            AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+        // Hedef seçilmediyse hiçbir olayı dinleme.
+        info.packageNames = if (targets.isEmpty()) arrayOf(NO_PACKAGE) else targets.toTypedArray()
+        runCatching { serviceInfo = info }
+    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
+        event ?: return
+        if (!::prefs.isInitialized) return
 
-        val root = rootInActiveWindow ?: return
-        val currentMode = prefs.getPlayMode()
+        val s = prefs.state.value
+        if (s.paused || s.targetPackages.isEmpty()) return
 
-        // 1. Oyun Sonu Ekranı ("Yeni Oyun" Butonunu Otomatik Tıkla)
-        if (currentMode == PlayMode.AUTO && prefs.isAutoRestartGame()) {
-            checkForGameOverAndRestart(root)
+        val pkg = event.packageName?.toString() ?: return
+        if (pkg !in s.targetPackages) return
+
+        // Oyun ekranı kendi yüzeyine çizildiğinde Android hiç "içerik değişti"
+        // olayı üretmez; bu yüzden hedef uygulama önplandayken olayları
+        // beklemeden düzenli aralıklarla da tarıyoruz.
+        ensurePolling()
+
+        // Bir şıkka dokunduğun görülebildiyse karar birazdan açılacak demektir.
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            val waiting = pendingAnswer
+            if (waiting != null && s.detectAnswer) {
+                val (w, h) = ProjectionService.screenSize(this)
+                startVerdictBurst(waiting, w, h)
+                return
+            }
         }
 
-        // 2. Soru ve Şıkları Algıla & Cevapla
-        handleQuestionCaptureAndAutoPlay(root, currentMode)
+        requestScan()
     }
 
-    private fun checkForGameOverAndRestart(root: AccessibilityNodeInfo) {
-        val now = System.currentTimeMillis()
-        if (now - lastRestartClickTime < 3000L) return
+    /**
+     * Hedef uygulama önplanda olduğu sürece belirli aralıklarla tarama ister.
+     * Uygulamadan çıkılınca kendiliğinden durur: her turda etkin pencerenin
+     * hangi uygulamaya ait olduğuna bakar.
+     */
+    private fun ensurePolling() {
+        if (pollJob?.isActive == true) return
+        pollJob = scope.launch {
+            var misses = 0
+            try {
+                while (isActive) {
+                    delay(if (fastCapture) POLL_FAST_MS else POLL_SLOW_MS)
+                    val cur = prefs.state.value
+                    if (cur.targetPackages.isEmpty()) break
 
-        val restartNodes = root.findAccessibilityNodeInfosByText("Yeni Oyun")
-        if (!restartNodes.isNullOrEmpty()) {
-            val buttonNode = restartNodes.firstOrNull() ?: return
-            lastRestartClickTime = now
-            val delay = prefs.getClickDelayMs()
+                    val active = withContext(Dispatchers.Main) {
+                        runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
+                    }
+                    if (active != null && active in cur.targetPackages) {
+                        misses = 0
+                        if (!cur.paused) requestScan()
+                    } else {
+                        misses++
+                        // Otomatik modda araya giren bir reklam ya da sistem
+                        // penceresi yüzünden yoklamayı bırakırsak bot orada
+                        // takılı kalır; bu yüzden çok daha uzun bekleriz.
+                        val limit = if (cur.autoPlay) POLL_MISS_LIMIT_AUTO else POLL_MISS_LIMIT
+                        if (misses >= limit) break
+                    }
+                }
+            } finally {
+                pollJob = null
+            }
+        }
+    }
 
-            mainHandler.postDelayed({
-                clickNodeOrCenter(buttonNode)
-                lastHandledQuestion = ""
-            }, delay)
+    /**
+     * Ekran değiştikçe onlarca olay yağar. Her olayda yeni bir iş başlatıp
+     * öncekini iptal etmek, olaylar sık geldiğinde hiç tarama yapılamamasına
+     * yol açar. Bunun yerine tek bir işçi çalışır; yeni olaylar sadece
+     * "kirli" bayrağını kaldırır.
+     */
+    private fun requestScan() {
+        dirty = true
+        if (!workerRunning.compareAndSet(false, true)) return
+
+        scope.launch {
+            try {
+                var waited = 0L
+                while (dirty) {
+                    dirty = false
+                    // Ekranın oturmasını bekle: animasyon bitmeden okumak yarım metin verir.
+                    delay(if (fastCapture) SETTLE_FAST_MS else SETTLE_MS)
+                    waited += if (fastCapture) SETTLE_FAST_MS else SETTLE_MS
+                    // Ekranda sürekli dönen bir sayaç varsa olaylar hiç kesilmez;
+                    // bu durumda sonsuza kadar beklemeyip yine de bir tarama yaparız.
+                    if (dirty && waited < MAX_SETTLE_WAIT_MS) continue
+                    waited = 0L
+                    val cur = prefs.state.value
+                    if (cur.paused || cur.targetPackages.isEmpty()) break
+                    runCatching { scan(cur) }
+                        .onFailure { Log.w(TAG, "Tarama hatası: ${it.message}") }
+                    delay(MIN_SCAN_GAP_MS)
+                }
+            } finally {
+                workerRunning.set(false)
+                // İşçi kapanırken sızan bir olay olduysa yeniden başlat.
+                if (dirty) requestScan()
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+
+    private suspend fun scan(s: Prefs.Settings) {
+        // Karar açılmak üzereyken hızlı renk turu çalışıyor; ekran görüntüsü
+        // hakkını onunla paylaşmayalım.
+        if (burstJob?.isActive == true) return
+
+        val (screenW, screenH) = ProjectionService.screenSize(this)
+
+        // Tarama arka planda kuyruğa girdiği için, sıra geldiğinde sen başka
+        // bir uygulamaya geçmiş olabilirsin. Bu kontrol olmadan uygulama
+        // ekranda ne varsa onu okuyordu — kendi Teşhis ekranını ve sistem
+        // pencerelerini soru sanıp kaydetmesinin sebebi buydu.
+        val front = withContext(Dispatchers.Main) {
+            runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
+        }
+        if (front == null || front !in s.targetPackages) {
+            if (front != lastLoggedFront) {
+                lastLoggedFront = front
+                log("atlandı · önplanda: ${front ?: "bilinmiyor"}")
+            }
             return
         }
+        lastLoggedFront = front
 
-        val endCheck = root.findAccessibilityNodeInfosByText("Tebrikler")
-        if (!endCheck.isNullOrEmpty()) {
-            val allClickable = mutableListOf<AccessibilityNodeInfo>()
-            findClickableButtons(root, allClickable)
-            for (btn in allClickable) {
-                val text = (btn.text ?: btn.contentDescription ?: "").toString()
-                if (text.contains("Yeni Oyun", ignoreCase = true) || text.contains("Tekrar", ignoreCase = true)) {
-                    lastRestartClickTime = now
-                    mainHandler.postDelayed({
-                        clickNodeOrCenter(btn)
-                        lastHandledQuestion = ""
-                    }, prefs.getClickDelayMs())
-                    return
-                }
+        // Otomatik mod: ekranda cevabı beklenen bir soru varsa şıklardan
+        // birine dokun. Tarama turunun başında duruyor ki soru ekranda
+        // kaldığı sürece her turda yeniden denenebilsin.
+        if (s.autoPlay) autoAnswerTick(s, screenW, screenH)
+
+        val nodes = withContext(Dispatchers.Main) {
+            runCatching { NodeHarvester.harvest(rootInActiveWindow) }.getOrDefault(emptyList())
+        }
+
+        var parsed = QuestionParser.parse(nodes, screenW, screenH, s, fromAccessibility = true)
+        var source = CaptureSource.ACCESSIBILITY
+
+        // Yerel val kullanıyoruz: Kotlin'in akıllı dönüşümü var üzerinde çalışmaz.
+        val viaNodes = parsed
+        val needOcr = s.ocrFallback &&
+            (s.ocrAlways || viaNodes == null || viaNodes.confidence < 0.55f)
+
+        // Bir süredir soru görmüyorsak tur bitmiş olabilir. Tur sonu ekranındaki
+        // düğmeyi bulabilmek için ekranı okumamız şart: oyun metni çoğu zaman
+        // erişilebilirlik ağacında görünmediğinden, OCR yedeği kapalı olsa bile
+        // bu durumda ekran görüntüsü alıp metni tanıyoruz.
+        val autoIdle = s.autoPlay && s.autoRestart &&
+            SystemClock.uptimeMillis() - lastQuestionAt > AUTO_IDLE_MS
+
+        // Cevabı beklenen bir soru varsa, OCR gerekmese bile ekran görüntüsü
+        // alıyoruz — yoksa cevabın açıldığı anı hiç göremeyiz.
+        val waiting = pendingAnswer
+        var shot: Bitmap? =
+            if (needOcr || autoIdle || (s.detectAnswer && waiting != null)) captureScreen()
+            else null
+
+        // --- 1. Ekran anlamlı biçimde değişti mi? -----------------------------
+        if (shot != null) {
+            val sig = frameSignature(shot)
+            val prev = lastFrameSig
+            if (sig != null && prev != null && sameFrame(sig, prev) && !autoIdle) {
+                shot.recycle()
+                return
             }
+            if (sig != null) lastFrameSig = sig
+        }
+
+        // --- 2. Gerekiyorsa OCR ----------------------------------------------
+        // Hızlı yolda kareler saniyede birkaç kez gelebiliyor; OCR bunların
+        // hepsinde çalışırsa işlemciyi boğar. Metin tanımayı ayrıca kısıyoruz —
+        // renk kontrolü ise her karede yapılmaya devam ediyor.
+        // Tur sonu ekranı kıpırdamadığı için orada metin tanımayı daha da
+        // seyrekleştiriyoruz; düğmeyi bir saniye geç bulmanın zararı yok.
+        val ocrGap = if (autoIdle && !needOcr) AUTO_IDLE_OCR_GAP_MS else MIN_OCR_GAP_MS
+        val ocrDue = SystemClock.uptimeMillis() - lastOcrAt >= ocrGap
+        var ocrItems: List<TextItem> = emptyList()
+        if ((needOcr || autoIdle) && shot != null && ocrDue) {
+            lastOcrAt = SystemClock.uptimeMillis()
+            ocrItems = OcrEngine.recognize(shot)
+            val viaOcr = QuestionParser.parse(
+                ocrItems, shot.width, shot.height, s, fromAccessibility = false
+            )
+            if (viaOcr != null && (viaNodes == null || viaOcr.confidence > viaNodes.confidence + 0.04f)) {
+                parsed = rescale(viaOcr, shot.width, shot.height, screenW, screenH)
+                source = if (nodes.isNotEmpty()) CaptureSource.HYBRID else CaptureSource.OCR
+            }
+        }
+        // OCR kısıldığı turlarda teşhis dökümünü boş verilerle ezmeyelim.
+        if (nodes.isNotEmpty() || ocrItems.isNotEmpty()) dumpDebug(nodes, ocrItems, parsed)
+
+        // --- 3. Karar açıldı mı? ----------------------------------------------
+        if (shot != null && waiting != null && s.detectAnswer) {
+            val hint = if (nodes.isNotEmpty() || ocrItems.isNotEmpty()) {
+                timedOut(nodes, ocrItems)
+            } else null
+            val settled = evaluateAnswer(shot, waiting, screenW, screenH, hint)
+            // Yeşil göründü ama henüz onaylanmadı: karar bir iki saniyede
+            // açılıp geçtiği için hızlı renk turuna geçiyoruz.
+            if (!settled && (waiting.greenIndex != null || waiting.pendingIndex != null)) {
+                startVerdictBurst(waiting, screenW, screenH)
+            }
+        }
+
+        // --- 4. Yeni soru mu? -------------------------------------------------
+        val p = parsed
+        if (p == null) {
+            if (ocrItems.isNotEmpty() || nodes.size > 1) {
+                log("düğüm:${nodes.size} ocr:${ocrItems.size} · RED: ${QuestionParser.lastReject ?: "?"}")
+            }
+            // Ekranda soru yok ve bir süredir de yoktu: tur bitmiş olabilir.
+            if (autoIdle) tryContinue(nodes, ocrItems, shot, screenW, screenH)
+            shot?.let { if (!it.isRecycled) it.recycle() }
+            return
+        }
+        if (p.confidence < s.minConfidence) {
+            log("${p.options.size} şık %${(p.confidence * 100).toInt()} · RED: güven eşiğin altında")
+            shot?.let { if (!it.isRecycled) it.recycle() }
+            return
+        }
+        // Ekranda gerçek bir soru var: tur sonu yoklamasının sayacı sıfırlanır.
+        lastQuestionAt = SystemClock.uptimeMillis()
+        if (s.autoPlay) auto.noteQuestion()
+        if (p.key == lastKey) {
+            shot?.let { if (!it.isRecycled) it.recycle() }
+            return
+        }
+        lastKey = p.key
+
+        // Kullanıcı Ana ekrandan bir kategori seçtiyse o kazanır; yoksa ekrandan tanınan kullanılır.
+        val category = s.activeCategory.takeIf { it.isNotBlank() } ?: p.category
+
+        var shotPath: String? = null
+        if (s.saveScreenshots) {
+            if (shot == null) shot = captureScreen()
+            shotPath = shot?.let { saveShot(it, p.key) }
+        }
+
+        val result = repo.save(
+            question = p.question,
+            options = p.options,
+            category = category,
+            source = source,
+            confidence = p.confidence,
+            screenshotPath = shotPath
+        )
+        val savedId = when (result) {
+            is Repo.SaveResult.Inserted -> result.id
+            is Repo.SaveResult.Duplicate -> result.id
+            Repo.SaveResult.Rejected -> null
+        }
+
+        if (savedId == null) {
+            log("RED: kayıt çok kısa / şık yetersiz")
+            pendingAnswer = null
+        } else {
+            // Aynı soru ekranı saniyede birkaç kez taranıyor ve her tarama
+            // küçük OCR farkları yüzünden ayrı bir kayıt denemesi oluyor.
+            // Bunların hepsi TEK bir karşılaşmadır — sayaç yalnızca gerçekten
+            // başka bir soruya geçildiğinde artar.
+            val newEncounter = savedId != currentEncounterId
+            if (newEncounter) {
+                currentEncounterId = savedId
+                // Yeni kayıt zaten seenCount = 1 ile başlıyor.
+                if (result is Repo.SaveResult.Duplicate) repo.countEncounter(savedId)
+            }
+
+            val conf = (p.confidence * 100).toInt()
+            when {
+                result is Repo.SaveResult.Inserted -> {
+                    Log.i(TAG, "Kaydedildi #$savedId")
+                    log("${p.options.size} şık %$conf · KAYDEDİLDİ #$savedId")
+                }
+                newEncounter -> log("${p.options.size} şık %$conf · tekrar #$savedId")
+                // Aynı ekranın yeniden okunması: günlüğe yazmaya değmez.
+            }
+
+            val answeredJustNow = savedId == lastAnsweredId &&
+                SystemClock.uptimeMillis() - lastAnsweredAt < ANSWER_COOLDOWN_MS
+            val current = pendingAnswer
+            if (!answeredJustNow && (current == null || current.id != savedId)) {
+                pendingAnswer = PendingAnswer(savedId, p.optionRects)
+            }
+        }
+
+        shot?.let { if (!it.isRecycled) it.recycle() }
+    }
+
+    // --- Otomatik mod --------------------------------------------------------
+
+    /**
+     * Ekrandaki soruya otomatik olarak dokunur.
+     *
+     * Dokunmadan önce şıkların yerine oturması için kısa bir süre bekleriz
+     * ([Prefs.Settings.autoAnswerDelayMs]); aynı bekleme sorunun dört şıkla
+     * birlikte kaydedilmesine de zaman tanıyor. Dokunuş ayrı bir işte yapılır,
+     * yoksa jestin tamamlanmasını beklerken tarama döngüsü durur.
+     */
+    private fun autoAnswerTick(s: Prefs.Settings, screenW: Int, screenH: Int) {
+        val waiting = pendingAnswer ?: return
+        if (waiting.bornAt == auto.answeredToken) return
+        if (waiting.rects.size < 2) return
+        if (SystemClock.uptimeMillis() - waiting.bornAt < s.autoAnswerDelayMs) return
+        if (autoJob?.isActive == true) return
+
+        autoJob = scope.launch {
+            val cur = prefs.state.value
+            if (!cur.autoPlay || cur.paused) return@launch
+            // Bekleme sırasında soru değişmiş olabilir.
+            if (pendingAnswer?.bornAt != waiting.bornAt) return@launch
+
+            val known = if (cur.autoUseKnownAnswer) {
+                runCatching { repo.byId(waiting.id)?.correctIndex }.getOrNull()
+            } else null
+
+            val index = auto.answer(waiting.bornAt, waiting.rects, known)
+            if (index == null) {
+                log("otomatik: #${waiting.id} şıkkına dokunulamadı")
+                return@launch
+            }
+            log(
+                "OTOMATİK #${waiting.id} → ${'A' + index} · " +
+                    "${if (known != null) "bilinen cevap" else "rastgele"} · " +
+                    "bu oturumda ${auto.tapCount} cevap"
+            )
+            // Dokunduk; karar bir iki saniyede açılıp geçecek. Renk turunu
+            // hemen başlatıyoruz ki cevabı kaçırmayalım.
+            if (cur.detectAnswer) startVerdictBurst(waiting, screenW, screenH)
         }
     }
 
-    private fun handleQuestionCaptureAndAutoPlay(root: AccessibilityNodeInfo, mode: PlayMode) {
-        if (isAnsweringInProgress) return
-
-        serviceScope.launch {
-            try {
-                val parsedQuestion = QuestionParser.parseFromRoot(root) ?: return@launch
-                val questionText = parsedQuestion.question.trim()
-                val options = parsedQuestion.options.map { it.trim() }
-
-                if (questionText.length < 5 || options.size < 2) return@launch
-
-                val normalizedQ = TurkishText.normalize(questionText)
-                if (normalizedQ == lastHandledQuestion) return@launch
-
-                val existingQuestion = repo.findQuestionByNormalizedText(normalizedQ)
-                val knownAnswer = existingQuestion?.correctAnswer
-
-                // MANUEL MOD
-                if (mode == PlayMode.MANUAL) {
-                    repo.saveOrUpdateQuestion(
-                        QuestionEntity(
-                            question = questionText,
-                            options = options,
-                            correctAnswer = knownAnswer,
-                            category = parsedQuestion.category
-                        )
-                    )
-                    lastHandledQuestion = normalizedQ
-                    return@launch
-                }
-
-                // OTOMATİK BOT MODU
-                isAnsweringInProgress = true
-                lastHandledQuestion = normalizedQ
-
-                val delayMs = prefs.getClickDelayMs()
-                delay(delayMs)
-
-                val optionToClick: String
-                val isKnown: Boolean
-
-                if (!knownAnswer.isNullOrBlank() && options.any { TurkishText.isMatch(it, knownAnswer) }) {
-                    optionToClick = options.first { TurkishText.isMatch(it, knownAnswer) }
-                    isKnown = true
-                } else {
-                    optionToClick = options.random()
-                    isKnown = false
-                }
-
-                withContext(Dispatchers.Main) {
-                    clickOptionOnScreen(root, optionToClick)
-                }
-
-                repo.saveOrUpdateQuestion(
-                    QuestionEntity(
-                        question = questionText,
-                        options = options,
-                        correctAnswer = if (isKnown) knownAnswer else null,
-                        category = parsedQuestion.category
-                    )
-                )
-
-                delay(800L)
-                isAnsweringInProgress = false
-
-            } catch (e: Exception) {
-                isAnsweringInProgress = false
-            }
+    /**
+     * Tur sonu ekranında "Tekrar Oyna" benzeri düğmeyi arar ve basar.
+     *
+     * OCR kutuları ekran görüntüsünün ölçeğinde geldiği için önce ekran
+     * koordinatlarına çeviriyoruz; erişilebilirlik düğümleri zaten ekran
+     * koordinatlarında.
+     */
+    private suspend fun tryContinue(
+        nodes: List<TextItem>,
+        ocr: List<TextItem>,
+        shot: Bitmap?,
+        screenW: Int,
+        screenH: Int
+    ) {
+        if (nodes.isEmpty() && ocr.isEmpty()) return
+        val shotW = shot?.takeIf { !it.isRecycled }?.width ?: screenW
+        val shotH = shot?.takeIf { !it.isRecycled }?.height ?: screenH
+        val items = nodes + ocr.map {
+            it.copy(bounds = scaleRect(it.bounds, shotW, shotH, screenW, screenH))
         }
+        // "Atla"/"Devam" gibi yazılara ancak ekran iyice uzun süredir
+        // kımıldamıyorsa dokunuruz; "Tekrar Oyna" için o kadar beklemeye gerek yok.
+        val allowDismiss = SystemClock.uptimeMillis() - lastQuestionAt > AUTO_DISMISS_IDLE_MS
+        val pressed = auto.pressContinue(items, screenH, allowDismiss) ?: return
+        log("OTOMATİK: \"$pressed\" → yeni tur (${auto.restartCount}. kez)")
+        // Ekran değişecek; bir sonraki kare yeniden okunsun.
+        lastFrameSig = null
+        lastKey = null
+        pendingAnswer = null
     }
 
-    private fun clickOptionOnScreen(root: AccessibilityNodeInfo, targetText: String): Boolean {
-        val matches = root.findAccessibilityNodeInfosByText(targetText)
-        if (!matches.isNullOrEmpty()) {
-            for (node in matches) {
-                if (clickNodeOrCenter(node)) return true
-            }
-        }
-
-        val allNodes = mutableListOf<AccessibilityNodeInfo>()
-        collectAllNodes(root, allNodes)
-        for (node in allNodes) {
-            val text = (node.text ?: node.contentDescription ?: "").toString().trim()
-            if (TurkishText.isMatch(text, targetText)) {
-                if (clickNodeOrCenter(node)) return true
-            }
-        }
-        return false
+    private fun scaleRect(r: Rect, fromW: Int, fromH: Int, toW: Int, toH: Int): Rect {
+        if (fromW == toW && fromH == toH) return Rect(r)
+        val sx = toW.toFloat() / fromW.coerceAtLeast(1)
+        val sy = toH.toFloat() / fromH.coerceAtLeast(1)
+        return Rect(
+            (r.left * sx).toInt(), (r.top * sy).toInt(),
+            (r.right * sx).toInt(), (r.bottom * sy).toInt()
+        )
     }
 
-    private fun clickNodeOrCenter(node: AccessibilityNodeInfo): Boolean {
-        if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+    /**
+     * Karar durumunu tek bir kare üzerinden değerlendirir.
+     * Kaydedildiyse true döner.
+     *
+     * İki ayrı durumu birbirinden ayırmak zorundayız:
+     *   • Şıkka yeni dokundun — senin şıkkın yeşil bantta ama doğru mu
+     *     yanlış mı belli değil.
+     *   • Karar açıldı — yeşil olan gerçekten doğru cevap.
+     *
+     * Kırmızı görünüyorsa karar kesin açılmıştır, hemen kaydederiz.
+     * Kırmızı yoksa aynı şıkkı iki ardışık örnekte görmeyi şart koşarız;
+     * seçimin yanlış olsaydı ikinci örnekte kırmızıya dönmüş olurdu.
+     */
+    private suspend fun evaluateAnswer(
+        shot: Bitmap,
+        waiting: PendingAnswer,
+        screenW: Int,
+        screenH: Int,
+        timedOutHint: Boolean?
+    ): Boolean {
+        val a = AnswerColorDetector.analyze(shot, waiting.rects, screenW, screenH)
+
+        // Renk deseni her değiştiğinde günlüğe düşüyor; kaçan cevapların
+        // sebebini tahmin etmek yerine akışı görebilmek için.
+        val summary = a.summary()
+        if (summary != waiting.lastSummary && summary.contains(Regex("YESIL|turkuaz|KIRMIZI"))) {
+            waiting.lastSummary = summary
+            log("renk #${waiting.id}: $summary")
+        }
+
+        val attempt = !(timedOutHint ?: false)
+
+        // --- 1. Kararın yeşili göründü mü? -----------------------------------
+        val correct = a.correctIndex
+        if (correct != null) {
+            if (a.verdictCertain) {
+                // Kırmızı da var: karar kesin açılmış, bilememişsin.
+                repo.recordReveal(waiting.id, correct, userWasRight = false, countAsAttempt = attempt)
+                log("CEVAP #${waiting.id} → ${'A' + correct} · bilemedin")
+                finishAnswer(waiting.id)
+                return true
+            }
+            // Kırmızı yok: doğru bilmiş olabilirsin. Ama kırmızı senin şıkkında
+            // birkaç kare geç belirebileceği için kısa bir doğrulama payı var.
+            val now = SystemClock.uptimeMillis()
+            if (waiting.greenIndex != correct) {
+                waiting.greenIndex = correct
+                waiting.greenSince = now
+                return false
+            }
+            if (now - waiting.greenSince < GREEN_CONFIRM_MS) return false
+            repo.recordReveal(waiting.id, correct, userWasRight = true, countAsAttempt = attempt)
+            log("CEVAP #${waiting.id} → ${'A' + correct} · bildin")
+            finishAnswer(waiting.id)
+            return true
+        }
+        waiting.greenIndex = null
+
+        // --- 2. Süre dolmuş, ekran kararmış mı? ------------------------------
+        val dimmed = a.dimmedReveal
+        if (dimmed != null) {
+            repo.recordReveal(
+                id = waiting.id,
+                correctIndex = dimmed,
+                userWasRight = false,
+                countAsAttempt = false,
+                source = "süre doldu"
+            )
+            log("CEVAP #${waiting.id} → ${'A' + dimmed} · süre doldu (denemeye sayılmadı)")
+            finishAnswer(waiting.id)
             return true
         }
 
-        var parent = node.parent
-        while (parent != null) {
-            if (parent.isClickable && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                return true
+        // --- 3. Sadece turkuaz: dokundun, karar bekleniyor -------------------
+        // Normalde turkuaz yarım saniyede yeşile ya da kırmızıya döner. Uzun
+        // süre öyle kalıyorsa ölçümlerimizin dışında bir durum var demektir;
+        // geri düşüş olarak yine doğru cevap kabul ediyoruz.
+        val pending = a.pendingIndex
+        if (pending == null) {
+            // Hiçbir şey bulunamadı. Ekran karartılmışsa ölçülen renkleri
+            // günlüğe yazıyoruz ki neden ayırt edilemediği görülebilsin.
+            if (a.colors.isNotEmpty()) {
+                val cs = a.colorSummary()
+                if (cs != waiting.lastSummary) {
+                    waiting.lastSummary = cs
+                    log("karartma #${waiting.id}: $cs")
+                }
             }
-            parent = parent.parent
+            waiting.pendingIndex = null
+            return false
+        }
+        val now = SystemClock.uptimeMillis()
+        if (waiting.pendingIndex != pending) {
+            waiting.pendingIndex = pending
+            waiting.pendingSince = now
+            return false
+        }
+        if (now - waiting.pendingSince < VERDICT_CONFIRM_MS) return false
+        repo.recordReveal(waiting.id, pending, userWasRight = true, countAsAttempt = attempt)
+        log("CEVAP #${waiting.id} → ${'A' + pending} · bildin (turkuaz sabit kaldı)")
+        finishAnswer(waiting.id)
+        return true
+    }
+
+    private fun log(line: String) {
+        val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+            .format(java.util.Date())
+        scanLog.value = (listOf("$stamp  $line") + scanLog.value).take(LOG_LIMIT)
+    }
+
+    private fun finishAnswer(id: Long) {
+        // Aynı turda ikinci kez cevap yazılmasın: oyun sonu ekranı da
+        // karartılmış olduğu için "süre doldu" kuralını tetikleyebiliyordu.
+        lastAnsweredId = id
+        lastAnsweredAt = SystemClock.uptimeMillis()
+        pendingAnswer = null
+        // Sonraki kare kararın rengini taşıyor; yeniden okunsun.
+        lastFrameSig = null
+        showCountNotification()
+    }
+
+    /**
+     * Karar bir iki saniyede açılıp geçiyor. O aralıkta OCR ve ayrıştırmayla
+     * vakit kaybetmemek için yalnızca ekran görüntüsü alıp renge bakan kısa
+     * bir tur çalıştırıyoruz.
+     */
+    private fun startVerdictBurst(waiting: PendingAnswer, screenW: Int, screenH: Int) {
+        if (burstJob?.isActive == true) return
+        val fast = fastCapture
+        burstJob = scope.launch {
+            repeat(if (fast) VERDICT_TRIES_FAST else VERDICT_TRIES_SLOW) {
+                if (pendingAnswer?.id != waiting.id) return@launch
+                if (fast) {
+                    delay(VERDICT_GAP_FAST_MS)
+                    // peek() yeniden kullanılan kareyi döndürür: hiç bellek
+                    // ayrılmaz, bu yüzden saniyede 20 kez bakmak ucuz.
+                    // Dönen Bitmap recycle EDİLMEZ.
+                    val bmp = ProjectionService.peek() ?: return@repeat
+                    val done = runCatching {
+                        evaluateAnswer(bmp, waiting, screenW, screenH, timedOutHint = null)
+                    }.getOrDefault(false)
+                    if (done) return@launch
+                } else {
+                    val bmp = captureScreen() ?: return@repeat
+                    val done = runCatching {
+                        evaluateAnswer(bmp, waiting, screenW, screenH, timedOutHint = null)
+                    }.getOrDefault(false)
+                    if (!bmp.isRecycled) bmp.recycle()
+                    if (done) return@launch
+                }
+            }
+        }
+    }
+
+    /**
+     * Ekranda "Süre Bitti" yazıyorsa cevabı sen vermemişsindir; doğru cevap
+     * yine kaydedilir ama başarı istatistiğine yanlışlıkla "bildin" diye geçmez.
+     */
+    private fun timedOut(vararg lists: List<TextItem>): Boolean =
+        lists.any { list ->
+            list.any {
+                val k = TurkishText.normalizeKey(it.text)
+                k.contains("surebitti") || k.contains("suredoldu")
+            }
         }
 
-        val bounds = Rect()
-        node.getBoundsInScreen(bounds)
-        if (!bounds.isEmpty && bounds.centerX() > 0 && bounds.centerY() > 0) {
-            val clickPath = Path().apply { moveTo(bounds.centerX().toFloat(), bounds.centerY().toFloat()) }
-            val stroke = GestureDescription.StrokeDescription(clickPath, 0, 50)
-            val gesture = GestureDescription.Builder().addStroke(stroke).build()
-            return dispatchGesture(gesture, null, null)
+    /**
+     * Ekran karesi alır.
+     *
+     * İki yol var ve aralarındaki fark bu uygulamanın işe yarayıp
+     * yaramamasını belirliyor:
+     *
+     *  • **Ekran yansıtma (hızlı):** sistem ekranı sürekli aynalar, kareyi
+     *    istediğimiz an alırız. Hız sınırı yoktur. Şıkların teker teker
+     *    belirmesini ve cevabın açıldığı yarım saniyeyi ancak böyle
+     *    yakalayabiliyoruz. Ekran değişmediyse yeni kare üretilmediği için
+     *    null döner — bu da bize bedava "değişiklik yok" bilgisi verir.
+     *
+     *  • **Erişilebilirlik ekran görüntüsü (yavaş):** Android bunu saniyede
+     *    bir kereden fazla çağırmaya izin vermiyor. Yansıtma kapalıyken
+     *    tek seçenek bu, ama hızlı olaylar kaçar.
+     */
+    private suspend fun captureScreen(): Bitmap? {
+        if (ProjectionService.isRunning) return ProjectionService.grab()
+
+        val now = SystemClock.uptimeMillis()
+        val since = now - lastShotAt
+        if (since < SHOT_MIN_GAP_MS) delay(SHOT_MIN_GAP_MS - since)
+        lastShotAt = SystemClock.uptimeMillis()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            takeShotViaAccessibility()?.let { return it }
         }
-        return false
+        return null
     }
 
-    private fun collectAllNodes(node: AccessibilityNodeInfo?, list: MutableList<AccessibilityNodeInfo>) {
-        if (node == null) return
-        list.add(node)
-        for (i in 0 until node.childCount) collectAllNodes(node.getChild(i), list)
+    /** Hızlı yol açık mı? Tarama ve karar yoklama aralıkları buna göre değişir. */
+    private val fastCapture: Boolean get() = ProjectionService.isRunning
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private suspend fun takeShotViaAccessibility(): Bitmap? =
+        suspendCancellableCoroutine { cont ->
+            try {
+                takeScreenshot(
+                    Display.DEFAULT_DISPLAY,
+                    mainExecutor,
+                    object : TakeScreenshotCallback {
+                        override fun onSuccess(screenshot: ScreenshotResult) {
+                            var out: Bitmap? = null
+                            try {
+                                val hw = screenshot.hardwareBuffer
+                                val wrapped = Bitmap.wrapHardwareBuffer(hw, screenshot.colorSpace)
+                                out = wrapped?.copy(Bitmap.Config.ARGB_8888, false)
+                                hw.close()
+                            } catch (t: Throwable) {
+                                Log.w(TAG, "Görüntü dönüştürülemedi: ${t.message}")
+                            }
+                            if (cont.isActive) cont.resume(out)
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            Log.d(TAG, "Ekran görüntüsü alınamadı (kod $errorCode)")
+                            if (cont.isActive) cont.resume(null)
+                        }
+                    }
+                )
+            } catch (t: Throwable) {
+                if (cont.isActive) cont.resume(null)
+            }
+        }
+
+    private fun saveShot(bmp: Bitmap, key: String): String? = runCatching {
+        val dir = File(filesDir, "shots").apply { mkdirs() }
+        val target = File(dir, "${key.take(24)}.jpg")
+        if (target.exists()) return target.absolutePath
+
+        val maxW = 820
+        val scaled = if (bmp.width > maxW) {
+            val ratio = maxW.toFloat() / bmp.width
+            Bitmap.createScaledBitmap(bmp, maxW, (bmp.height * ratio).toInt(), true)
+        } else bmp
+
+        FileOutputStream(target).use { scaled.compress(Bitmap.CompressFormat.JPEG, 72, it) }
+        if (scaled !== bmp) scaled.recycle()
+        target.absolutePath
+    }.getOrNull()
+
+    /** Ekranın kaba bir gri tonlamalı özeti — kare karşılaştırması için. */
+    private fun frameSignature(bmp: Bitmap): IntArray? = runCatching {
+        val small = Bitmap.createScaledBitmap(bmp, SIG_W, SIG_H, true)
+        val px = IntArray(SIG_W * SIG_H)
+        small.getPixels(px, 0, SIG_W, 0, 0, SIG_W, SIG_H)
+        if (small !== bmp) small.recycle()
+        IntArray(px.size) { i ->
+            val c = px[i]
+            ((c shr 16 and 0xFF) * 30 + (c shr 8 and 0xFF) * 59 + (c and 0xFF) * 11) / 100
+        }
+    }.getOrNull()
+
+    /** Küçük farklar (geri sayan sayaç gibi) aynı ekran sayılır. */
+    private fun sameFrame(a: IntArray, b: IntArray): Boolean {
+        if (a.size != b.size) return false
+        var sum = 0L
+        for (i in a.indices) sum += kotlin.math.abs(a[i] - b[i])
+        return sum / a.size < FRAME_DIFF_LIMIT
     }
 
-    private fun findClickableButtons(node: AccessibilityNodeInfo?, list: MutableList<AccessibilityNodeInfo>) {
-        if (node == null) return
-        if (node.isClickable) list.add(node)
-        for (i in 0 until node.childCount) findClickableButtons(node.getChild(i), list)
+    private fun rescale(
+        p: QuestionParser.Parsed,
+        fromW: Int, fromH: Int, toW: Int, toH: Int
+    ): QuestionParser.Parsed {
+        if (fromW == toW && fromH == toH) return p
+        val sx = toW.toFloat() / fromW.coerceAtLeast(1)
+        val sy = toH.toFloat() / fromH.coerceAtLeast(1)
+        return p.copy(
+            optionRects = p.optionRects.map {
+                Rect((it.left * sx).toInt(), (it.top * sy).toInt(),
+                     (it.right * sx).toInt(), (it.bottom * sy).toInt())
+            }
+        )
     }
 
-    override fun onInterrupt() {
-        isAnsweringInProgress = false
+    /** Teşhis ekranında "ekranda ne gördü" sorusunu yanıtlamak için. */
+    private fun dumpDebug(
+        nodes: List<TextItem>,
+        ocr: List<TextItem>,
+        parsed: QuestionParser.Parsed?
+    ) {
+        if (!::prefs.isInitialized) return
+        val sb = StringBuilder()
+        sb.append("Zaman: ").append(java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+            .format(java.util.Date())).append('\n')
+        sb.append("Erişilebilirlik metinleri: ").append(nodes.size).append('\n')
+        nodes.take(30).forEach {
+            sb.append("  • [").append(if (it.clickable) "tık" else "   ").append("] ")
+                .append(it.bounds.top).append("-").append(it.bounds.bottom).append("  ")
+                .append(it.text.take(70)).append('\n')
+        }
+        if (ocr.isNotEmpty()) {
+            sb.append("OCR blokları: ").append(ocr.size).append('\n')
+            ocr.take(30).forEach {
+                sb.append("  • ").append(it.bounds.top).append("-").append(it.bounds.bottom)
+                    .append("  ").append(it.text.replace('\n', ' ').take(70)).append('\n')
+            }
+        }
+        sb.append("\nSonuç: ")
+        if (parsed == null) {
+            sb.append("ayrıştırılamadı — ")
+                .append(QuestionParser.lastReject ?: "sebep bilinmiyor")
+        } else {
+            sb.append("güven %").append((parsed.confidence * 100).toInt()).append('\n')
+            sb.append("SORU: ").append(parsed.question).append('\n')
+            parsed.options.forEachIndexed { i, o ->
+                sb.append("  ").append(('A' + i)).append(") ").append(o).append('\n')
+            }
+            parsed.category?.let { sb.append("Kategori: ").append(it).append('\n') }
+        }
+        prefs.setDebugDump(sb.toString())
+    }
+
+    private fun showCountNotification() {
+        val intent = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val n = NotificationCompat.Builder(this, ArsivApp.CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notif_capture)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText("$totalSaved soru arşivlendi")
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setOngoing(false)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(intent)
+            .build()
+        runCatching { NotificationManagerCompat.from(this).notify(NOTIF_ID, n) }
+    }
+
+    override fun onInterrupt() = Unit
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        running.value = false
+        pollJob?.cancel()
+        burstJob?.cancel()
+        autoJob?.cancel()
+        return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
+        running.value = false
+        pollJob?.cancel()
+        burstJob?.cancel()
+        autoJob?.cancel()
         super.onDestroy()
-        serviceScope.cancel()
+    }
+
+    companion object {
+        private const val TAG = "SoruArsivi/Capture"
+        private const val NOTIF_ID = 7
+        private const val NO_PACKAGE = "com.emre.bilbakalim.arsiv.hicbiri"
+
+        /** Animasyon bitsin diye beklenen süre (yavaş yol). */
+        private const val SETTLE_MS = 260L
+        /** Hızlı yolda kare farkı zaten koruduğu için kısa bekleme yeter. */
+        private const val SETTLE_FAST_MS = 90L
+        /** Ekran hiç durulmasa bile en geç bu kadar sonra yine de tara. */
+        private const val MAX_SETTLE_WAIT_MS = 1700L
+        /** İki tarama arasında bırakılan nefes payı. */
+        private const val MIN_SCAN_GAP_MS = 300L
+        /** takeScreenshot API'sinin hız sınırı. */
+        private const val SHOT_MIN_GAP_MS = 1150L
+        /** Olay gelmese bile hedef uygulama önplandayken tarama aralığı. */
+        private const val POLL_FAST_MS = 200L
+        private const val POLL_SLOW_MS = 800L
+        /** İki metin tanıma arasında bırakılan en az süre. */
+        private const val MIN_OCR_GAP_MS = 450L
+        /** Tur sonu ekranı kıpırdamıyor; orada metin tanıma aralığı. */
+        private const val AUTO_IDLE_OCR_GAP_MS = 1200L
+        /** Bu kadar turda hedef uygulama önplanda değilse yoklamayı bırak. */
+        private const val POLL_MISS_LIMIT = 3
+        /**
+         * Otomatik modda aynı sınır: reklam ya da sistem penceresi araya
+         * girdiğinde bot orada takılı kalmasın diye çok daha uzun.
+         */
+        private const val POLL_MISS_LIMIT_AUTO = 40
+        /**
+         * Otomatik modda bu kadar süredir soru görülmüyorsa tur bitmiş
+         * sayılır ve "Tekrar Oyna" düğmesi aranmaya başlanır. Cevap açılıp
+         * sonraki sorunun gelmesi ~1,5 saniye sürdüğü için bunun üstünde.
+         */
+        private const val AUTO_IDLE_MS = 3000L
+        /**
+         * "Atla", "Devam", "Kapat" gibi yazılar soru ekranında da bulunabiliyor.
+         * Onlara ancak bu kadar süredir hiç soru görülmediyse dokunuruz.
+         */
+        private const val AUTO_DISMISS_IDLE_MS = 7000L
+        /**
+         * Karar yoklama. Hızlı yolda ~120 ms'de bir, toplam ~3 saniye:
+         * senin seçimin dokunuştan ~0,1 sn, gerçek cevap ~0,5 sn sonra
+         * belirdiği için bu pencere ikisini de rahatça yakalıyor.
+         */
+        private const val VERDICT_TRIES_FAST = 60
+        private const val VERDICT_GAP_FAST_MS = 50L
+        /**
+         * Kırmızı yoksa kararı onaylamadan önce beklenen süre. Senin
+         * seçimin dokunuştan ~0,1 sn sonra beliriyor, gerçek karar ~0,5 sn
+         * sonra açılıyor; 900 ms ikisinin arasını güvenle aşıyor.
+         */
+        private const val VERDICT_CONFIRM_MS = 900L
+        /**
+         * Karar yeşili göründü ama kırmızı yok. Kırmızı senin şıkkında birkaç
+         * kare geç belirebileceği için bu kadar bekleyip öyle "bildin" diyoruz.
+         * Doğru cevapta oyun seni bekletmeden geçtiği için kısa tutuldu.
+         */
+        private const val GREEN_CONFIRM_MS = 300L
+        /** Bu süre içinde aynı soruya ikinci kez cevap yazılmaz. */
+        private const val ANSWER_COOLDOWN_MS = 20_000L
+        private const val VERDICT_TRIES_SLOW = 5
+        /** Kare imzası çözünürlüğü. */
+        private const val SIG_W = 24
+        private const val SIG_H = 48
+        /**
+         * Bu değerin altındaki ortalama fark "ekran değişmedi" demektir.
+         * Turkuaza dönen bir şık ekranın ~%6'sını kaplar ve ortalama farkı
+         * ancak ~3 birim değiştirir; eşik 4'te kalsaydı bu değişim kaçardı.
+         */
+        private const val FRAME_DIFF_LIMIT = 2
+
+        /** Arayüzün servisin açık olup olmadığını görmesi için. */
+        val running = MutableStateFlow(false)
+
+        /**
+         * Son taramaların tek satırlık özeti — Teşhis ekranı bunu gösterir.
+         * Tek bir kareyi gösteren döküm, "hangi soru neden kaçtı" sorusunu
+         * yanıtlamaya yetmiyordu; bu liste zaman içindeki akışı veriyor.
+         */
+        const val LOG_LIMIT = 80
+        val scanLog = MutableStateFlow<List<String>>(emptyList())
     }
 }

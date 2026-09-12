@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Soru Arsivi ve Bot</string>
-    <string name="accessibility_service_label">Soru Arsivi ve Otomatik Bot</string>
-    <string name="accessibility_service_description">TRT Bil Bakalim sorularini kaydeder, bilinenleri otomatik dogru tiklar ve oyun sonu Yeni Oyun butonuna basar.</string>
+    <string name="app_name">Soru Arşivi</string>
+    <string name="service_label">Soru Arşivi — otomatik yakalama</string>
+    <string name="accessibility_description">Seçtiğiniz bilgi yarışması uygulamasında ekrandaki soruyu ve şıkları okuyup kendi cihazınızdaki yerel veritabanına kaydeder. Metin telefondan dışarı gönderilmez. Otomatik mod açıkken ayrıca şıklara ve tur sonundaki \"Tekrar Oyna\" düğmesine kendisi dokunur; manuel modda ekrana hiç dokunmaz.</string>
+    <string name="notif_channel_name">Yakalama durumu</string>
 </resources>

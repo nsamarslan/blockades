@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="app_name">Soru Arsivi ve Bot</string>
-    <string name="accessibility_service_label">Soru Arsivi ve Otomatik Bot</string>
-    <string name="accessibility_service_description">TRT Bil Bakalim sorularini kaydeder, bilinenleri otomatik dogru tiklar ve oyun sonu Yeni Oyun butonuna basar.</string>
-</resources>

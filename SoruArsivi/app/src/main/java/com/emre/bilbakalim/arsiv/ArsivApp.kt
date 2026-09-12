@@ -1,31 +1,30 @@
 package com.emre.bilbakalim.arsiv
 
 import android.app.Application
-import com.emre.bilbakalim.arsiv.data.AppDatabase
-import com.emre.bilbakalim.arsiv.data.Prefs
-import com.emre.bilbakalim.arsiv.data.Repo
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.os.Build
 
 class ArsivApp : Application() {
 
-    lateinit var database: AppDatabase
-        private set
-
-    lateinit var repo: Repo
-        private set
-
-    lateinit var prefs: Prefs
-        private set
-
     override fun onCreate() {
         super.onCreate()
-        instance = this
-        database = AppDatabase.getDatabase(this)
-        repo = Repo(database.questionDao())
-        prefs = Prefs(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                getString(R.string.notif_channel_name),
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Yakalama servisinin sessiz durum bildirimleri"
+                setShowBadge(false)
+                enableVibration(false)
+            }
+            getSystemService(NotificationManager::class.java)
+                ?.createNotificationChannel(channel)
+        }
     }
 
     companion object {
-        lateinit var instance: ArsivApp
-            private set
+        const val CHANNEL_ID = "yakalama_durumu"
     }
 }

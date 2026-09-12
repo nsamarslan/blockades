@@ -1,48 +1,80 @@
-name: TRT Bil Bakalim Bot - APK Derle
+name: APK Derle
 
+# Hem her push'ta hem de elle ("Run workflow") calistirilabilir.
 on:
   push:
-    branches: [ "**" ]
-  pull_request:
-    branches: [ "**" ]
+    branches: [ main, master ]
   workflow_dispatch:
+
+# Release olusturabilmek icin yazma izni gerekiyor.
+permissions:
+  contents: write
 
 jobs:
   build:
-    name: Debug APK Derle
+    name: Debug + Release APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Kodu Indir (Checkout)
+      - name: Kodu al
         uses: actions/checkout@v4
 
-      - name: Java 17 Kurulumu (Temurin)
+      - name: JDK 17 kur
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
-          cache: 'gradle'
 
-      - name: Proje Dizinini Duzenle ve Gradle Calistirma Izni Ver
+      - name: Gradle hazirla
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: gradlew calistirilabilir yap
+        run: chmod +x ./gradlew
+
+      - name: Debug APK derle
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      # Release derlemesi takilirsa Debug APK yine de elde kalsin.
+      - name: Release APK derle (zorunlu degil)
+        continue-on-error: true
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: APK'lari topla
         run: |
-          # Eger repo icine SoruArsivi klasoru olarak pushlandiysa kok dizine tasi
-          if [ -d "SoruArsivi" ] && [ ! -f "settings.gradle.kts" ]; then
-            echo "Proje SoruArsivi alt klasorunde tespit edildi, kok dizine tasiniyor..."
-            shopt -s dotglob
-            mv SoruArsivi/* .
-          fi
-          if [ ! -f "gradlew" ]; then
-            gradle wrapper
-          fi
-          chmod +x gradlew
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk out/SoruArsivi-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk out/SoruArsivi-release.apk || true
+          ls -la out
 
-      - name: APK Derle (assembleDebug)
-        run: ./gradlew assembleDebug --stacktrace
-
-      - name: APK Dosyasini Artifact Olarak Yukle
+      # Yol 1: Actions > calisma ozeti > Artifacts (zip icinde gelir)
+      - name: APK'lari Artifacts'e yukle
         uses: actions/upload-artifact@v4
         with:
-          name: SoruArsivi-Bot-Debug-APK
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            **/build/outputs/apk/debug/*.apk
+          name: SoruArsivi-APK
+          path: out/*.apk
+          retention-days: 90
+          if-no-files-found: error
+
+      # Yol 2: Releases sekmesinde dogrudan .apk baglantisi (telefondan tek dokunusla kurulur)
+      - name: APK'yi Release olarak yayinla
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="apk-${{ github.run_number }}"
+          gh release create "$TAG" out/*.apk \
+            --title "Soru Arsivi APK #${{ github.run_number }}" \
+            --notes "Otomatik derleme. SoruArsivi-debug.apk dosyasina dokunup kurabilirsin." \
+            --latest
+
+      - name: Nereden indirecegini yaz
+        run: |
+          echo "### APK hazir :white_check_mark:"                                  >> $GITHUB_STEP_SUMMARY
+          echo ""                                                                  >> $GITHUB_STEP_SUMMARY
+          echo "**En kolay yol:** deponun **Releases** bolumunu ac, "               >> $GITHUB_STEP_SUMMARY
+          echo "\`SoruArsivi-debug.apk\` dosyasina dokun ve kur."                   >> $GITHUB_STEP_SUMMARY
+          echo ""                                                                  >> $GITHUB_STEP_SUMMARY
+          echo "[Releases sayfasi](${{ github.server_url }}/${{ github.repository }}/releases/latest)" >> $GITHUB_STEP_SUMMARY
+          echo ""                                                                  >> $GITHUB_STEP_SUMMARY
+          echo "Alternatif: bu sayfanin en altindaki **Artifacts** bolumu "         >> $GITHUB_STEP_SUMMARY
+          echo "(zip halinde iner, once dosya yoneticisiyle acman gerekir)."        >> $GITHUB_STEP_SUMMARY
