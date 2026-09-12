@@ -172,6 +172,27 @@ Yansıtma açıkken ekran değişmediğinde sistem yeni kare üretmez; uygulama 
 bedava bir "değişiklik yok" sinyali olarak kullanır, yani boşta dönerken
 neredeyse hiçbir iş yapmaz.
 
+## Şıkları sayı olan sorular
+
+Matematik sorularında şıkların kendisi sayıdır: *25 / 55 / 5 / 15*. Uygulama
+sayaç, altın, süre ve soru numarası balonlarını elemek için sayı süzgeci
+kullanıyor — ama bu süzgeç bütün ekrana aynı sertlikte uygulandığında bu
+şıkların dördü birden eleniyor, geriye üçten az metin kalıyor ve soru hiç
+yakalanamıyordu. (Teşhis'te `anlamlı metin 3'ten az` / `şık bölgesinde 3'ten
+az metin` satırları bunun izidir.) Otomatik mod da dokunacak şık bulamadığı
+için ekranda süre dolana kadar bekliyordu.
+
+Süzgeç artık konuma duyarlı: sayı kuralları yalnızca **şık bölgesinin
+dışında** işletiliyor. Aynı "55" metni ekranın tepesinde sayaçtır ve elenir,
+şık bölgesinde şıktır ve kalır. Tek haneli şıklar ("5") de artık düşmüyor.
+
+Şık bölgesinin alt ucuna giren joker bedeli rozetleri ("200 200 100") için
+ayrı bir kural var: şıklar alt alta tek tek dizilir, rozetler ise aynı satırda
+üç ya da daha fazla sayıdır — o satır atılır. Atmak listeyi üçün altına
+düşürecekse dokunulmaz, çünkü o zaman rozet sandıklarımız gerçekten şıktır.
+
+Aynı düzeltme yıl, tarih ve yüzde şıklarını da kurtarıyor.
+
 ## Şıklar neden eksik yakalanıyordu?
 
 Şıklar ekrana hep birlikte değil, teker teker geliyor. Saniyede tek kare

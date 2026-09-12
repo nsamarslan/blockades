@@ -61,16 +61,17 @@ object QuestionParser {
     ): Parsed? {
         if (items.isEmpty() || screenW <= 0 || screenH <= 0) return reject("ekranda metin yok")
 
-        val cleaned = items
-            .map { it.copy(text = TurkishText.cleanOcr(it.text)) }
-            .filter { keep(it, screenH) }
-
-        if (cleaned.size < 3) return reject("anlamlı metin 3'ten az")
-
         val optTop = (s.optionsTop * screenH).toInt()
         val optBottom = (s.optionsBottom * screenH).toInt()
         val qTop = (s.questionTop * screenH).toInt()
         val qBottom = (s.questionBottom * screenH).toInt()
+
+        // Süzgeç şık bölgesinde gevşiyor: orada sayılar şıkkın kendisi olabilir.
+        val cleaned = items
+            .map { it.copy(text = TurkishText.cleanOcr(it.text)) }
+            .filter { keep(it, screenH, it.centerY in optTop..optBottom) }
+
+        if (cleaned.size < 3) return reject("anlamlı metin 3'ten az")
 
         // --- 1. Şık adayları ---------------------------------------------------
         var optionPool = cleaned.filter { it.centerY in optTop..optBottom }
@@ -80,6 +81,7 @@ object QuestionParser {
         if (fromAccessibility && clickablePool.size in 3..6) {
             optionPool = clickablePool
         }
+        optionPool = dropNumberStrips(optionPool, screenH)
         if (optionPool.size < 3) return reject("şık bölgesinde 3'ten az metin")
 
         val rows = groupIntoRows(optionPool, screenH)
@@ -155,34 +157,81 @@ object QuestionParser {
 
     // ---------------------------------------------------------------------------
 
-    private fun keep(item: TextItem, screenH: Int): Boolean {
-        val t = item.text.trim()
-        if (t.length < 2) return false
+    /** Sadece sayı / süre / yüzde / soru numarası balonları. */
+    private val ONLY_NUMERIC = Regex("^[\\d\\s:/.,%+\\-x×()\\[\\]|]+\$")
+    /** "-4 sn", "+10 sn" gibi süre bildirimleri. */
+    private val SECONDS = Regex("(?i)^[+\\-]?\\d+\\s*(sn|sec|saniye)\\.?\$")
+    /** Sadece rakamdan oluşan rozet (joker bedeli vb.). */
+    private val NUMBER_ONLY = Regex("^[\\d\\s.,]+\$")
 
+    private fun keep(item: TextItem, screenH: Int, inOptionArea: Boolean): Boolean {
         // Durum çubuğu / gezinme çubuğu bölgesi
         if (item.bounds.bottom < screenH * 0.045f) return false
         if (item.bounds.top > screenH * 0.985f) return false
+        return !isChrome(item.text, inOptionArea)
+    }
 
-        // Sadece sayı / süre / yüzde / soru numarası balonları.
-        // Parantez ve köşeli parantez de burada: "1)" ve "(44)" gibi parçalar
-        // eskiden bu süzgeçten kaçıp soru metninin başına yapışıyordu.
-        if (t.matches(Regex("^[\\d\\s:/.,%+\\-x×()\\[\\]|]+$"))) return false
+    /**
+     * Metin, konumundan bağımsız olarak, soru/şık olmaya aday mı yoksa arayüz
+     * parçası mı?
+     *
+     * Sayı kuralları yalnızca **şık bölgesinin dışında** işletiliyor ve bunun
+     * somut bir sebebi var: matematik sorularında şıkların kendisi sayıdır
+     * ("25", "55", "5", "15"). Süzgeç bütün ekrana aynı sertlikte
+     * uygulandığında bu şıkların dördü birden eleniyor, geriye üçten az metin
+     * kalıyor ve soru hiç yakalanamıyordu — otomatik mod da dokunacak bir şık
+     * bulamadığı için ekranda öylece bekliyordu.
+     *
+     * Sayaç, puan, süre ve soru numarası balonları şık bölgesinin dışında
+     * kaldığı için süzgeç onlar üzerinde olduğu gibi duruyor. Aynı "55" metni
+     * ekranın tepesinde sayaçtır ve elenir, şık bölgesinde şıktır ve kalır.
+     */
+    internal fun isChrome(raw: String, inOptionArea: Boolean): Boolean {
+        val t = raw.trim()
+        if (t.isEmpty()) return true
+        // Salt noktalama / süsleme parçaları her yerde çöptür.
+        if (t.none { it.isLetterOrDigit() }) return true
+        // Süre bildirimi şık olamaz.
+        if (t.matches(SECONDS)) return true
 
-        // "-4 sn", "+10 sn" gibi süre bildirimleri
-        if (t.matches(Regex("(?i)^[+\\-]?\\d+\\s*(sn|sec|saniye)\\.?\$"))) return false
-
-        // Çoğunluğu rakam olan parçalar (soru numarası şeridi vb.)
-        val visible = t.count { !it.isWhitespace() }
-        val digits = t.count { it.isDigit() }
-        if (visible > 0 && digits.toFloat() / visible > 0.60f) return false
+        if (!inOptionArea) {
+            if (t.length < 2) return true
+            // Parantez ve köşeli parantez de burada: "1)" ve "(44)" gibi
+            // parçalar eskiden bu süzgeçten kaçıp soru metnine yapışıyordu.
+            if (t.matches(ONLY_NUMERIC)) return true
+            // Çoğunluğu rakam olan parçalar (soru numarası şeridi vb.)
+            val visible = t.count { !it.isWhitespace() }
+            val digits = t.count { it.isDigit() }
+            if (visible > 0 && digits.toFloat() / visible > 0.60f) return true
+        }
 
         val key = TurkishText.lower(t).trim(' ', ':', '.', '!', '-')
-        if (key in CHROME) return false
+        if (key.isEmpty()) return true
+        if (key in CHROME) return true
 
         // Not: eşik eskiden 3'tü; "Üç", "Altı" gibi kısa şıklar bu yüzden
-        // listeden düşüyordu. Artık yalnızca tek karakterlik parçalar eleniyor.
-        if (key.length <= 1) return false
-        return true
+        // listeden düşüyordu. Şık bölgesinin dışında tek karakterlik parçalar
+        // hâlâ eleniyor; bölgenin içinde "5" gibi tek haneli şıklar geçerli.
+        return !inOptionArea && key.length <= 1
+    }
+
+    /**
+     * Yan yana dizilmiş sayı rozeti şeritlerini atar.
+     *
+     * Şık bölgesinin alt ucuna joker bedelleri gibi rozetler girebiliyor
+     * ("200  200  100"). Sayı süzgeci orada gevşetildiği için artık bunlar da
+     * geçiyor. Ayırt edici işaret dizilim: şıklar alt alta tek tek durur,
+     * rozetler ise aynı satırda üç ya da daha fazla sayıdır.
+     *
+     * Elemek listeyi üçün altına düşürecekse hiçbir şey atılmaz — o durumda
+     * rozet sandığımız şeyler büyük ihtimalle gerçekten şıklardır.
+     */
+    private fun dropNumberStrips(items: List<TextItem>, screenH: Int): List<TextItem> {
+        if (items.size < 3) return items
+        val kept = groupIntoRows(items, screenH)
+            .filterNot { row -> row.size >= 3 && row.all { it.text.trim().matches(NUMBER_ONLY) } }
+            .flatten()
+        return if (kept.size >= 3) kept else items
     }
 
     /** Dikey merkezleri birbirine yakın olanları aynı satıra koyar. */
