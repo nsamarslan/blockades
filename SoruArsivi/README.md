@@ -266,6 +266,30 @@ Pil için: her yoklamada ekranın kaba bir imzası çıkarılır; görüntü bir
 turla neredeyse aynıysa OCR hiç çalıştırılmaz. Geri sayan sayaç gibi küçük
 değişiklikler "aynı ekran" sayılır.
 
+## "Mevcut paketle çakışıyor" — APK neden kurulmuyordu?
+
+Android bir uygulamanın üstüne ancak **aynı anahtarla imzalanmış** bir APK'yı
+kurdurur. Varsayılan debug anahtarı her makinede ayrı ayrı üretiliyor ve
+GitHub Actions her çalışmada sıfırdan bir sanal makine açtığı için, her
+derleme farklı imzalanıyordu: yeni APK "mevcut paketle çakıştığından
+güncellenemedi" deyip kurulmuyor, uygulamayı silmek gerekiyor, arşiv de
+onunla birlikte gidiyordu.
+
+Artık depoda sabit bir imza anahtarı var (`keystore/`), debug ve release
+derlemeleri bununla imzalanıyor. Bundan sonraki bütün APK'lar birbirinin
+üstüne kurulur.
+
+**Bu sürüme geçerken bir kereliğine yine silmen gerekiyor** — telefondaki
+mevcut kurulum eski, rastgele bir anahtarla imzalı. Sıra şöyle:
+
+1. Mevcut uygulamada **Ayarlar → Yedekleme → Dışa aktar**, JSON'u bir yere kaydet.
+2. Uygulamayı kaldır.
+3. Yeni APK'yı kur.
+4. **Ayarlar → Yedekleme → İçe aktar**, kaydettiğin JSON'u seç.
+
+Bir dahaki güncellemede bunların hiçbiri gerekmeyecek; APK doğrudan üstüne
+kurulacak.
+
 ## Yedekleme: dışa ve içe aktarma
 
 Ayarlar → **Yedekleme** altında iki düğme var.
