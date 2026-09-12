@@ -70,4 +70,6 @@ dependencies {
     ksp(libs.androidx.room.compiler)
 
     implementation(libs.mlkit.text.recognition)
+
+    testImplementation(libs.junit)
 }

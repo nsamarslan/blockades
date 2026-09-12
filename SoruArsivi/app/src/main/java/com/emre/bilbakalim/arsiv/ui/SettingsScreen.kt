@@ -88,9 +88,9 @@ fun SettingsScreen(
                     )
                     SettingSwitch(
                         "Otomatik oyna",
-                        "Soru ekrana gelince şıklardan biri rastgele seçilip dokunulur, " +
-                            "tur bitince \"Tekrar Oyna\" benzeri düğmeye basılır. Böylece " +
-                            "oyunun soru havuzu başında beklemeden arşivlenir.",
+                        "Soru ekrana gelince bir şıkka dokunulur, tur bitince " +
+                            "\"Tekrar Oyna\" benzeri düğmeye basılır. Böylece oyunun " +
+                            "soru havuzu başında beklemeden arşivlenir.",
                         s.autoPlay
                     ) { vm.setAutoPlay(it) }
 
@@ -102,10 +102,11 @@ fun SettingsScreen(
                         ) { vm.setAutoRestart(it) }
 
                         SettingSwitch(
-                            "Cevabı bilinen sorularda doğru şıkka bas",
-                            "Arşivde cevabı olan bir soru yeniden çıkarsa rastgele değil " +
-                                "doğru şık seçilir. Oyunda daha uzun kalırsın, tur başına " +
-                                "daha çok yeni soru görürsün. Kapalıyken seçim hep rastgeledir.",
+                            "Bilinen cevabı kullan",
+                            "Soru arşivde varsa ve cevabı biliniyorsa doğru şıkka basılır; " +
+                                "bilinmiyorsa rastgele seçilir. Şıklar her turda karıştığı " +
+                                "için doğru şık sırasına göre değil metnine göre bulunur. " +
+                                "Kapatırsan seçim her zaman rastgele olur.",
                             s.autoUseKnownAnswer
                         ) { vm.setAutoUseKnownAnswer(it) }
 

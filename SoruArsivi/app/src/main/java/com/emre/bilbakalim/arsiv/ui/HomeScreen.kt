@@ -188,8 +188,9 @@ fun HomeScreen(
                             )
                             Text(
                                 if (settings.autoPlay)
-                                    "Uygulama şıklardan birini rastgele seçip basıyor, " +
-                                        "tur bitince \"Tekrar Oyna\"ya dokunuyor."
+                                    "Cevabı arşivde olan soruda doğru şıkka, olmayanda " +
+                                        "rastgele birine basıyor; tur bitince " +
+                                        "\"Tekrar Oyna\"ya dokunuyor."
                                 else "Oyunu sen oynuyorsun; uygulama sadece okuyup kaydediyor.",
                                 style = MaterialTheme.typography.bodySmall
                             )

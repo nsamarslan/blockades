@@ -56,8 +56,11 @@ class Prefs private constructor(context: Context) {
         val autoAnswerDelayMs: Long = 900L,
         /** Tur bitince "Tekrar Oyna" benzeri düğmeye bas. */
         val autoRestart: Boolean = true,
-        /** Cevabı arşivde olan sorularda rastgele değil doğru şıkka bas. */
-        val autoUseKnownAnswer: Boolean = false,
+        /**
+         * Cevabı arşivde olan sorularda rastgele değil doğru şıkka bas.
+         * Kapatılırsa seçim her zaman rastgele olur.
+         */
+        val autoUseKnownAnswer: Boolean = true,
         /** Teşhis ekranı için son ham yakalama dökümü. */
         val lastDebugDump: String = "",
         /** Bilgilendirme ekranı gösterildi mi. */
@@ -83,7 +86,7 @@ class Prefs private constructor(context: Context) {
         autoPlay = sp.getBoolean(K_AUTO_PLAY, false),
         autoAnswerDelayMs = sp.getLong(K_AUTO_DELAY, 900L),
         autoRestart = sp.getBoolean(K_AUTO_RESTART, true),
-        autoUseKnownAnswer = sp.getBoolean(K_AUTO_KNOWN, false),
+        autoUseKnownAnswer = sp.getBoolean(K_AUTO_KNOWN, true),
         lastDebugDump = sp.getString(K_DEBUG, "") ?: "",
         onboarded = sp.getBoolean(K_ONBOARDED, false)
     )

@@ -47,7 +47,14 @@ class Repo private constructor(context: Context) {
 
         dao.byFingerprint(fp)?.let { return SaveResult.Duplicate(it.id) }
 
-        // Bulanık kontrol: son 300 kayıtla karşılaştır.
+        // Bulanık kontrol: son kayıtlar + cevabı eksik olan bütün kayıtlar.
+        //
+        // İkincisi olmadan arşiv birkaç yüz soruyu geçtiğinde şu oluyordu:
+        // aylar önce yakalanmış ama cevabı kaçmış bir soru yeniden çıkıyor,
+        // OCR bir harfi farklı okuduğu için parmak izi tutmuyor, eski satır
+        // da pencerenin dışında kaldığı için bulunamıyor — ikinci bir satır
+        // açılıyor ve cevap ona yazılıyor. Eski satır sonsuza kadar "cevabı
+        // eksik" olarak duruyordu. Artık o satır bulunup doldurulacak.
         //
         // İki ayrı kusuru birden yakalıyoruz:
         //  1. OCR bir iki harfi yanlış okudu  -> benzerlik ölçüsü
@@ -58,7 +65,10 @@ class Repo private constructor(context: Context) {
         val newOptKey = opts.map { TurkishText.normalizeKey(it) }.sorted().joinToString("|")
         val newNeg = TurkishText.negationSignature(q)
 
-        for (old in dao.recent(300)) {
+        val pool = (dao.recent(RECENT_POOL) + dao.unanswered(UNANSWERED_POOL))
+            .distinctBy { it.id }
+
+        for (old in pool) {
             // Olumsuzluk farkı varsa hiçbir benzerlik ölçüsü bunları
             // birleştiremez — zıt anlamlı iki ayrı sorudur.
             if (TurkishText.negationSignature(old.questionText) != newNeg) continue
@@ -102,14 +112,20 @@ class Repo private constructor(context: Context) {
                     }
                     if (takeNew && q != old.questionText) dao.replaceText(old.id, q)
                     if (old.options.size < opts.size) {
-                        dao.update(
-                            old.copy(
-                                optionA = opts.getOrNull(0) ?: old.optionA,
-                                optionB = opts.getOrNull(1) ?: old.optionB,
-                                optionC = opts.getOrNull(2) ?: old.optionC,
-                                optionD = opts.getOrNull(3) ?: old.optionD
-                            )
+                        // Eksik şıklar tamamlanıyor — ama yeni liste o anki
+                        // ekranın sırasıyla geliyor. Kayıtta zaten bir doğru
+                        // cevap varsa sırası kayabilir; bu yüzden metnini
+                        // tutup yeni listede yeniden arıyoruz. Yoksa doğru
+                        // cevap sessizce yanlış şıkkı göstermeye başlıyordu.
+                        val merged = old.copy(
+                            optionA = opts.getOrNull(0) ?: old.optionA,
+                            optionB = opts.getOrNull(1) ?: old.optionB,
+                            optionC = opts.getOrNull(2) ?: old.optionC,
+                            optionD = opts.getOrNull(3) ?: old.optionD
                         )
+                        val remapped = TurkishText.matchIndex(merged.options, old.correctText)
+                            ?: old.correctIndex
+                        dao.update(merged.copy(correctIndex = remapped))
                     }
                 }
                 return SaveResult.Duplicate(old.id)
@@ -152,19 +168,55 @@ class Repo private constructor(context: Context) {
      * Cevap açıldığında çağrılır. Doğru cevabı işler ve — süre dolmadıysa —
      * bunu bir "deneme" olarak sayıp doğru bilip bilmediğini kaydeder.
      * Böylece soru başına "kaç kez çıktı, kaçında bildin" çıkarılabiliyor.
+     *
+     * [correctIndex] **ekrandaki** sıradır, kayıttaki değil. Oyun şıkları her
+     * turda karıştırdığı için bu iki sıra birbirini tutmaz: ilk karşılaşmada
+     * 1. sırada duran şık ikinci karşılaşmada 3. sırada olabilir. Bu yüzden
+     * sırayı değil, o sıradaki **metni** alıp kayıttaki listede arıyoruz.
+     * [screenOptions] boş geçilirse (ya da eşleşme bulunamazsa) sıra olduğu
+     * gibi kullanılır; bu yalnızca ilk kayıtta güvenlidir, orada iki liste
+     * zaten aynıdır.
+     *
+     * Cevabı ilk karşılaşmada yakalayamamış olsak bile bu çağrı sonraki
+     * karşılaşmada aynı satırı doldurur; soru bir daha "cevabı eksik"
+     * görünmez.
      */
     suspend fun recordReveal(
         id: Long,
         correctIndex: Int,
+        screenOptions: List<String> = emptyList(),
         userWasRight: Boolean,
         countAsAttempt: Boolean,
         source: String = "renk"
     ) {
         if (correctIndex !in 0..3) return
         val row = dao.byId(id) ?: return
-        if (!row.edited) dao.setCorrect(id, correctIndex, source)
+
+        val stored = TurkishText.matchIndex(row.options, screenOptions.getOrNull(correctIndex))
+            ?: correctIndex
+        if (stored !in row.options.indices) {
+            Log.w(TAG, "Cevap #$id yazılamadı: şık listesi tutmuyor")
+            return
+        }
+
+        if (!row.edited) dao.setCorrect(id, stored, source)
         if (countAsAttempt) dao.recordAttempt(id, if (userWasRight) 1 else 0)
-        Log.i(TAG, "Cevap #$id -> ${'A' + correctIndex}, kullanıcı ${if (userWasRight) "bildi" else "bilemedi"}")
+        Log.i(TAG, "Cevap #$id -> ${'A' + stored}, kullanıcı ${if (userWasRight) "bildi" else "bilemedi"}")
+    }
+
+    /**
+     * Arşivdeki doğru cevabın **o anki ekrandaki** sırası.
+     *
+     * Otomatik mod bunu kullanıyor: soruyu daha önce görmüşsek rastgele
+     * seçmek yerine doğru şıkka basıyoruz. Şıklar karıştığı için kayıttaki
+     * sıra doğrudan kullanılamaz — kayıttaki doğru cevabın metnini alıp
+     * ekrandaki listede arıyoruz. Soru arşivde yoksa, cevabı henüz
+     * bilinmiyorsa ya da metin ekrandakilerin hiçbirine benzemiyorsa null
+     * döner ve seçim rastgele yapılır.
+     */
+    suspend fun knownAnswerOnScreen(id: Long, screenOptions: List<String>): Int? {
+        val text = dao.byId(id)?.correctText ?: return null
+        return TurkishText.matchIndex(screenOptions, text)
     }
 
     suspend fun updateManual(q: QuestionEntity) = dao.update(q.copy(edited = true))
@@ -175,6 +227,10 @@ class Repo private constructor(context: Context) {
 
     companion object {
         private const val TAG = "SoruArsivi/Repo"
+        /** Bulanık tekrar kontrolünün baktığı son kayıt sayısı. */
+        private const val RECENT_POOL = 300
+        /** Buna ek olarak bakılan, cevabı eksik kayıt sayısı. */
+        private const val UNANSWERED_POOL = 400
         @Volatile private var INSTANCE: Repo? = null
         fun get(context: Context): Repo =
             INSTANCE ?: synchronized(this) { INSTANCE ?: Repo(context).also { INSTANCE = it } }

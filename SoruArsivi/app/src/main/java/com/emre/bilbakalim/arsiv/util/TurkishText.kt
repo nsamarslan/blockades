@@ -176,6 +176,40 @@ object TurkishText {
             "biraz daha gayret").any { low.contains(it) }
     }
 
+    /**
+     * Bir şık metninin listedeki sırasını bulur.
+     *
+     * Şıkların sırası her turda değişiyor. Bu yüzden "doğru cevap 2. şık"
+     * bilgisi tek başına işe yaramaz; hangi *metnin* doğru olduğunu bilip
+     * onu o anki listede aramak gerekir. Kayıttaki metinle ekrandaki metin
+     * arasında OCR kaynaklı bir iki harf farkı olabileceği için, birebir
+     * eşleşme bulunamazsa en yakın şık kabul edilir.
+     *
+     * Hiçbir şık yeterince benzemiyorsa null döner — yanlış şıkka basmaktansa
+     * bilmediğimizi söylemek yeğdir.
+     */
+    fun matchIndex(options: List<String>, text: String?): Int? {
+        if (text.isNullOrBlank() || options.isEmpty()) return null
+        val key = normalizeKey(text)
+        if (key.isEmpty()) return null
+
+        options.forEachIndexed { i, o -> if (normalizeKey(o) == key) return i }
+
+        var best = -1
+        var bestSim = 0f
+        options.forEachIndexed { i, o ->
+            val sim = similarity(o, text)
+            if (sim > bestSim) {
+                bestSim = sim
+                best = i
+            }
+        }
+        return if (best >= 0 && bestSim >= OPTION_MATCH_MIN) best else null
+    }
+
+    /** Şık eşleşmesi için en düşük benzerlik. */
+    private const val OPTION_MATCH_MIN = 0.85f
+
     /** "A) Platon", "1. Platon", "- Platon" gibi baştaki şık işaretlerini atar. */
     fun stripOptionPrefix(s: String): String =
         s.replace(Regex("^\\s*[(\\[]?\\s*([A-Da-dEeĞğ]|[1-5])\\s*[).\\]:\\-–]\\s+"), "").trim()

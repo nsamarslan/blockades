@@ -88,6 +88,15 @@ class CaptureAccessibilityService : AccessibilityService() {
         val id: Long,
         val rects: List<Rect>,
         /**
+         * Şıkların **ekrandaki** metinleri, [rects] ile aynı sırada.
+         *
+         * Oyun şıkları her turda karıştırdığı için "doğru cevap 2. şık"
+         * bilgisi tek başına bir işe yaramıyor: hem kayda doğru cevabı
+         * yazarken hem de otomatik modda bilinen cevaba dokunurken metni
+         * eşleştirmek gerekiyor.
+         */
+        val options: List<String>,
+        /**
          * Soru ekrana ne zaman geldi. Otomatik dokunuş hem bu süreyi bekler
          * hem de bu değeri karşılaşmanın kimliği olarak kullanır: aynı soru
          * sonraki turda yeniden çıktığında veritabanı kimliği aynı kalır ama
@@ -435,7 +444,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 SystemClock.uptimeMillis() - lastAnsweredAt < ANSWER_COOLDOWN_MS
             val current = pendingAnswer
             if (!answeredJustNow && (current == null || current.id != savedId)) {
-                pendingAnswer = PendingAnswer(savedId, p.optionRects)
+                pendingAnswer = PendingAnswer(savedId, p.optionRects, p.options)
             }
         }
 
@@ -465,8 +474,11 @@ class CaptureAccessibilityService : AccessibilityService() {
             // Bekleme sırasında soru değişmiş olabilir.
             if (pendingAnswer?.bornAt != waiting.bornAt) return@launch
 
+            // Soruyu daha önce görmüşsek doğru şıkka, görmemişsek rastgele
+            // birine dokunuyoruz. Kayıttaki sıra değil, kayıttaki doğru
+            // cevabın o anki ekrandaki sırası aranıyor: şıklar karışıyor.
             val known = if (cur.autoUseKnownAnswer) {
-                runCatching { repo.byId(waiting.id)?.correctIndex }.getOrNull()
+                runCatching { repo.knownAnswerOnScreen(waiting.id, waiting.options) }.getOrNull()
             } else null
 
             val index = auto.answer(waiting.bornAt, waiting.rects, known)
@@ -563,7 +575,10 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (correct != null) {
             if (a.verdictCertain) {
                 // Kırmızı da var: karar kesin açılmış, bilememişsin.
-                repo.recordReveal(waiting.id, correct, userWasRight = false, countAsAttempt = attempt)
+                repo.recordReveal(
+                    waiting.id, correct, waiting.options,
+                    userWasRight = false, countAsAttempt = attempt
+                )
                 log("CEVAP #${waiting.id} → ${'A' + correct} · bilemedin")
                 finishAnswer(waiting.id)
                 return true
@@ -577,7 +592,10 @@ class CaptureAccessibilityService : AccessibilityService() {
                 return false
             }
             if (now - waiting.greenSince < GREEN_CONFIRM_MS) return false
-            repo.recordReveal(waiting.id, correct, userWasRight = true, countAsAttempt = attempt)
+            repo.recordReveal(
+                waiting.id, correct, waiting.options,
+                userWasRight = true, countAsAttempt = attempt
+            )
             log("CEVAP #${waiting.id} → ${'A' + correct} · bildin")
             finishAnswer(waiting.id)
             return true
@@ -590,6 +608,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             repo.recordReveal(
                 id = waiting.id,
                 correctIndex = dimmed,
+                screenOptions = waiting.options,
                 userWasRight = false,
                 countAsAttempt = false,
                 source = "süre doldu"
@@ -624,7 +643,10 @@ class CaptureAccessibilityService : AccessibilityService() {
             return false
         }
         if (now - waiting.pendingSince < VERDICT_CONFIRM_MS) return false
-        repo.recordReveal(waiting.id, pending, userWasRight = true, countAsAttempt = attempt)
+        repo.recordReveal(
+            waiting.id, pending, waiting.options,
+            userWasRight = true, countAsAttempt = attempt
+        )
         log("CEVAP #${waiting.id} → ${'A' + pending} · bildin (turkuaz sabit kaldı)")
         finishAnswer(waiting.id)
         return true

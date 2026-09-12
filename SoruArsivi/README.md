@@ -8,9 +8,9 @@ veritabanına kaydeden küçük bir Android uygulaması. Soru metnini, dört ş�
 
 * **Manuel** — oyunu sen oynarsın, uygulama sadece okuyup kaydeder. Kayıt için
   hiçbir tuşa basmazsın.
-* **Otomatik** — oyunu uygulama oynar: şıklardan birini rastgele seçip dokunur,
-  tur bitince "Tekrar Oyna"ya basar. Telefonu bırakıp gidersin, arşiv kendi
-  kendine dolar.
+* **Otomatik** — oyunu uygulama oynar: soruyu daha önce görmüşse doğru şıkka,
+  görmemişse rastgele birine dokunur; tur bitince "Tekrar Oyna"ya basar.
+  Telefonu bırakıp gidersin, arşiv kendi kendine dolar.
 
 ---
 
@@ -90,7 +90,9 @@ Ayarlar → *Oynatma modu* altında.
 ### Otomatik mod ne yapıyor?
 
 1. Soru ekrana gelip dört şık da yerine oturunca, ayarlanan bekleme süresi
-   (varsayılan **900 ms**) sonunda şıklardan **birine rastgele** dokunur.
+   (varsayılan **900 ms**) sonunda bir şıkka dokunur:
+   * soru arşivde varsa ve cevabı biliniyorsa **doğru şıkka**,
+   * bilinmiyorsa **rastgele** birine.
 2. Dokunuş normal bir parmak dokunuşuyla aynı yoldan gider; oyun ayırt etmez.
    Cevabın rengini okuyan mantık hiç değişmeden çalışır, yani doğru cevap yine
    kaydedilir.
@@ -106,8 +108,27 @@ Böylece başında beklemeden, oyunun soru havuzu tükenene kadar arşiv dolar.
 |---|---|
 | **Otomatik oyna** | Modu açar/kapatır. Kapalıyken ekrana hiç dokunulmaz. |
 | **Tur bitince yeniden başlat** | Kapalıysa soruları cevaplar ama tur bitince bekler. |
-| **Cevabı bilinen sorularda doğru şıkka bas** | Arşivde cevabı olan bir soru yeniden çıkarsa rastgele değil doğru şık seçilir. Oyunda daha uzun kalırsın, tur başına daha çok **yeni** soru görürsün. Varsayılan kapalı — açmazsan seçim her zaman rastgeledir. |
+| **Bilinen cevabı kullan** | Varsayılan **açık**. Arşivde cevabı olan bir soru yeniden çıkarsa doğru şık seçilir; oyunda daha uzun kalırsın, tur başına daha çok **yeni** soru görürsün. Kapatırsan seçim her zaman rastgele olur. |
 | **Dokunmadan önce bekleme** | 300–3000 ms. Çok kısa tutarsan soru dört şık tamamlanmadan cevaplanır; çok uzun tutarsan süre dolar. |
+
+### Şıklar karışıyor — sıra değil metin eşleştiriliyor
+
+Oyun şıkları her turda karıştırıyor. Bu yüzden "doğru cevap 2. şık" bilgisi
+tek başına hiçbir işe yaramaz: ilk karşılaşmada 2. sırada duran şık ikinci
+karşılaşmada 4. sırada olabilir. Uygulama bu yüzden her iki yönde de **metni**
+eşleştiriyor:
+
+* **Dokunurken** — kayıttaki doğru cevabın metni alınıp o anki ekran listesinde
+  aranır; bulunan sıraya dokunulur.
+* **Kaydederken** — ekranda yeşile dönen şıkkın metni alınıp kayıttaki listede
+  aranır; bulunan sıra yazılır.
+
+Eşleştirme Türkçe'ye duyarlıdır (büyük/küçük harf, ı/ğ/ş/ö/ç/ü, noktalama ve
+"A)" gibi şık işaretleri yok sayılır) ve OCR'ın bir iki harfi yanlış okumasına
+dayanıklıdır. Hiçbir şık yeterince benzemiyorsa eşleştirme başarısız sayılır:
+dokunurken rastgele seçime düşülür, kaydederken satır olduğu gibi bırakılır.
+Yanlış şıkka basmak ya da arşive yanlış cevap yazmaktansa bilmediğini söylemek
+yeğdir.
 
 ### Güvenlik frenleri
 
@@ -257,7 +278,7 @@ app/src/main/java/com/emre/bilbakalim/arsiv/
 │   ├── ProjectionService.kt     Android ≤10 için ekran yakalama yedeği
 │   └── ProjectionPermissionActivity.kt
 ├── util/
-│   ├── TurkishText.kt           Türkçe normalleştirme, parmak izi, benzerlik
+│   ├── TurkishText.kt           Türkçe normalleştirme, parmak izi, şık eşleştirme
 │   └── Exporters.kt             CSV / JSON / Anki
 └── ui/                          Compose ekranları
 ```
@@ -337,6 +358,20 @@ kaçını doğru bildin. Liste ekranında şu şekilde görünür:
 Detay ekranında ayrıntısı var, CSV ve JSON çıktılarına da sütun olarak giriyor.
 Böylece sürekli yanıldığın soruları `Cevabı eksik` yerine başarı oranına
 bakarak ayıklayabilirsin.
+
+## Cevabı ilk seferde kaçırdıysa ne oluyor?
+
+Hiçbir şey kaybolmuyor: soru bir dahaki çıkışında cevabı yakalanınca **aynı
+satır** doldurulur, kayıt artık "cevabı eksik" görünmez. Bunun çalışması için
+sorunun yeniden bulunabilmesi gerekiyor ve bulanık eşleştirme eskiden yalnızca
+**son 300 kayda** bakıyordu — arşiv birkaç yüz soruyu geçince eski satır
+pencerenin dışında kalıyor, OCR bir harfi farklı okuduysa parmak izi de
+tutmuyordu. O zaman ikinci bir satır açılıyor, cevap ona yazılıyor, eskisi
+sonsuza kadar cevapsız kalıyordu.
+
+Artık kontrole **cevabı eksik olan kayıtlar da** dahil ediliyor, ne kadar eski
+olurlarsa olsunlar. Böylece cevabı kaçmış bir soru yeniden çıktığında yeni bir
+satır açılmıyor; var olan satır bulunup dolduruluyor.
 
 ## Aynı soru neden iki kez kaydedilmiyor?
 

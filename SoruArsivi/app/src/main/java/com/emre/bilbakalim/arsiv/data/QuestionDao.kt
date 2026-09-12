@@ -50,6 +50,18 @@ interface QuestionDao {
     @Query("SELECT * FROM questions ORDER BY capturedAt DESC LIMIT :limit")
     suspend fun recent(limit: Int): List<QuestionEntity>
 
+    /**
+     * Cevabı hâlâ bilinmeyen kayıtlar.
+     *
+     * Bulanık tekrar kontrolü yalnızca son kayıtlara baksaydı, arşiv birkaç
+     * yüz soruyu geçtiğinde eski bir soru yeniden çıktığında bulunamaz ve
+     * ikinci bir satır olarak eklenirdi. O zaman cevap yeni satıra yazılır,
+     * eskisi sonsuza kadar "cevabı eksik" görünürdü. Bu yüzden cevabı eksik
+     * olan satırlar, ne kadar eski olursa olsun, kontrole dahil edilir.
+     */
+    @Query("SELECT * FROM questions WHERE correctIndex IS NULL ORDER BY capturedAt DESC LIMIT :limit")
+    suspend fun unanswered(limit: Int): List<QuestionEntity>
+
     @Query("SELECT * FROM questions ORDER BY capturedAt DESC LIMIT :limit")
     fun observeRecent(limit: Int): Flow<List<QuestionEntity>>
 
