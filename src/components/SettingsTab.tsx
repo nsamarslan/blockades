@@ -219,28 +219,39 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
         </div>
       </div>
 
-      {/* 4. HAZIR PROJEYİ İNDİR (ZIP) */}
+      {/* 4. HAZIR PROJEYİ İNDİR (ZIP & GITHUB ACTIONS) */}
       <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-white rounded-3xl p-6 border border-slate-800 shadow-xl space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-              TAM PROJE PAKETİ
+              TAM PROJE PAKETİ &amp; GITHUB ACTIONS
             </span>
             <h3 className="text-base font-bold text-white mt-1">
-              SoruArsivi.zip (Güncel Android Studio Projesi)
+              GitHub Hazır Proje &amp; Otomatik APK Dosyaları
             </h3>
             <p className="text-xs text-slate-300 mt-0.5">
-              Tüm kodlar, ayarlar ve erişilebilirlik servisi yapılandırılmış hazır zip arşivi.
+              Tüm kodlar, ayarlar, <strong>.github/workflows</strong> ve <strong>gradlew</strong> yapılandırılmıştır.
             </p>
           </div>
 
-          <a
-            href="/SoruArsivi_Bot_Guncel.zip"
-            download="SoruArsivi_Bot_Guncel.zip"
-            className="px-5 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-2xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all hover:scale-105 active:scale-95 shrink-0"
-          >
-            <span>SoruArsivi.zip İndir</span>
-          </a>
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href="/build-apk.yml"
+              download="build-apk.yml"
+              className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-2xl text-xs border border-slate-700 transition-all hover:scale-105 active:scale-95"
+              title="GitHub Actions Workflow dosyasını doğrudan indir"
+            >
+              build-apk.yml
+            </a>
+
+            <a
+              href="/SoruArsivi_GitHub_Hazir.zip"
+              download="SoruArsivi_GitHub_Hazir.zip"
+              className="px-5 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-2xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all hover:scale-105 active:scale-95 shrink-0"
+            >
+              <span>GitHub Hazır ZIP İndir</span>
+            </a>
+          </div>
         </div>
       </div>
     </div>

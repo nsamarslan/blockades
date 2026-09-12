@@ -26,12 +26,23 @@ export const KotlinCodesTab: React.FC = () => {
 
         <div className="flex items-center gap-2">
           <a
-            href="/SoruArsivi_Bot_Guncel.zip"
-            download="SoruArsivi_Bot_Guncel.zip"
+            href="/build-apk.yml"
+            download="build-apk.yml"
+            className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-100 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-all border border-slate-700 cursor-pointer"
+            title="Sadece GitHub Actions YAML Dosyasını İndir"
+          >
+            <Download className="w-3.5 h-3.5 text-amber-400" />
+            <span>build-apk.yml İndir</span>
+          </a>
+
+          <a
+            href="/SoruArsivi_GitHub_Hazir.zip"
+            download="SoruArsivi_GitHub_Hazir.zip"
             className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-md transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+            title="GitHub'a Doğrudan Pushlamaya Hazır ZIP"
           >
             <Download className="w-4 h-4 text-emerald-200" />
-            <span>Hazır Projeyi İndir (.ZIP)</span>
+            <span>GitHub Hazır ZIP</span>
           </a>
 
           <button
