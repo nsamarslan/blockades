@@ -732,5 +732,58 @@ class ArsivViewModel(
         }
     }
 }`
+  },
+  {
+    fileName: "build-apk.yml (GitHub Actions)",
+    path: ".github/workflows/build-apk.yml",
+    description: "GitHub'a push yaptığınızda Actions sekmesinde otomatik olarak .apk dosyası üreten iş akışı yapılandırması",
+    code: `name: TRT Bil Bakalim Bot - APK Derle
+
+on:
+  push:
+    branches: [ "**" ] # Herhangi bir dala (main, master vb.) push yapıldığında tetiklenir
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch: # GitHub arayüzünden Actions > Run workflow ile elle de başlatılabilir
+
+jobs:
+  build:
+    name: Debug APK Derle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Kodu Indir (Checkout)
+        uses: actions/checkout@v4
+
+      - name: Java 17 Kurulumu (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Proje Dizinini Duzenle ve Gradle Calistirma Izni Ver
+        run: |
+          # Eğer repo içine SoruArsivi klasörü olarak pushlandıysa kök dizine taşı
+          if [ -d "SoruArsivi" ] && [ ! -f "settings.gradle.kts" ]; then
+            echo "Proje SoruArsivi alt klasöründe tespit edildi, kök dizine taşınıyor..."
+            shopt -s dotglob
+            mv SoruArsivi/* .
+          fi
+          if [ ! -f "gradlew" ]; then
+            gradle wrapper
+          fi
+          chmod +x gradlew
+
+      - name: APK Derle (assembleDebug)
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: APK Dosyasini Artifact Olarak Yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: SoruArsivi-Bot-Debug-APK
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            **/build/outputs/apk/debug/*.apk`
   }
 ];

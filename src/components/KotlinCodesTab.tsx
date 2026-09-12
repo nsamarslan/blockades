@@ -129,18 +129,40 @@ export const KotlinCodesTab: React.FC = () => {
       </div>
 
       {/* Quick Setup Instructions */}
-      <div className="bg-purple-50/70 rounded-3xl p-5 border border-purple-200 text-xs text-purple-950 space-y-2">
-        <h4 className="font-bold text-sm text-purple-900 flex items-center gap-2">
-          <Terminal className="w-4 h-4" />
-          Android Studio'ya Nasıl Entegre Edilir?
-        </h4>
-        <ol className="list-decimal list-inside space-y-1 text-slate-700 leading-relaxed">
-          <li>Yukarıdaki dosyalardan sırasıyla <strong>Prefs.kt</strong>, <strong>CaptureAccessibilityService.kt</strong>, <strong>SettingsScreen.kt</strong> ve <strong>HomeScreen.kt</strong> kodlarını kopyalayın.</li>
-          <li>Android Studio projenizde ilgili dosyalara yapıştırın (dosya yolları yukarıda belirtilmiştir).</li>
-          <li>Uygulamanızı derleyip telefonunuza yükleyin (veya GitHub Actions üzerinden APK alın).</li>
-          <li>Android Ayarları &gt; Erişilebilirlik menüsünden <strong>Soru Arşivi Servisi</strong>'ni açın.</li>
-          <li>TRT Bil Bakalım oyununa girin, ilk yarışı başlatın ve arkanıza yaslanın! Bot bilinen soruları doğru yanıtlar, yenileri dener ve her oyun sonunda <strong>"Yeni Oyun"</strong> butonuna basarak kesintisiz devam eder.</li>
-        </ol>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-purple-50/70 rounded-3xl p-5 border border-purple-200 text-xs text-purple-950 space-y-2">
+          <h4 className="font-bold text-sm text-purple-900 flex items-center gap-2">
+            <Terminal className="w-4 h-4" />
+            Android Studio'da Açma ve Derleme
+          </h4>
+          <ol className="list-decimal list-inside space-y-1.5 text-slate-700 leading-relaxed">
+            <li>İndirdiğiniz <strong>SoruArsivi_Bot_Guncel.zip</strong> arşivini bir klasöre çıkartın.</li>
+            <li>Android Studio &gt; <strong>Open</strong> seçeneği ile bu klasörü açın.</li>
+            <li>Gradle senkronizasyonu bitince <strong>Build &gt; Build APK(s)</strong> diyerek telefonunuza yükleyebilirsiniz.</li>
+            <li>Telefonunuzun <strong>Ayarlar &gt; Erişilebilirlik</strong> menüsünden servisi aktif edin.</li>
+          </ol>
+        </div>
+
+        <div className="bg-emerald-50/80 rounded-3xl p-5 border border-emerald-200 text-xs text-emerald-950 space-y-2">
+          <h4 className="font-bold text-sm text-emerald-900 flex items-center gap-2">
+            <ExternalLink className="w-4 h-4" />
+            GitHub Actions ile Otomatik APK Alma (Neden Çalışmadı?)
+          </h4>
+          <div className="text-slate-700 space-y-1.5 leading-relaxed">
+            <p>
+              GitHub Actions'ın tetiklenmesi için repoda <strong>.github/workflows/build-apk.yml</strong> dosyasının ve <strong>gradlew</strong> çalıştırıcısının bulunması zorunludur.
+            </p>
+            <p className="font-semibold text-emerald-950">
+              Şimdi güncel ZIP içerisine bu dosyalar eklendi:
+            </p>
+            <ol className="list-decimal list-inside space-y-1 text-slate-700">
+              <li>ZIP'ten çıkan tüm içeriği (özellikle <strong>.github</strong> klasörünü) GitHub reponuza pushlayın.</li>
+              <li>GitHub sayfanızda <strong>Actions</strong> sekmesine gelin.</li>
+              <li><strong>TRT Bil Bakalim Bot - APK Derle</strong> iş akışının başladığını göreceksiniz.</li>
+              <li>Bittiğinde <strong>Artifacts</strong> altından hazır <strong>SoruArsivi-Bot-Debug-APK</strong> dosyasını tek tıkla indirin!</li>
+            </ol>
+          </div>
+        </div>
       </div>
     </div>
   );
