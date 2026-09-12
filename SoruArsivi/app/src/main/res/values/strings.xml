@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Soru Arşivi &amp; Bot</string>
+    <string name="accessibility_service_label">Soru Arşivi ve Otomatik Bot</string>
+    <string name="accessibility_service_description">TRT Bil Bakalım sorularını kaydeder, bilinenleri otomatik doğru tıklar ve oyun sonu 'Yeni Oyun' butonuna basar.</string>
+</resources>

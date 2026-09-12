@@ -1,0 +1,6 @@
+{
+  "name": "Soru Arşivi & Bot Yöneticisi",
+  "description": "Bilgi yarışması sorularını otomatik arşivleme ve bot ile otomatik oynama yönetim paneli",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
