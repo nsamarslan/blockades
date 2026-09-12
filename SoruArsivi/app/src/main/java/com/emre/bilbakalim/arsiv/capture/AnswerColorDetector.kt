@@ -86,6 +86,11 @@ object AnswerColorDetector {
     private const val MIN_RATIO = 0.25f
     private const val OTHERS_MAX_SPREAD = 30.0
     private const val OUTLIER_MIN_GAP = 30.0
+    /**
+     * Karartılmış ekranda dokunulmamış şıkların en yüksek parlaklığı.
+     * Ölçülen gerçek değerler 0.55 ve 0.60 civarında; beyaz şık 0.97.
+     */
+    private const val DIM_MAX_BRIGHTNESS = 0.75f
 
     fun analyze(
         bitmap: Bitmap,
@@ -225,10 +230,22 @@ object AnswerColorDetector {
     private fun isNearWhite(c: IntArray): Boolean =
         c[0] > 215 && c[1] > 215 && c[2] > 215
 
+    /** 0..1 arası parlaklık — HSV'nin V bileşeni. */
+    private fun brightness(c: IntArray): Float = satVal(c).second
+
+    /**
+     * HSV'nin doygunluk ve parlaklık bileşenleri.
+     *
+     * Elle hesaplanıyor: android.graphics.Color birim testlerinde boş taklit
+     * olduğu için, karartılmış ekran kuralı cihazsız test edilemiyordu.
+     * Hesap zaten iki satır.
+     */
     private fun satVal(c: IntArray): Pair<Float, Float> {
-        val hsv = FloatArray(3)
-        Color.RGBToHSV(c[0], c[1], c[2], hsv)
-        return hsv[1] to hsv[2]
+        val max = maxOf(c[0], c[1], c[2])
+        val min = minOf(c[0], c[1], c[2])
+        val v = max / 255f
+        val sat = if (max == 0) 0f else (max - min).toFloat() / max
+        return sat to v
     }
 
     /**
@@ -239,8 +256,15 @@ object AnswerColorDetector {
      *
      * Renk adına göre kural yazmak yerine yapıya bakıyoruz: diğerleri birbirinin
      * tıpatıp aynısıyken tek bir şık ayrışıyorsa doğru cevap odur.
+     *
+     * **Ekranın gerçekten karartılmış olması şart.** Bu kural eskiden rengin
+     * ne kadar koyu olduğuna hiç bakmıyordu; şıklar beyazken bile "biri
+     * ötekilerden farklı" deyip süre dolmuş sayabiliyordu. Şıkların
+     * belirme/vurgulanma animasyonu tam da bu deseni üretiyor ve sonuç soruya
+     * yanlış bir doğru cevap yazmak oluyordu. Artık ayrışan şıkkın *dışındaki*
+     * grup koyu değilse karar verilmiyor.
      */
-    private fun dimmedOutlier(colors: List<IntArray>): Int? {
+    internal fun dimmedOutlier(colors: List<IntArray>): Int? {
         if (colors.size < 4) return null
         if (colors.count { isNearWhite(it) } > 1) return null
 
@@ -252,9 +276,17 @@ object AnswerColorDetector {
             }
             if (maxAmongOthers > OTHERS_MAX_SPREAD) continue
 
+            // Dokunulmamış şıklar karartılmış olmalı. Değilse bu bir karar
+            // ekranı değil, olsa olsa bir animasyon karesidir.
+            if (others.any { brightness(it) > DIM_MAX_BRIGHTNESS }) continue
+
             val gap = others.minOf { distance(colors[i], it) }
             if (gap < OUTLIER_MIN_GAP) continue
 
+            // Ayrışan şık ötekilerden daha koyu ya da daha doygun olmalı.
+            // Yön kontrolü bilerek tek taraflı: ekran geçişlerinde şıklar
+            // sırayla sönüyor ve bir kare boyunca "üçü koyu, biri parlak"
+            // deseni oluşuyor. Bu desene cevap yazmak arşive çöp yazmak olur.
             val (s0, v0) = satVal(colors[i])
             val (s1, v1) = satVal(others[0])
             if (v0 <= v1 - 0.08f || s0 >= s1 + 0.10f) return i

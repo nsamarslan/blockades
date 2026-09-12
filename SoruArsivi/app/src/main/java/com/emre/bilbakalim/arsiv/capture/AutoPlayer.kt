@@ -37,20 +37,6 @@ class AutoPlayer(
     private val log: (String) -> Unit
 ) {
 
-    /**
-     * Dokunulmuş son karşılaşmanın kimliği — aynı soruya iki kez basmamak için.
-     *
-     * Soru kimliği değil **karşılaşma** kimliği tutuluyor: aynı soru sonraki
-     * turlarda yeniden çıktığında veritabanı kimliği aynı olur, ama o yeni bir
-     * karşılaşmadır ve yeniden cevaplanması gerekir.
-     */
-    @Volatile var answeredToken = -1L
-        private set
-
-    /** Dokunmayı deneyip beceremediğimiz karşılaşma ve kaç kez denendiği. */
-    @Volatile private var attemptToken = -1L
-    @Volatile private var attempts = 0
-
     // "Tekrar oyna" düğmesi yoklaması: aynı düğmeye üst üste basıp
     // duran bir döngüye girmemek için sayaç tutuyoruz.
     @Volatile private var lastButtonAt = 0L
@@ -76,45 +62,29 @@ class AutoPlayer(
 
     /** Mod kapatıldığında ya da servis düştüğünde her şeyi unut. */
     fun reset() {
-        answeredToken = -1L
-        attemptToken = -1L
-        attempts = 0
         noteQuestion()
     }
 
     /**
-     * Şıklardan birine dokunur ve seçilen şıkkın sırasını döndürür.
+     * Hangi şıkka dokunulacağına karar verir.
      *
-     * [token] bu karşılaşmayı ayırt eder; aynı karşılaşmaya ikinci kez
-     * dokunulmaz. [knownCorrect] verilmişse (arşivde cevabı olan bir soruysa
-     * ve ayarlardan açıksa) doğru şıkka basılır, yoksa seçim rastgeledir.
-     *
-     * Dokunuş birkaç kez üst üste başarısız olursa bu karşılaşmadan vazgeçilir:
-     * süre dolunca oyun doğru cevabı zaten açıyor, uygulama da onu okuyor.
+     * [knownCorrect] verilmişse (soru arşivde var, cevabı biliniyor ve ayar
+     * açık) o şık seçilir; yoksa seçim rastgeledir.
      */
-    suspend fun answer(token: Long, rects: List<Rect>, knownCorrect: Int?): Int? {
-        if (rects.size < 2 || token == answeredToken) return null
+    fun pickOption(count: Int, knownCorrect: Int?): Int =
+        knownCorrect?.takeIf { it in 0 until count } ?: Random.nextInt(count)
 
-        if (token != attemptToken) {
-            attemptToken = token
-            attempts = 0
-        }
-        if (attempts >= MAX_TAP_ATTEMPTS) {
-            answeredToken = token
-            return null
-        }
-        attempts++
-
-        val index = knownCorrect?.takeIf { it in rects.indices } ?: Random.nextInt(rects.size)
-        val r = rects[index]
-        if (!tap(r.centerX(), r.centerY())) {
-            Log.w(TAG, "Şıkka dokunulamadı (${'A' + index}, deneme $attempts)")
-            if (attempts >= MAX_TAP_ATTEMPTS) answeredToken = token
-            return null
-        }
-        answeredToken = token
-        tapCount++
-        return index
+    /**
+     * Verilen şıkka dokunur.
+     *
+     * [longPress] yeniden denemelerde açılıyor: oyun kısa dokunuşu bazen
+     * yutuyor, biraz daha uzun basmak onu aşıyor.
+     */
+    suspend fun tapOption(rects: List<Rect>, index: Int, longPress: Boolean): Boolean {
+        val r = rects.getOrNull(index) ?: return false
+        val ok = tap(r.centerX(), r.centerY(), longPress)
+        if (ok) tapCount++ else Log.w(TAG, "Şıkka dokunulamadı (${'A' + index})")
+        return ok
     }
 
     /**
@@ -152,7 +122,7 @@ class AutoPlayer(
         }
 
         lastButtonAt = now
-        if (!tap(target.bounds.centerX(), target.bounds.centerY())) return null
+        if (!tap(target.bounds.centerX(), target.bounds.centerY(), longPress = false)) return null
         restartCount++
         return target.text
     }
@@ -213,7 +183,7 @@ class AutoPlayer(
      * çağrı ana iş parçacığından yapılmalı ve sonuç geri çağrısı gelmezse
      * (nadiren oluyor) sonsuza kadar beklememek için zaman aşımı gerekiyor.
      */
-    private suspend fun tap(x: Int, y: Int): Boolean {
+    private suspend fun tap(x: Int, y: Int, longPress: Boolean): Boolean {
         val (w, h) = ProjectionService.screenSize(service)
         val px = x.coerceIn(1, (w - 2).coerceAtLeast(1)).toFloat()
         val py = y.coerceIn(1, (h - 2).coerceAtLeast(1)).toFloat()
@@ -223,7 +193,12 @@ class AutoPlayer(
                 suspendCancellableCoroutine<Boolean> { cont ->
                     val path = Path().apply { moveTo(px, py) }
                     val gesture = GestureDescription.Builder()
-                        .addStroke(GestureDescription.StrokeDescription(path, 0L, TAP_DURATION_MS))
+                        .addStroke(
+                            GestureDescription.StrokeDescription(
+                                path, 0L,
+                                if (longPress) LONG_TAP_DURATION_MS else TAP_DURATION_MS
+                            )
+                        )
                         .build()
                     val callback = object : AccessibilityService.GestureResultCallback() {
                         override fun onCompleted(d: GestureDescription?) {
@@ -252,10 +227,10 @@ class AutoPlayer(
 
         /** Dokunuşun ekranda kaldığı süre. */
         private const val TAP_DURATION_MS = 80L
+        /** Yeniden denemede daha uzun basılır. */
+        private const val LONG_TAP_DURATION_MS = 160L
         /** Geri çağrı gelmezse bu kadar sonra vazgeç. */
         private const val TAP_TIMEOUT_MS = 1500L
-        /** Aynı soruya en fazla kaç kez dokunmayı dene. */
-        private const val MAX_TAP_ATTEMPTS = 3
         /** İki düğme dokunuşu arasındaki en az süre. */
         private const val BUTTON_GAP_MS = 1600L
         /** Aynı düğmeye üst üste bu kadar basıp sonuç alamazsak ara veririz. */

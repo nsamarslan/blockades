@@ -130,6 +130,18 @@ dokunurken rastgele seçime düşülür, kaydederken satır olduğu gibi bırak�
 Yanlış şıkka basmak ya da arşive yanlış cevap yazmaktansa bilmediğini söylemek
 yeğdir.
 
+### Dokunuş yutulursa ne oluyor?
+
+Jest sisteme başarıyla gönderilse bile oyunun onu yuttuğu oluyor: soru ekranda
+kalıyor, uygulama ise dokunduğunu sanıp bekliyordu. Sonuç, süre dolana kadar
+boşa geçen bir dakikaydı.
+
+Artık dokunuş **doğrulanıyor**: soru hâlâ cevaplanmamışsa 2,5 saniye sonra
+aynı şıkka yeniden dokunuluyor (bu sefer biraz daha uzun basarak), en fazla
+üç kez. Ayrıca şıklar animasyonla yerine oturduğu için, soru her yeniden
+okunduğunda şık kutuları tazeleniyor — ilk okumadaki konum kaymışsa dokunuş
+boşluğa gitmiyor.
+
 ### Güvenlik frenleri
 
 * Yalnızca **tanıdığı** yazılara basar. "Çıkış", "Hayır", "Vazgeç" listede yok.
@@ -414,6 +426,23 @@ Burada renk adına göre kural yazmak kırılgan olurdu. Onun yerine **yapıya**
 bakılıyor: diğer üç şık birbirinin tıpatıp aynısıyken tek bir şık ayrışıyorsa,
 doğru cevap odur. Bu kural oyunun renkleri değişse bile ayakta kalır ve
 yalnızca ekran kararmışken — yani şıklar beyaz değilken — devreye girer.
+
+Bu kuralın iki freni var, çünkü yanlış tetiklendiğinde arşive **yanlış bir
+doğru cevap** yazıyor ve otomatik mod sonraki turlarda o yanlış şıkka basmaya
+başlıyor — sessiz ve kalıcı bir hata:
+
+* **Ekran gerçekten karartılmış olmalı.** Kural eskiden rengin ne kadar koyu
+  olduğuna hiç bakmıyordu; şıklar bembeyazken bile "biri ötekilerden farklı"
+  deyip süre dolmuş sayabiliyordu. Şıkların beliriş animasyonu tam da bu
+  deseni üretiyor.
+* **Soru ekranda en az beş saniyedir duruyor olmalı.** Sayaç bir dakikanın
+  üstünde olduğu için bu eşik gerçek bir süre dolmasını hiç kaçırmaz, ama
+  soru belirir belirmez gelen animasyon karelerini eler.
+
+Ayrışan şıkkın ötekilerden **daha koyu ya da daha doygun** olması da şart.
+Yön kontrolü bilerek tek taraflı: ekran geçişlerinde şıklar sırayla sönüyor
+ve bir kare boyunca "üçü koyu, biri parlak" deseni oluşuyor; o kareye cevap
+yazmak arşive çöp yazmak olurdu.
 
 Doğru cevap yine kaydedilir, kaynak olarak `süre doldu` yazar, ama **deneme
 sayılmaz**. Soru 3 kez çıkıp birinde süreye takıldıysan başarı oranın diğer

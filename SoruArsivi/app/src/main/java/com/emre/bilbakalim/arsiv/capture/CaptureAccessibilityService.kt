@@ -77,6 +77,8 @@ class CaptureAccessibilityService : AccessibilityService() {
     @Volatile private var lastFrameSig: IntArray? = null
     /** Ekranda en son ne zaman gerçek bir soru görüldü (otomatik mod için). */
     @Volatile private var lastQuestionAt = 0L
+    /** Tur sonu ekranında en son hangi yazıları gördük — günlük tekrarı olmasın. */
+    @Volatile private var lastIdleScreen: String? = null
     /**
      * Cevabı açılmayı bekleyen soru.
      *
@@ -86,7 +88,15 @@ class CaptureAccessibilityService : AccessibilityService() {
      */
     private data class PendingAnswer(
         val id: Long,
-        val rects: List<Rect>,
+        /**
+         * Şıkların ekrandaki kutuları.
+         *
+         * Değişebilir: şıklar animasyonla yerine oturduğu için ilk okumadaki
+         * konumlar birkaç yüz milisaniye sonra kaymış olabiliyor. Aynı soru
+         * yeniden okunduğunda tazeleniyor ki hem renk ölçümü hem de otomatik
+         * dokunuş güncel konuma baksın.
+         */
+        var rects: List<Rect>,
         /**
          * Şıkların **ekrandaki** metinleri, [rects] ile aynı sırada.
          *
@@ -110,7 +120,12 @@ class CaptureAccessibilityService : AccessibilityService() {
         var pendingIndex: Int? = null,
         var pendingSince: Long = 0L,
         /** Günlüğe aynı deseni tekrar tekrar yazmamak için. */
-        var lastSummary: String? = null
+        var lastSummary: String? = null,
+        /** Otomatik modda bu soruya kaç kez dokunuldu ve en son ne zaman. */
+        var taps: Int = 0,
+        var lastTapAt: Long = 0L,
+        /** Seçilen şık — yeniden denemelerde aynısına basılır. */
+        var chosenIndex: Int? = null
     )
     @Volatile private var pendingAnswer: PendingAnswer? = null
     @Volatile private var burstJob: Job? = null
@@ -385,8 +400,12 @@ class CaptureAccessibilityService : AccessibilityService() {
         }
         // Ekranda gerçek bir soru var: tur sonu yoklamasının sayacı sıfırlanır.
         lastQuestionAt = SystemClock.uptimeMillis()
+        lastIdleScreen = null
         if (s.autoPlay) auto.noteQuestion()
         if (p.key == lastKey) {
+            // Şıklar animasyonla yerine oturuyor; bekleyen sorunun kutularını
+            // tazeliyoruz ki dokunuş kaymış bir konuma gitmesin.
+            pendingAnswer?.let { if (it.id == currentEncounterId) it.rects = p.optionRects }
             shot?.let { if (!it.isRecycled) it.recycle() }
             return
         }
@@ -463,10 +482,18 @@ class CaptureAccessibilityService : AccessibilityService() {
      */
     private fun autoAnswerTick(s: Prefs.Settings, screenW: Int, screenH: Int) {
         val waiting = pendingAnswer ?: return
-        if (waiting.bornAt == auto.answeredToken) return
         if (waiting.rects.size < 2) return
-        if (SystemClock.uptimeMillis() - waiting.bornAt < s.autoAnswerDelayMs) return
+        if (waiting.taps >= AUTO_MAX_TAPS) return
         if (autoJob?.isActive == true) return
+
+        // İlk dokunuş şıklar yerine otursun diye bekliyor. Sonrakiler yeniden
+        // deneme: jest sisteme başarıyla gönderilse bile oyunun onu yuttuğu
+        // oluyor ve soru ekranda süre dolana kadar öylece kalıyordu. Cevap
+        // açılınca soru kapandığı için fazladan dokunuş atılmıyor.
+        val now = SystemClock.uptimeMillis()
+        val due = if (waiting.taps == 0) waiting.bornAt + s.autoAnswerDelayMs
+                  else waiting.lastTapAt + AUTO_RETAP_MS
+        if (now < due) return
 
         autoJob = scope.launch {
             val cur = prefs.state.value
@@ -481,15 +508,24 @@ class CaptureAccessibilityService : AccessibilityService() {
                 runCatching { repo.knownAnswerOnScreen(waiting.id, waiting.options) }.getOrNull()
             } else null
 
-            val index = auto.answer(waiting.bornAt, waiting.rects, known)
-            if (index == null) {
+            val retry = waiting.taps > 0
+            val index = waiting.chosenIndex
+                ?: auto.pickOption(waiting.rects.size, known).also { waiting.chosenIndex = it }
+
+            // Sayaçlar dokunuştan önce artıyor: jest başarısız olsa bile bu
+            // bir denemedir, yoksa saniyede birkaç kez yeniden denenirdi.
+            waiting.taps++
+            waiting.lastTapAt = SystemClock.uptimeMillis()
+
+            if (!auto.tapOption(waiting.rects, index, longPress = retry)) {
                 log("otomatik: #${waiting.id} şıkkına dokunulamadı")
                 return@launch
             }
             log(
                 "OTOMATİK #${waiting.id} → ${'A' + index} · " +
-                    "${if (known != null) "bilinen cevap" else "rastgele"} · " +
-                    "bu oturumda ${auto.tapCount} cevap"
+                    (if (known != null) "bilinen cevap" else "rastgele") +
+                    (if (retry) " · ${waiting.taps}. deneme" else "") +
+                    " · bu oturumda ${auto.tapCount} cevap"
             )
             // Dokunduk; karar bir iki saniyede açılıp geçecek. Renk turunu
             // hemen başlatıyoruz ki cevabı kaçırmayalım.
@@ -520,12 +556,36 @@ class CaptureAccessibilityService : AccessibilityService() {
         // "Atla"/"Devam" gibi yazılara ancak ekran iyice uzun süredir
         // kımıldamıyorsa dokunuruz; "Tekrar Oyna" için o kadar beklemeye gerek yok.
         val allowDismiss = SystemClock.uptimeMillis() - lastQuestionAt > AUTO_DISMISS_IDLE_MS
-        val pressed = auto.pressContinue(items, screenH, allowDismiss) ?: return
+        val pressed = auto.pressContinue(items, screenH, allowDismiss)
+        if (pressed == null) {
+            // Basılacak bir şey bulamadıysak ekranda ne yazdığını bir kez
+            // günlüğe düşürüyoruz. Tur sonu ekranı oyundan oyuna değişiyor;
+            // hangi düğmenin tanınmadığını ancak böyle görebiliyoruz.
+            logIdleScreen(items)
+            return
+        }
         log("OTOMATİK: \"$pressed\" → yeni tur (${auto.restartCount}. kez)")
         // Ekran değişecek; bir sonraki kare yeniden okunsun.
         lastFrameSig = null
         lastKey = null
         pendingAnswer = null
+    }
+
+    /**
+     * Tur sonu ekranında tanıdık bir düğme bulunamadığında ekrandaki yazıları
+     * bir kez günlüğe yazar. Aynı ekran için tekrar tekrar yazmaz.
+     */
+    private fun logIdleScreen(items: List<TextItem>) {
+        val labels = items
+            .filter { it.text.trim().length in 2..28 }
+            .sortedBy { it.centerY }
+            .takeLast(6)
+            .map { it.text.trim().replace('\n', ' ') }
+        if (labels.isEmpty()) return
+        val line = labels.joinToString(" | ")
+        if (line == lastIdleScreen) return
+        lastIdleScreen = line
+        log("tur sonu · tanınan düğme yok · ekranda: $line")
     }
 
     private fun scaleRect(r: Rect, fromW: Int, fromH: Int, toW: Int, toH: Int): Rect {
@@ -603,7 +663,12 @@ class CaptureAccessibilityService : AccessibilityService() {
         waiting.greenIndex = null
 
         // --- 2. Süre dolmuş, ekran kararmış mı? ------------------------------
-        val dimmed = a.dimmedReveal
+        // Süre gerçekten dolduysa soru ekranda çoktandır duruyordur. Soru
+        // belirdikten hemen sonra gelen ölçüm şıkların beliriş animasyonudur;
+        // eskiden bunu süre dolmuş sanıp arşive yanlış cevap yazıyorduk.
+        val dimmed = a.dimmedReveal?.takeIf {
+            SystemClock.uptimeMillis() - waiting.bornAt >= MIN_TIMEOUT_MS
+        }
         if (dimmed != null) {
             repo.recordReveal(
                 id = waiting.id,
@@ -965,6 +1030,16 @@ class CaptureAccessibilityService : AccessibilityService() {
         private const val GREEN_CONFIRM_MS = 300L
         /** Bu süre içinde aynı soruya ikinci kez cevap yazılmaz. */
         private const val ANSWER_COOLDOWN_MS = 20_000L
+        /** Otomatik modda bir soruya en fazla kaç kez dokunulur. */
+        private const val AUTO_MAX_TAPS = 3
+        /** Dokunuşa yanıt gelmezse bu kadar sonra yeniden denenir. */
+        private const val AUTO_RETAP_MS = 2500L
+        /**
+         * "Süre doldu" kararı için sorunun ekranda durması gereken en az süre.
+         * Oyunun sayacı bir dakikanın üstünde olduğu için bu eşik gerçek bir
+         * süre dolmasını hiçbir zaman kaçırmaz.
+         */
+        private const val MIN_TIMEOUT_MS = 5_000L
         private const val VERDICT_TRIES_SLOW = 5
         /** Kare imzası çözünürlüğü. */
         private const val SIG_W = 24
