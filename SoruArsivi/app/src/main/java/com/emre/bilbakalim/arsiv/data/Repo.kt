@@ -2,6 +2,7 @@ package com.emre.bilbakalim.arsiv.data
 
 import android.content.Context
 import android.util.Log
+import com.emre.bilbakalim.arsiv.util.Importers
 import com.emre.bilbakalim.arsiv.util.TurkishText
 import kotlinx.coroutines.flow.Flow
 
@@ -56,80 +57,38 @@ class Repo private constructor(context: Context) {
         // açılıyor ve cevap ona yazılıyor. Eski satır sonsuza kadar "cevabı
         // eksik" olarak duruyordu. Artık o satır bulunup doldurulacak.
         //
-        // İki ayrı kusuru birden yakalıyoruz:
-        //  1. OCR bir iki harfi yanlış okudu  -> benzerlik ölçüsü
-        //  2. Soru ekrana yazılırken yarım yakalandı ("...kaç" / "...kaç adettir?")
-        //     ya da üstüne "Süre Bitti" gibi bir kelime bindi -> kapsama ölçüsü
-        // İkincisi olmadan aynı soru iki ayrı kayıt olarak duruyordu.
-        val newKey = TurkishText.normalizeKey(q)
-        val newOptKey = opts.map { TurkishText.normalizeKey(it) }.sorted().joinToString("|")
-        val newNeg = TurkishText.negationSignature(q)
-
-        val pool = (dao.recent(RECENT_POOL) + dao.unanswered(UNANSWERED_POOL))
-            .distinctBy { it.id }
-
-        for (old in pool) {
-            // Olumsuzluk farkı varsa hiçbir benzerlik ölçüsü bunları
-            // birleştiremez — zıt anlamlı iki ayrı sorudur.
-            if (TurkishText.negationSignature(old.questionText) != newNeg) continue
-
-            val oldKey = TurkishText.normalizeKey(old.questionText)
-            val sim = TurkishText.similarity(old.questionText, q)
-
-            val optionsMatch = opts.size >= 3 && old.options.size == opts.size &&
-                old.options.map { TurkishText.normalizeKey(it) }.sorted()
-                    .joinToString("|") == newOptKey
-
-            // Yarım yakalanmış okuma ("…kaç" ile "…kaç adettir?"). Bir sorunun
-            // metninin başka bir soruda geçmesi onu aynı soru yapmaz; bu yüzden
-            // hem uzunluklar birbirine çok yakın olmalı hem de ya şıklar birebir
-            // aynı olmalı ya da fark çok küçük olmalı.
-            val lengthRatio = minOf(oldKey.length, newKey.length).toFloat() /
-                maxOf(oldKey.length, newKey.length).coerceAtLeast(1)
-            val contained = oldKey.length >= 12 && newKey.length >= 12 &&
-                (newKey.contains(oldKey) || oldKey.contains(newKey)) &&
-                (optionsMatch && lengthRatio >= 0.60f || lengthRatio >= 0.85f)
-
-            // Dört şıkkın tamamı birebir aynıysa neredeyse kesinlikle aynı
-            // sorudur. Metnin başına "17. Süre Bitti" gibi bir fazlalık
-            // yapışıp üstüne bir de OCR harf hatası olunca ne kapsama ne
-            // benzerlik tutuyordu; şıklar bu ikisini de kurtarıyor.
-            // Dört şık birebir aynı olsa bile metinler birbirinden çok
-            // farklıysa ayrı sorulardır ("Hangisi X'tir?" / "Hangisi X
-            // değildir?" aynı şıkları paylaşabiliyor). Bu yüzden eşik yüksek.
-            val sameOptions = optionsMatch && sim >= 0.80f
-
-            if (contained || sameOptions || sim >= 0.92f) {
-                if (!old.edited) {
-                    // Hangi metin daha temiz? Arayüz uyarısı içermeyen kazanır;
-                    // ikisi de temizse daha uzun olanı alırız.
-                    val oldDirty = TurkishText.hasChromePhrase(old.questionText)
-                    val newDirty = TurkishText.hasChromePhrase(q)
-                    val takeNew = when {
-                        oldDirty && !newDirty -> true
-                        !oldDirty && newDirty -> false
-                        else -> q.length > old.questionText.length
-                    }
-                    if (takeNew && q != old.questionText) dao.replaceText(old.id, q)
-                    if (old.options.size < opts.size) {
-                        // Eksik şıklar tamamlanıyor — ama yeni liste o anki
-                        // ekranın sırasıyla geliyor. Kayıtta zaten bir doğru
-                        // cevap varsa sırası kayabilir; bu yüzden metnini
-                        // tutup yeni listede yeniden arıyoruz. Yoksa doğru
-                        // cevap sessizce yanlış şıkkı göstermeye başlıyordu.
-                        val merged = old.copy(
-                            optionA = opts.getOrNull(0) ?: old.optionA,
-                            optionB = opts.getOrNull(1) ?: old.optionB,
-                            optionC = opts.getOrNull(2) ?: old.optionC,
-                            optionD = opts.getOrNull(3) ?: old.optionD
-                        )
-                        val remapped = TurkishText.matchIndex(merged.options, old.correctText)
-                            ?: old.correctIndex
-                        dao.update(merged.copy(correctIndex = remapped))
-                    }
+        val probe = Probe(q, opts)
+        for (old in similarityPool()) {
+            if (!probe.matches(old)) continue
+            if (!old.edited) {
+                // Hangi metin daha temiz? Arayüz uyarısı içermeyen kazanır;
+                // ikisi de temizse daha uzun olanı alırız.
+                val oldDirty = TurkishText.hasChromePhrase(old.questionText)
+                val newDirty = TurkishText.hasChromePhrase(q)
+                val takeNew = when {
+                    oldDirty && !newDirty -> true
+                    !oldDirty && newDirty -> false
+                    else -> q.length > old.questionText.length
                 }
-                return SaveResult.Duplicate(old.id)
+                if (takeNew && q != old.questionText) dao.replaceText(old.id, q)
+                if (old.options.size < opts.size) {
+                    // Eksik şıklar tamamlanıyor — ama yeni liste o anki
+                    // ekranın sırasıyla geliyor. Kayıtta zaten bir doğru
+                    // cevap varsa sırası kayabilir; bu yüzden metnini
+                    // tutup yeni listede yeniden arıyoruz. Yoksa doğru
+                    // cevap sessizce yanlış şıkkı göstermeye başlıyordu.
+                    val merged = old.copy(
+                        optionA = opts.getOrNull(0) ?: old.optionA,
+                        optionB = opts.getOrNull(1) ?: old.optionB,
+                        optionC = opts.getOrNull(2) ?: old.optionC,
+                        optionD = opts.getOrNull(3) ?: old.optionD
+                    )
+                    val remapped = TurkishText.matchIndex(merged.options, old.correctText)
+                        ?: old.correctIndex
+                    dao.update(merged.copy(correctIndex = remapped))
+                }
             }
+            return SaveResult.Duplicate(old.id)
         }
 
         val entity = QuestionEntity(
@@ -151,6 +110,128 @@ class Repo private constructor(context: Context) {
         } else {
             SaveResult.Duplicate(dao.byFingerprint(fp)?.id ?: -1L)
         }
+    }
+
+    /**
+     * Bulanık tekrar kontrolünün baktığı kayıtlar: son kayıtlar + cevabı
+     * eksik olan bütün kayıtlar.
+     */
+    private suspend fun similarityPool(): List<QuestionEntity> =
+        (dao.recent(RECENT_POOL) + dao.unanswered(UNANSWERED_POOL)).distinctBy { it.id }
+
+    /**
+     * "Bu soru zaten arşivde mi?" kararını veren kurallar.
+     *
+     * Tek yerde duruyor çünkü iki ayrı yol aynı kararı vermek zorunda:
+     * ekrandan yakalama ([save]) ve yedekten içe aktarma ([importJson]).
+     * Aranan metin için gereken hesaplar bir kez yapılıp saklanıyor —
+     * karşılaştırma yüzlerce kayıt üzerinde dönüyor.
+     */
+    private class Probe(private val question: String, private val options: List<String>) {
+        private val key = TurkishText.normalizeKey(question)
+        private val optKey =
+            options.map { TurkishText.normalizeKey(it) }.sorted().joinToString("|")
+        private val negation = TurkishText.negationSignature(question)
+
+        fun matches(old: QuestionEntity): Boolean {
+            // Olumsuzluk farkı varsa hiçbir benzerlik ölçüsü bunları
+            // birleştiremez — zıt anlamlı iki ayrı sorudur.
+            if (TurkishText.negationSignature(old.questionText) != negation) return false
+
+            val oldKey = TurkishText.normalizeKey(old.questionText)
+            val sim = TurkishText.similarity(old.questionText, question)
+
+            val optionsMatch = options.size >= 3 && old.options.size == options.size &&
+                old.options.map { TurkishText.normalizeKey(it) }.sorted()
+                    .joinToString("|") == optKey
+
+            // Yarım yakalanmış okuma ("…kaç" ile "…kaç adettir?"). Bir sorunun
+            // metninin başka bir soruda geçmesi onu aynı soru yapmaz; bu yüzden
+            // hem uzunluklar birbirine çok yakın olmalı hem de ya şıklar birebir
+            // aynı olmalı ya da fark çok küçük olmalı.
+            val lengthRatio = minOf(oldKey.length, key.length).toFloat() /
+                maxOf(oldKey.length, key.length).coerceAtLeast(1)
+            val contained = oldKey.length >= 12 && key.length >= 12 &&
+                (key.contains(oldKey) || oldKey.contains(key)) &&
+                (optionsMatch && lengthRatio >= 0.60f || lengthRatio >= 0.85f)
+
+            // Dört şıkkın tamamı birebir aynıysa neredeyse kesinlikle aynı
+            // sorudur. Metnin başına "17. Süre Bitti" gibi bir fazlalık
+            // yapışıp üstüne bir de OCR harf hatası olunca ne kapsama ne
+            // benzerlik tutuyordu; şıklar bu ikisini de kurtarıyor.
+            // Dört şık birebir aynı olsa bile metinler birbirinden çok
+            // farklıysa ayrı sorulardır ("Hangisi X'tir?" / "Hangisi X
+            // değildir?" aynı şıkları paylaşabiliyor). Bu yüzden eşik yüksek.
+            val sameOptions = optionsMatch && sim >= 0.80f
+
+            return contained || sameOptions || sim >= 0.92f
+        }
+    }
+
+    // --- İçe aktarma ---------------------------------------------------------
+
+    sealed interface ImportResult {
+        /** [total] dosyadaki okunabilir satır sayısı. */
+        data class Ok(
+            val total: Int,
+            val added: Int,
+            val merged: Int,
+            val skipped: Int
+        ) : ImportResult
+
+        data class Failed(val reason: String) : ImportResult
+    }
+
+    /**
+     * JSON yedeğini arşive katar.
+     *
+     * Var olanın üstüne yazmaz, ekler: aynı soru zaten arşivdeyse yalnızca
+     * eksikleri tamamlanır (bilinmeyen cevap, eksik şık, boş kategori).
+     * Sayaçlarda büyük olan alındığı için aynı dosyayı iki kez içe aktarmak
+     * hiçbir şeyi bozmaz — ikinci seferde her şey "değişmedi" diye geçer.
+     */
+    suspend fun importJson(text: String): ImportResult {
+        val rows = try {
+            Importers.parse(text)
+        } catch (e: IllegalArgumentException) {
+            return ImportResult.Failed(e.message ?: "Dosya okunamadı")
+        }
+        if (rows.isEmpty()) return ImportResult.Failed("Dosyada okunabilir soru yok")
+
+        var added = 0
+        var merged = 0
+        var skipped = 0
+
+        for (row in rows) {
+            val incoming = Importers.toEntity(row)
+            val existing = dao.byFingerprint(incoming.fingerprint)
+                ?: Probe(row.question, row.options).let { probe ->
+                    similarityPool().firstOrNull { probe.matches(it) }
+                }
+
+            if (existing == null) {
+                if (dao.insertIgnore(incoming) > 0) added++ else skipped++
+                continue
+            }
+
+            val updated = Importers.merge(existing, row)
+            if (updated == existing) {
+                skipped++
+                continue
+            }
+            // Şıklar tamamlandıysa parmak izi de değişir; o parmak izi başka
+            // bir satırda duruyorsa tekil indeks yazmayı reddeder. Böyle bir
+            // durumda kaydı eski parmak iziyle güncelliyoruz: birleşmenin
+            // geri kalanı yine de kazanç.
+            val ok = runCatching { dao.update(updated) }.isSuccess
+            if (!ok) {
+                runCatching { dao.update(updated.copy(fingerprint = existing.fingerprint)) }
+            }
+            merged++
+        }
+
+        Log.i(TAG, "İçe aktarma: $added yeni, $merged birleşti, $skipped değişmedi")
+        return ImportResult.Ok(rows.size, added, merged, skipped)
     }
 
     /**

@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Drawable
+import android.net.Uri
 import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -109,6 +110,32 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun updateQuestion(q: QuestionEntity) = viewModelScope.launch { repo.updateManual(q) }
     fun deleteQuestion(id: Long) = viewModelScope.launch { repo.delete(id) }
     fun deleteAll() = viewModelScope.launch { repo.deleteAll() }
+
+    /**
+     * Seçilen dosyadaki yedeği arşive katar.
+     *
+     * Dosya kullanıcının seçtiği herhangi bir yerde olabilir (indirilenler,
+     * bulut sürücüsü, mesajlaşma uygulaması); bu yüzden yolu değil içerik
+     * çözücüyü kullanıyoruz.
+     */
+    fun importFrom(context: Context, uri: Uri, onDone: (Repo.ImportResult) -> Unit) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                val text = runCatching {
+                    context.contentResolver.openInputStream(uri)?.use {
+                        it.readBytes().toString(Charsets.UTF_8)
+                    }
+                }.getOrNull()
+                when {
+                    text == null -> Repo.ImportResult.Failed("Dosya açılamadı")
+                    text.isBlank() -> Repo.ImportResult.Failed("Dosya boş")
+                    else -> runCatching { repo.importJson(text) }
+                        .getOrElse { Repo.ImportResult.Failed(it.message ?: "Okunamadı") }
+                }
+            }
+            onDone(result)
+        }
+    }
 
     fun export(context: Context, format: Exporters.Format, onDone: (File?) -> Unit) {
         viewModelScope.launch {

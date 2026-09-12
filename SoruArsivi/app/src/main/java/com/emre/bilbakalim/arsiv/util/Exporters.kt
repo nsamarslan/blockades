@@ -101,6 +101,10 @@ object Exporters {
                     put("dogruBildigin", r.correctCount)
                     put("basariYuzde", r.successRate ?: JSONObject.NULL)
                     put("tarih", r.capturedAt)
+                    // Yedeğin geri yüklenebilmesi için: elle düzeltilmiş
+                    // kayıtlar içe aktarmada korunuyor.
+                    put("elleDuzenlendi", r.edited)
+                    put("not", r.note ?: JSONObject.NULL)
                 }
             )
         }

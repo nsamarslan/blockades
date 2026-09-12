@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Refresh
@@ -39,6 +40,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.emre.bilbakalim.arsiv.data.Repo
+import com.emre.bilbakalim.arsiv.util.Exporters
 
 @Composable
 fun SettingsScreen(
@@ -50,6 +55,27 @@ fun SettingsScreen(
     val context = LocalContext.current
     val s by vm.settings.collectAsState()
     var confirmWipe by remember { mutableStateOf(false) }
+    var backupMessage by remember { mutableStateOf<String?>(null) }
+
+    // Kullanıcının seçtiği yedek dosyası. Dosya yöneticileri JSON'u bazen
+    // "application/octet-stream" diye etiketlediği için tür süzgeci koymuyoruz;
+    // yanlış dosya seçilirse zaten anlaşılır bir hata veriyoruz.
+    val pickBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        vm.importFrom(context, uri) { result ->
+            backupMessage = when (result) {
+                is Repo.ImportResult.Ok -> buildString {
+                    append(result.added).append(" yeni soru eklendi.\n")
+                    append(result.merged).append(" kayıt tamamlandı (eksik cevap, şık, kategori).\n")
+                    append(result.skipped).append(" kayıtta değişiklik yoktu.\n\n")
+                    append("Dosyadaki toplam kayıt: ").append(result.total)
+                }
+                is Repo.ImportResult.Failed -> "İçe aktarılamadı: ${result.reason}"
+            }
+        }
+    }
 
     Scaffold(topBar = { ArsivTopBar("Ayarlar", onBack = onBack) }) { pad ->
         LazyColumn(
@@ -307,6 +333,45 @@ fun SettingsScreen(
             }
 
             item {
+                SectionCard("Yedekleme", Icons.Default.Backup) {
+                    Text(
+                        "Arşivi JSON olarak dışa aktarıp saklayabilir, sonra buradan " +
+                            "geri yükleyebilirsin. Uygulamayı silip yeniden kurman " +
+                            "gerektiğinde sorularını böyle taşırsın.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "İçe aktarma hiçbir şeyi silmez: aynı soru arşivde zaten varsa " +
+                            "yalnızca eksikleri tamamlanır. Aynı dosyayı iki kez almanın " +
+                            "zararı yok.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                vm.export(context, Exporters.Format.JSON) { file ->
+                                    if (file == null) {
+                                        backupMessage = "Dışa aktarılacak kayıt yok."
+                                    } else {
+                                        Exporters.share(context, file, Exporters.Format.JSON)
+                                    }
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Dışa aktar") }
+                        Button(
+                            onClick = { pickBackup.launch(arrayOf("*/*")) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("İçe aktar") }
+                    }
+                }
+            }
+
+            item {
                 SectionCard("Tehlikeli bölge") {
                     Button(
                         onClick = { confirmWipe = true },
@@ -322,6 +387,17 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    backupMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { backupMessage = null },
+            title = { Text("Yedekleme") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = { backupMessage = null }) { Text("Tamam") }
+            }
+        )
     }
 
     if (confirmWipe) {

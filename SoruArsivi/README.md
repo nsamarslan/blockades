@@ -266,6 +266,32 @@ Pil için: her yoklamada ekranın kaba bir imzası çıkarılır; görüntü bir
 turla neredeyse aynıysa OCR hiç çalıştırılmaz. Geri sayan sayaç gibi küçük
 değişiklikler "aynı ekran" sayılır.
 
+## Yedekleme: dışa ve içe aktarma
+
+Ayarlar → **Yedekleme** altında iki düğme var.
+
+* **Dışa aktar** — arşivi JSON olarak verir; paylaş menüsünden istediğin yere
+  kaydedebilirsin.
+* **İçe aktar** — kaydettiğin JSON'u geri yükler.
+
+Uygulamayı silip yeniden kurman gerektiğinde (ya da telefon değiştirdiğinde)
+sorularını böyle taşırsın. **Silmeden önce dışa aktarmayı unutma:** uygulama
+kaldırılınca veritabanı da gider.
+
+İçe aktarma **hiçbir şeyi silmez, hiçbir şeyi ezmez** — ekler ve tamamlar:
+
+* Soru arşivde yoksa yeni kayıt olarak eklenir.
+* Varsa yalnızca **eksikleri** tamamlanır: bilinmeyen doğru cevap, eksik şık,
+  boş kategori. Cihazdaki kayıt neyi biliyorsa o kalır.
+* Sayaçlarda ("kaç kez çıktı", "kaç denemede bildin") toplama değil **büyük
+  olan** alınır. Bu yüzden aynı dosyayı iki kez içe aktarmanın zararı yoktur;
+  ikinci seferde her şey "değişmedi" diye geçer.
+* Şıklar karışık sırada olsa bile doğru cevap sıraya göre değil **metnine
+  göre** yerleştirilir — yedekteki 2. şık cihazdaki 4. şık olabilir.
+
+Sonunda kaç kayıt eklendiği, kaçının tamamlandığı ve kaçının değişmediği
+ekranda yazar.
+
 ## Dışa aktarma
 
 Arşiv ekranının sağ üstündeki paylaş simgesi:

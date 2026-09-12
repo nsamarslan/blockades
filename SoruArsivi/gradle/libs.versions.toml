@@ -9,6 +9,7 @@ composeBom = "2024.12.01"
 room = "2.6.1"
 mlkitText = "16.0.1"
 junit = "4.13.2"
+jsonJvm = "20240303"
 
 [libraries]
 androidx-core-ktx           = { group = "androidx.core",             name = "core-ktx",                       version.ref = "coreKtx" }
@@ -28,6 +29,7 @@ androidx-room-ktx           = { group = "androidx.room",             name = "roo
 androidx-room-compiler      = { group = "androidx.room",             name = "room-compiler",                  version.ref = "room" }
 mlkit-text-recognition      = { group = "com.google.mlkit",          name = "text-recognition",               version.ref = "mlkitText" }
 junit                       = { group = "junit",                     name = "junit",                          version.ref = "junit" }
+json-jvm                    = { group = "org.json",                  name = "json",                           version.ref = "jsonJvm" }
 
 [plugins]
 android-application = { id = "com.android.application",            version.ref = "agp" }
