@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.emre.bilbakalim.arsiv.capture.CaptureAccessibilityService
 
 @Composable
 fun DebugScreen(vm: ArsivViewModel, onBack: () -> Unit) {
@@ -39,10 +40,13 @@ fun DebugScreen(vm: ArsivViewModel, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                SectionCard("Tarama geçmişi (${history.size})") {
+                val visible = history.take(CaptureAccessibilityService.LOG_VISIBLE)
+                SectionCard("Tarama geçmişi (${visible.size} / ${history.size})") {
                     Text(
-                        "Her tarama tek satır. Bir tur oynayıp buraya bakarsan hangi " +
-                            "sorunun neden kaçtığı satır satır görünür.",
+                        "Her tarama tek satır. Burada son ${CaptureAccessibilityService.LOG_VISIBLE} " +
+                            "satır görünüyor; arkada ${CaptureAccessibilityService.LOG_LIMIT} satıra " +
+                            "kadar tutuluyor ve \"Paylaş\" hepsini dışarı verir. Bir sorunu fark " +
+                            "ettiğinde onu doğuran satırlar çoktan ekrandan kaymış oluyor.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -65,7 +69,7 @@ fun DebugScreen(vm: ArsivViewModel, onBack: () -> Unit) {
                         )
                     } else {
                         Text(
-                            history.joinToString("\n"),
+                            visible.joinToString("\n"),
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
                             lineHeight = 16.sp,

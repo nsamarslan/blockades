@@ -17,6 +17,11 @@ import com.emre.bilbakalim.arsiv.util.TurkishText
  */
 object QuestionParser {
 
+    /** Soru numarası ekranın sol kenarına bu kadar yakın olmalı. */
+    private const val NO_MAX_X = 0.40f
+    /** Soru metninin üstünde en fazla bu kadar uzakta olabilir. */
+    private const val NO_MAX_GAP = 0.22f
+
     /** Teşhis ekranı için: son ayrıştırmanın neden başarısız olduğu. */
     @Volatile var lastReject: String? = null
         private set
@@ -31,7 +36,16 @@ object QuestionParser {
         val options: List<String>,
         val optionRects: List<Rect>,
         val category: String?,
-        val confidence: Float
+        val confidence: Float,
+        /**
+         * Soru kartının sol üstündeki sıra numarası ("2."), okunabildiyse.
+         *
+         * Turun kaçıncı sorusunda olduğumuzun tek kararlı işareti bu. Cevap
+         * açılırken soru metni ve şıklar bozulabiliyor (puan balonu, renk
+         * animasyonu, şıkların sönmesi); numara ise gerçekten yeni soruya
+         * geçilene kadar aynı kalıyor.
+         */
+        val number: Int? = null
     ) {
         val key: String get() = TurkishText.fingerprint(question, options)
     }
@@ -51,6 +65,29 @@ object QuestionParser {
         // Süre dolunca ekrana binen uyarı — soruya yapışmasın
         "sure bitti", "süre bitti", "sure doldu", "süre doldu", "zaman doldu"
     )
+
+    /**
+     * Ekranın altındaki joker düğmeleri ve bedelleri.
+     *
+     * Bunlar şık bölgesinin alt ucuna girebiliyor ve sayı süzgeci orada
+     * gevşetildiği için şık sanılıyorlardı: arşivde gerçek şıklar yerine
+     * "50" ve "50" yazan kayıtlar bundan.
+     */
+    private val JOKERS = setOf(
+        "5050", "x2", "2x", "ciftcevap", "sorudegistir", "soruyudegistir",
+        "yarimyarim", "elemejokeri", "degistir"
+    )
+
+    /**
+     * Doğru cevaptan sonra ekrana düşen puan balonu ("+5", "5 +5").
+     *
+     * Şıkkın üstünde belirdiği için OCR bunu şık metniyle birleştirip ya da
+     * onun yerine döndürebiliyor; arşivde şıkkı "5 +5" olan sorular bundan.
+     * Kural: içinde en az bir rakam ve en az bir artı/eksi olan, bunun
+     * dışında hiçbir harf içermeyen metinler.
+     */
+    private val SCORE_POPUP =
+        Regex("^(?=[^0-9]*[0-9])(?=[^+\\-\u00b1]*[+\\-\u00b1])[0-9\\s+\\-\u00b1]+$")
 
     fun parse(
         items: List<TextItem>,
@@ -151,8 +188,52 @@ object QuestionParser {
             options = optionTexts,
             optionRects = options.map { Rect(it.bounds) },
             category = category,
-            confidence = conf
+            confidence = conf,
+            number = detectQuestionNumber(items, screenW, screenH, questionPool.minOf { it.bounds.top })
         )
+    }
+
+    /** Soru numarası balonu: "2", "2.", "2)". */
+    private val QUESTION_NO = Regex("^(\\d{1,2})\\s*[.)]?\$")
+
+    /**
+     * Soru kartının sol üstündeki sıra numarasını okur.
+     *
+     * Ekranda başka sayılar da var: altın, yıldız, sayaç, ve en tepede turun
+     * ilerleme şeridi ("1 2 3 4 5 6 7"). Doğru olanı üç işaretle ayırıyoruz:
+     *
+     *  • Aynı satırda üç ya da daha fazla sayı varsa o, ilerleme şerididir.
+     *  • Numara solda durur — sağdaki aynı hizadaki sayı geri sayım sayacı.
+     *  • Soru metnine en yakın olandır, ve ona yakın olmak zorundadır.
+     *
+     * Son kural en önemlisi: onsuz, numara bir karede okunamadığında altın
+     * sayısı gibi **hiç değişmeyen** bir sayı seçilebilir, o da "soru hâlâ
+     * aynı" demek olur ve yakalama tamamen durur. Emin olamadığımızda null
+     * dönüyoruz; çağıran taraf o zaman numarasız çalışıyor.
+     */
+    private fun detectQuestionNumber(
+        raw: List<TextItem>,
+        screenW: Int,
+        screenH: Int,
+        questionTop: Int
+    ): Int? {
+        val numeric = raw.filter { QUESTION_NO.matches(it.text.trim()) }
+        if (numeric.isEmpty()) return null
+
+        val strip = groupIntoRows(numeric, screenH)
+            .filter { it.size >= 3 }
+            .flatten()
+            .toSet()
+
+        val badge = numeric
+            .filterNot { it in strip }
+            .filter { it.centerX < screenW * NO_MAX_X }
+            .filter { it.bounds.bottom <= questionTop }
+            .filter { questionTop - it.centerY <= screenH * NO_MAX_GAP }
+            .maxByOrNull { it.centerY }
+            ?: return null
+
+        return QUESTION_NO.find(badge.text.trim())?.groupValues?.get(1)?.toIntOrNull()
     }
 
     // ---------------------------------------------------------------------------
@@ -193,6 +274,10 @@ object QuestionParser {
         if (t.none { it.isLetterOrDigit() }) return true
         // Süre bildirimi şık olamaz.
         if (t.matches(SECONDS)) return true
+        // Doğru cevaptan sonra düşen puan balonu.
+        if (t.matches(SCORE_POPUP)) return true
+        // Alttaki joker düğmeleri.
+        if (TurkishText.normalizeKey(t) in JOKERS) return true
 
         if (!inOptionArea) {
             if (t.length < 2) return true

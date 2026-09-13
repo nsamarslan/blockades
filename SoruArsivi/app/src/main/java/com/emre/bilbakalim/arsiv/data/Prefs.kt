@@ -39,7 +39,12 @@ class Prefs private constructor(context: Context) {
         val questionBottom: Float = 0.55f,
         /** Şıkların aranacağı bölge. */
         val optionsTop: Float = 0.45f,
-        val optionsBottom: Float = 0.97f,
+        /**
+         * Alt sınır ekranın en dibine kadar inmiyor: orada joker düğmeleri
+         * ve bedelleri duruyor ("50/50", "x2", "200") ve bunlar şık sanılıp
+         * arşive gerçek şıkların yerine kaydediliyordu.
+         */
+        val optionsBottom: Float = 0.90f,
         /** Bu değerin altındaki ayrıştırmalar kaydedilmez. */
         val minConfidence: Float = 0.45f,
         /** Sadece gerçekten soru cümlesine benzeyen metinleri kaydet. */
@@ -79,7 +84,7 @@ class Prefs private constructor(context: Context) {
         questionTop = sp.getFloat(K_Q_TOP, 0.08f),
         questionBottom = sp.getFloat(K_Q_BOTTOM, 0.55f),
         optionsTop = sp.getFloat(K_O_TOP, 0.45f),
-        optionsBottom = sp.getFloat(K_O_BOTTOM, 0.97f),
+        optionsBottom = sp.getFloat(K_O_BOTTOM, 0.90f),
         minConfidence = sp.getFloat(K_MIN_CONF, 0.45f),
         requireQuestionShape = sp.getBoolean(K_REQ_Q, true),
         requireFourOptions = sp.getBoolean(K_REQ_4, true),
@@ -119,7 +124,7 @@ class Prefs private constructor(context: Context) {
         putFloat(K_O_TOP, oTop); putFloat(K_O_BOTTOM, oBottom)
     }
 
-    fun resetRegions() = setRegions(0.08f, 0.55f, 0.45f, 0.97f)
+    fun resetRegions() = setRegions(0.08f, 0.55f, 0.45f, 0.90f)
 
     companion object {
         private const val K_TARGETS = "hedef_paketler"

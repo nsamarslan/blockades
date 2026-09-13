@@ -205,6 +205,42 @@ düşürecekse dokunulmaz, çünkü o zaman rozet sandıklarımız gerçekten ş
 
 Aynı düzeltme yıl, tarih ve yüzde şıklarını da kurtarıyor.
 
+## Soru numarası: "bu hâlâ aynı soru"
+
+Soru bir kez düzgün okunduktan sonra ekran değişmeye devam ediyor: cevap
+açılıyor, şıklar renk değiştiriyor, üstlerine "+5" puan balonu düşüyor,
+sonra şıklar sırayla sönüyor. Bunların hiçbiri yeni bir soru değil — ama
+metin değiştiği için parmak izi de değişiyor ve uygulama yeni soru sanıp
+bozuk bir kayıt daha açıyordu. Arşivde şıkkı **"5 +5"** olan sorular bundan.
+
+Soru kartının sol üstündeki sıra numarası ("2.") bu karmaşada değişmeyen tek
+şey. Dört şıkkıyla birlikte kaydedilen soru artık o numaraya kilitleniyor:
+numara artana kadar ekranda ne olursa olsun yeni kayıt açılmıyor (şık
+kutuları yine de tazeleniyor, çünkü otomatik modun dokunacağı yer orası).
+
+Ekrandaki başka sayılardan (altın, yıldız, sayaç, üstteki "1 2 3 4 5 6 7"
+şeridi) ayırmak için üç işaret kullanılıyor: aynı satırda üç ya da daha fazla
+sayı varsa o ilerleme şerididir; numara solda durur (sağdaki aynı hizadaki
+sayı geri sayım sayacıdır); ve soru metnine yakın olmak zorundadır.
+
+Son kural en önemlisi. Onsuz, numara bir karede okunamadığında altın sayısı
+gibi **hiç değişmeyen** bir sayı seçilebilir — o da "soru hâlâ aynı" demek
+olur ve yakalama tümden durur. Emin olunamadığında numara yok sayılıyor ve
+eski davranışa dönülüyor. İkinci bir emniyet daha var: soru metni tanınmaz
+hâle geldiyse kilit açılıyor.
+
+Numaranın doğru okunup okunmadığı Teşhis günlüğünde görünür:
+`4 şık %96 · KAYDEDİLDİ #133 · soru 2`.
+
+## Jokerler ve puan balonu
+
+Ekranın altında üç joker var: 50/50, çift cevap ve soru değiştirme. Bunlar
+şık bölgesinin alt ucuna giriyordu ve sayı süzgeci orada gevşetildiği için
+şık sanılıyorlardı — arşivde gerçek şıklar yerine "50" ve "50" yazan kayıtlar
+bundan. İki önlem alındı: şık bölgesinin varsayılan alt sınırı %97'den
+**%90'a** çekildi (jokerler dışarıda kalıyor), ve joker yazıları ile puan
+balonları metin olarak da eleniyor.
+
 ## Şıklar neden eksik yakalanıyordu?
 
 Şıklar ekrana hep birlikte değil, teker teker geliyor. Saniyede tek kare
@@ -220,8 +256,13 @@ karşına çıktığında eksik şıklar tamamlanıyor.
 
 İki bölümü var:
 
-**Tarama geçmişi** — her taramanın tek satırlık özeti. Bir tur oynayıp buraya
-bakınca hangi sorunun neden kaçtığı satır satır görünür:
+**Tarama geçmişi** — her taramanın tek satırlık özeti. Ekranda son **80**
+satır görünür, arkada **4000** satıra kadar tutulur ve *Paylaş* hepsini dışarı
+verir. Bir sorunu fark ettiğinde onu doğuran satırlar çoktan ekrandan kaymış
+oluyor; asıl iş o yığında.
+
+Bir tur oynayıp buraya bakınca hangi sorunun neden kaçtığı satır satır
+görünür:
 
 ```
 15:15:41  4 şık %96 · KAYDEDİLDİ #43

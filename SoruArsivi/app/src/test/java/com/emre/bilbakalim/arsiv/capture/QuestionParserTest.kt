@@ -71,6 +71,32 @@ class QuestionParserTest {
     }
 
     @Test
+    fun `puan balonu sik sanilmaz`() {
+        // Doğru cevaptan sonra şıkkın üstüne düşen "+5"; arşivde şıkkı
+        // "5 +5" olarak kaydedilmiş sorular bundan.
+        listOf("+5", "5 +5", "+10", "-5", "+ 5").forEach {
+            assertFalse("\"$it\" elenmeli", keptInOptions(it))
+            assertFalse("\"$it\" elenmeli", keptOutside(it))
+        }
+    }
+
+    @Test
+    fun `joker dugmeleri sik sanilmaz`() {
+        // Ekranın altındaki üç joker: 50/50, çift cevap, soru değiştir.
+        listOf("50/50", "50 50", "x2", "Çift Cevap", "Soru Değiştir").forEach {
+            assertFalse("\"$it\" elenmeli", keptInOptions(it))
+        }
+    }
+
+    @Test
+    fun `eksi isaretli sayi sik olabilir mi diye metne bakilir`() {
+        // Sayı şıklar korunmalı; ayıran şey artı/eksi işareti.
+        assertTrue(keptInOptions("25"))
+        assertTrue(keptInOptions("1923"))
+        assertFalse(keptInOptions("+25"))
+    }
+
+    @Test
     fun `soru numarasi balonu soru metnine yapismaz`() {
         // "1)" ve "(44)" gibi parçalar süzgeçten kaçıp metne yapışıyordu.
         assertFalse(keptOutside("1)"))

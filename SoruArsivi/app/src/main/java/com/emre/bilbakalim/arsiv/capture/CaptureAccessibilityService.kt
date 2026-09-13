@@ -80,6 +80,17 @@ class CaptureAccessibilityService : AccessibilityService() {
     /** Tur sonu ekranında en son hangi yazıları gördük — günlük tekrarı olmasın. */
     @Volatile private var lastIdleScreen: String? = null
     /**
+     * Dört şıkkıyla birlikte kaydedilmiş sorunun ekrandaki sıra numarası.
+     *
+     * Soru bir kez düzgün okunduktan sonra ekran değişmeye devam ediyor:
+     * cevap açılıyor, şıklar renk değiştiriyor, üstlerine puan balonu
+     * düşüyor. Bunlar yeni bir soru değil — ama metin değiştiği için
+     * parmak izi de değişiyor ve uygulama yeni soru sanıp bozuk bir kayıt
+     * daha açıyordu. Numara artana kadar bu soruyu kilitli tutuyoruz.
+     */
+    @Volatile private var lockedNumber: Int? = null
+    @Volatile private var lockedQuestion: String = ""
+    /**
      * Cevabı açılmayı bekleyen soru.
      *
      * [pendingIndex]: yeşil bantta görülen ama henüz onaylanmamış şık.
@@ -402,7 +413,16 @@ class CaptureAccessibilityService : AccessibilityService() {
         lastQuestionAt = SystemClock.uptimeMillis()
         lastIdleScreen = null
         if (s.autoPlay) auto.noteQuestion()
-        if (p.key == lastKey) {
+        // Aynı soru numarası duruyorsa bu hâlâ aynı sorudur: ekran değişmiş
+        // olabilir ama yeni bir kayıt açılmaz. Numara okunamadıysa (null)
+        // eski davranışa düşüyoruz. Soru metni tamamen başkalaşmışsa da
+        // kilidi açıyoruz — numarayı yanlış okumuş olabiliriz ve kilitli
+        // kalmak yakalamayı tümden durdurur.
+        val no = p.number
+        val locked = no != null && no == lockedNumber &&
+            TurkishText.similarity(p.question, lockedQuestion) > LOCK_MIN_SIMILARITY
+
+        if (locked || p.key == lastKey) {
             // Şıklar animasyonla yerine oturuyor; bekleyen sorunun kutularını
             // tazeliyoruz ki dokunuş kaymış bir konuma gitmesin.
             pendingAnswer?.let { if (it.id == currentEncounterId) it.rects = p.optionRects }
@@ -450,13 +470,23 @@ class CaptureAccessibilityService : AccessibilityService() {
             }
 
             val conf = (p.confidence * 100).toInt()
+            // Numara günlüğe de yazılıyor: kilit mekanizmasının doğru sayıyı
+            // okuyup okumadığı ancak cihazda görülebiliyor.
+            val noLabel = no?.let { " · soru $it" } ?: " · numarasız"
             when {
                 result is Repo.SaveResult.Inserted -> {
                     Log.i(TAG, "Kaydedildi #$savedId")
-                    log("${p.options.size} şık %$conf · KAYDEDİLDİ #$savedId")
+                    log("${p.options.size} şık %$conf · KAYDEDİLDİ #$savedId$noLabel")
                 }
-                newEncounter -> log("${p.options.size} şık %$conf · tekrar #$savedId")
+                newEncounter -> log("${p.options.size} şık %$conf · tekrar #$savedId$noLabel")
                 // Aynı ekranın yeniden okunması: günlüğe yazmaya değmez.
+            }
+
+            // Soru dört şıkkıyla düzgün okundu: numara artana kadar bunu
+            // yeniden okumaya çalışmayalım.
+            if (no != null && p.options.size >= 4) {
+                lockedNumber = no
+                lockedQuestion = p.question
             }
 
             val answeredJustNow = savedId == lastAnsweredId &&
@@ -565,6 +595,8 @@ class CaptureAccessibilityService : AccessibilityService() {
             return
         }
         log("OTOMATİK: \"$pressed\" → yeni tur (${auto.restartCount}. kez)")
+        // Yeni tur birinci sorudan başlıyor; eski numara kilidi kalkmalı.
+        lockedNumber = null
         // Ekran değişecek; bir sonraki kare yeniden okunsun.
         lastFrameSig = null
         lastKey = null
@@ -1040,6 +1072,13 @@ class CaptureAccessibilityService : AccessibilityService() {
          * süre dolmasını hiçbir zaman kaçırmaz.
          */
         private const val MIN_TIMEOUT_MS = 5_000L
+        /**
+         * Numara kilidinin geçerli sayılması için soru metninin eski metne
+         * en az bu kadar benzemesi gerekir. Cevap animasyonu metni biraz
+         * bozabiliyor; bambaşka bir metin ise numarayı yanlış okuduğumuz
+         * anlamına gelir ve kilit açılır.
+         */
+        private const val LOCK_MIN_SIMILARITY = 0.5f
         private const val VERDICT_TRIES_SLOW = 5
         /** Kare imzası çözünürlüğü. */
         private const val SIG_W = 24
@@ -1059,7 +1098,17 @@ class CaptureAccessibilityService : AccessibilityService() {
          * Tek bir kareyi gösteren döküm, "hangi soru neden kaçtı" sorusunu
          * yanıtlamaya yetmiyordu; bu liste zaman içindeki akışı veriyor.
          */
-        const val LOG_LIMIT = 80
+        /**
+         * Bellekte tutulan satır sayısı.
+         *
+         * Arayüzde bunun yalnızca ilk [LOG_VISIBLE] satırı gösteriliyor; asıl
+         * yığın burada duruyor. Bir sorunu fark ettiğinde onu doğuran satırlar
+         * çoktan ekrandan kaymış oluyor — "Paylaş" düğmesi geçmişin tamamını
+         * dışarı veriyor.
+         */
+        const val LOG_LIMIT = 4000
+        /** Teşhis ekranında gösterilen satır sayısı. */
+        const val LOG_VISIBLE = 80
         val scanLog = MutableStateFlow<List<String>>(emptyList())
     }
 }
