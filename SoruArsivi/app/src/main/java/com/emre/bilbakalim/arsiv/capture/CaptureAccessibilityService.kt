@@ -455,6 +455,19 @@ class CaptureAccessibilityService : AccessibilityService() {
             return
         }
 
+        // Kart oturmadan kaydetmiyoruz. Soru kartı solarak geliyor ve bu
+        // sırada metin yarı saydam, kayar hâlde; OCR harfleri yanlış okuyor
+        // ("yıldıza" yerine "yildza") ve bozuk metin arşive ayrı bir kayıt
+        // olarak düşüyor. Yarım saniye beklemek, sonradan elle temizlenmesi
+        // gereken çift kayıttan ucuz.
+        if (shot != null &&
+            !AnswerColorDetector.optionsRendered(shot, p.optionRects, screenW, screenH)
+        ) {
+            confirmKey = null
+            shot.let { if (!it.isRecycled) it.recycle() }
+            return
+        }
+
         // Aynı okumayı iki kez üst üste görmeden yeni kayıt açmıyoruz.
         //
         // Sorular birbirine solarak geçiyor: kart henüz çizilmemişken OCR

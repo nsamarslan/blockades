@@ -9,6 +9,23 @@ import kotlinx.coroutines.flow.Flow
 
 data class CategoryCount(val category: String?, val adet: Int)
 
+/**
+ * Tekrar kontrolü için gereken en az alan.
+ *
+ * Bütün arşivi tam kayıt olarak çekmek pahalı; karşılaştırma yalnızca soru
+ * metniyle şıklara bakıyor. Eşleşme bulunduğunda tam kayıt tek tek okunuyor.
+ */
+data class DedupRow(
+    val id: Long,
+    val questionText: String,
+    val optionA: String?,
+    val optionB: String?,
+    val optionC: String?,
+    val optionD: String?
+) {
+    val options: List<String> get() = listOfNotNull(optionA, optionB, optionC, optionD)
+}
+
 @Dao
 interface QuestionDao {
 
@@ -51,16 +68,25 @@ interface QuestionDao {
     suspend fun recent(limit: Int): List<QuestionEntity>
 
     /**
-     * Cevabı hâlâ bilinmeyen kayıtlar.
+     * Bulanık tekrar kontrolünün karşılaştıracağı kayıtlar — **tüm arşiv**.
      *
-     * Bulanık tekrar kontrolü yalnızca son kayıtlara baksaydı, arşiv birkaç
-     * yüz soruyu geçtiğinde eski bir soru yeniden çıktığında bulunamaz ve
-     * ikinci bir satır olarak eklenirdi. O zaman cevap yeni satıra yazılır,
-     * eskisi sonsuza kadar "cevabı eksik" görünürdü. Bu yüzden cevabı eksik
-     * olan satırlar, ne kadar eski olursa olsun, kontrole dahil edilir.
+     * Eskiden yalnızca son birkaç yüz kayda bakılıyordu ve bu, OCR'ın bir
+     * harfi yanlış okuduğu her soruda ikinci bir satır açılmasına yol
+     * açıyordu: "…sönen yildza ne ad verilir?" ile "…sönen yıldıza ne ad
+     * verilir?" %97 benzer, yani eşleşme kuralı bunu rahatça yakalıyor —
+     * ama eski satır pencerenin dışında kaldığı için hiç karşılaştırılmıyordu.
+     *
+     * Yalnızca karşılaştırma için gereken sütunlar okunuyor; binlerce satır
+     * için bile bu birkaç milisaniye sürüyor ve karşılaştırmanın kendisi
+     * uzunluk süzgeciyle zaten hızla eleniyor.
      */
-    @Query("SELECT * FROM questions WHERE correctIndex IS NULL ORDER BY capturedAt DESC LIMIT :limit")
-    suspend fun unanswered(limit: Int): List<QuestionEntity>
+    @Query(
+        """
+        SELECT id, questionText, optionA, optionB, optionC, optionD FROM questions
+        ORDER BY capturedAt DESC LIMIT :limit
+        """
+    )
+    suspend fun dedupCandidates(limit: Int): List<DedupRow>
 
     @Query("SELECT * FROM questions ORDER BY capturedAt DESC LIMIT :limit")
     fun observeRecent(limit: Int): Flow<List<QuestionEntity>>

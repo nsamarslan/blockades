@@ -58,8 +58,9 @@ class Repo private constructor(context: Context) {
         // eksik" olarak duruyordu. Artık o satır bulunup doldurulacak.
         //
         val probe = Probe(q, opts)
-        for (old in similarityPool()) {
-            if (!probe.matches(old)) continue
+        val hit = dao.dedupCandidates(DEDUP_POOL).firstOrNull { probe.matches(it) }
+        val old = hit?.let { dao.byId(it.id) }
+        if (old != null) {
             if (!old.edited) {
                 // Hangi metin daha temiz? Arayüz uyarısı içermeyen kazanır;
                 // ikisi de temizse daha uzun olanı alırız.
@@ -112,12 +113,6 @@ class Repo private constructor(context: Context) {
         }
     }
 
-    /**
-     * Bulanık tekrar kontrolünün baktığı kayıtlar: son kayıtlar + cevabı
-     * eksik olan bütün kayıtlar.
-     */
-    private suspend fun similarityPool(): List<QuestionEntity> =
-        (dao.recent(RECENT_POOL) + dao.unanswered(UNANSWERED_POOL)).distinctBy { it.id }
 
     /**
      * "Bu soru zaten arşivde mi?" kararını veren kurallar.
@@ -133,16 +128,18 @@ class Repo private constructor(context: Context) {
             options.map { TurkishText.normalizeKey(it) }.sorted().joinToString("|")
         private val negation = TurkishText.negationSignature(question)
 
-        fun matches(old: QuestionEntity): Boolean {
+        fun matches(row: DedupRow): Boolean = matches(row.questionText, row.options)
+
+        fun matches(oldQuestion: String, oldOptions: List<String>): Boolean {
             // Olumsuzluk farkı varsa hiçbir benzerlik ölçüsü bunları
             // birleştiremez — zıt anlamlı iki ayrı sorudur.
-            if (TurkishText.negationSignature(old.questionText) != negation) return false
+            if (TurkishText.negationSignature(oldQuestion) != negation) return false
 
-            val oldKey = TurkishText.normalizeKey(old.questionText)
-            val sim = TurkishText.similarity(old.questionText, question)
+            val oldKey = TurkishText.normalizeKey(oldQuestion)
+            val sim = TurkishText.similarity(oldQuestion, question)
 
-            val optionsMatch = options.size >= 3 && old.options.size == options.size &&
-                old.options.map { TurkishText.normalizeKey(it) }.sorted()
+            val optionsMatch = options.size >= 3 && oldOptions.size == options.size &&
+                oldOptions.map { TurkishText.normalizeKey(it) }.sorted()
                     .joinToString("|") == optKey
 
             // Yarım yakalanmış okuma ("…kaç" ile "…kaç adettir?"). Bir sorunun
@@ -206,7 +203,8 @@ class Repo private constructor(context: Context) {
             val incoming = Importers.toEntity(row)
             val existing = dao.byFingerprint(incoming.fingerprint)
                 ?: Probe(row.question, row.options).let { probe ->
-                    similarityPool().firstOrNull { probe.matches(it) }
+                    dao.dedupCandidates(DEDUP_POOL).firstOrNull { probe.matches(it) }
+                        ?.let { dao.byId(it.id) }
                 }
 
             if (existing == null) {
@@ -385,10 +383,13 @@ class Repo private constructor(context: Context) {
             Importers.ANSWER_SOURCE -> AnswerEvidence.TOUCH.strength
             else -> 0
         }
-        /** Bulanık tekrar kontrolünün baktığı son kayıt sayısı. */
-        private const val RECENT_POOL = 300
-        /** Buna ek olarak bakılan, cevabı eksik kayıt sayısı. */
-        private const val UNANSWERED_POOL = 400
+        /**
+         * Bulanık tekrar kontrolünün karşılaştırdığı kayıt sayısı.
+         *
+         * Tüm arşivi kapsayacak kadar büyük: pencere dar olduğunda OCR'ın bir
+         * harfi yanlış okuduğu her soru ikinci bir kayıt açıyordu.
+         */
+        private const val DEDUP_POOL = 20_000
         @Volatile private var INSTANCE: Repo? = null
         fun get(context: Context): Repo =
             INSTANCE ?: synchronized(this) { INSTANCE ?: Repo(context).also { INSTANCE = it } }

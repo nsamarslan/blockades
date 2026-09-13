@@ -91,6 +91,11 @@ object AnswerColorDetector {
      * Ölçülen gerçek değerler 0.55 ve 0.60 civarında; beyaz şık 0.97.
      */
     private const val DIM_MAX_BRIGHTNESS = 0.75f
+    /**
+     * Şık kutusunun "çizildi" sayılması için en düşük parlaklık.
+     * Oturmuş şıklar 0.97, geçiş kareleri 0.60 civarında.
+     */
+    private const val RENDERED_MIN_BRIGHTNESS = 0.85f
 
     fun analyze(
         bitmap: Bitmap,
@@ -118,6 +123,36 @@ object AnswerColorDetector {
         val colors = scaled.mapNotNull { dominantColor(bitmap, it) }
         if (colors.size != scaled.size) return Analysis(tints)
         return Analysis(tints, dimmedOutlier(colors), colors)
+    }
+
+    /**
+     * Şık kutuları ekrana çizilmiş mi?
+     *
+     * Soru kartı solarak geliyor; bu sırada metin yarı saydam ve kayar
+     * hâlde olduğu için OCR harfleri yanlış okuyor ("yıldıza" yerine
+     * "yildza"). Bozuk okunan soru arşive ayrı bir kayıt olarak düşüyor.
+     * Kutular oturduğunda bembeyaz oluyor; geçiş kareleri koyu mor.
+     *
+     * Renkli bir şık varsa (dokunulmuş ya da karar açılmış) kart zaten
+     * hazırdır.
+     */
+    fun optionsRendered(
+        bitmap: Bitmap,
+        optionRects: List<Rect>,
+        screenW: Int,
+        screenH: Int
+    ): Boolean {
+        if (optionRects.isEmpty() || bitmap.width <= 0) return true
+        val sx = bitmap.width.toFloat() / screenW.coerceAtLeast(1)
+        val sy = bitmap.height.toFloat() / screenH.coerceAtLeast(1)
+        return optionRects.all { r ->
+            val scaled = Rect(
+                (r.left * sx).toInt(), (r.top * sy).toInt(),
+                (r.right * sx).toInt(), (r.bottom * sy).toInt()
+            )
+            val c = dominantColor(bitmap, scaled) ?: return@all true
+            brightness(c) >= RENDERED_MIN_BRIGHTNESS
+        }
     }
 
     fun tintOf(bitmap: Bitmap, rect: Rect): Tint {

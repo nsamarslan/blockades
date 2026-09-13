@@ -613,6 +613,44 @@ Detay ekranında ayrıntısı var, CSV ve JSON çıktılarına da sütun olarak 
 Böylece sürekli yanıldığın soruları `Cevabı eksik` yerine başarı oranına
 bakarak ayıklayabilirsin.
 
+## OCR bir harfi yanlış okursa
+
+Aynı soru iki kez çıktığında biri "…sönen **yıldıza** ne ad verilir?", diğeri
+"…sönen **yildza** ne ad verilir?" okunabiliyor. Bunlar %97 benzer, yani
+bulanık eşleştirme kuralı (eşik %92) zaten yakalıyor — ama eskiden
+karşılaştırma yalnızca **son 300 kayda** bakıyordu. Arşiv birkaç yüz soruyu
+geçince eski satır o pencerenin dışında kalıyor ve ikinci bir kayıt
+açılıyordu.
+
+Karşılaştırma artık **tüm arşivi** kapsıyor. Bunun ucuz olması için yalnızca
+soru metni ve şıklar okunuyor; eşleşme bulunduğunda tam kayıt tek tek
+çekiliyor. Benzerlik ölçüsü de uzunluk farkı büyük olan çiftleri hemen
+eliyor, yani binlerce satır birkaç milisaniyede taranıyor.
+
+İki metinden hangisinin kalacağına da bakılıyor: arayüz uyarısı içermeyen ve
+daha eksiksiz olan kazanıyor. Yani soru bir dahaki çıkışında doğru okunursa
+bozuk metin kendiliğinden düzeliyor.
+
+### Kayıt eşiğini yükseltmek bunu çözmez
+
+Ayarlardaki *Kayıt eşiği* metnin ne kadar doğru okunduğunu değil, **düzenin
+soru ekranına benzeyip benzemediğini** ölçer: dört şık var mı, eşit aralıklı
+mı, soru cümlesi gibi mi. Gerçek soru ekranlarının hemen hepsi %96–100 alır;
+"yildza" da "yıldıza" da aynı puanı alır. Eşiği yükseltmek yalnızca iyi
+yakalamaları eler.
+
+Doğruluğu artıran şey beklemek: kart oturmadan kaydetmemek (aşağıda).
+
+## Kart oturmadan kaydetme
+
+Soru kartı ekrana solarak geliyor; bu sırada metin yarı saydam ve kayar
+hâlde olduğu için OCR harfleri yanlış okuyor. Kayıt artık şık kutuları
+çizilene kadar bekliyor — kutular oturduğunda bembeyaz, geçiş kareleri koyu
+mor, yani ayırt etmek bedava.
+
+Bu, soru başına yarım saniye kadar geciktiriyor. Sonradan elle temizlenmesi
+gereken çift kayda kıyasla ucuz bir takas.
+
 ## Cevabı ilk seferde kaçırdıysa ne oluyor?
 
 Hiçbir şey kaybolmuyor: soru bir dahaki çıkışında cevabı yakalanınca **aynı
@@ -623,9 +661,9 @@ pencerenin dışında kalıyor, OCR bir harfi farklı okuduysa parmak izi de
 tutmuyordu. O zaman ikinci bir satır açılıyor, cevap ona yazılıyor, eskisi
 sonsuza kadar cevapsız kalıyordu.
 
-Artık kontrole **cevabı eksik olan kayıtlar da** dahil ediliyor, ne kadar eski
-olurlarsa olsunlar. Böylece cevabı kaçmış bir soru yeniden çıktığında yeni bir
-satır açılmıyor; var olan satır bulunup dolduruluyor.
+Artık kontrol **tüm arşivi** kapsıyor (yukarıya bak). Böylece cevabı kaçmış
+bir soru yeniden çıktığında yeni bir satır açılmıyor; var olan satır bulunup
+dolduruluyor.
 
 ## Aynı soru neden iki kez kaydedilmiyor?
 
