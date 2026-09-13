@@ -501,6 +501,13 @@ Arşivdeki cevaba basıldığı hâlde oyun yanlış diyorsa, kayıt bozuk demek
 ve Teşhis günlüğüne düşer:
 `ÇELİŞKİ #507: arşiv B diyordu, doğrusu D`
 
+Bu derece dışa aktarımda da var: JSON'da `cevapKaynagi`, CSV'de
+`cevap_kaynagi` sütunu. (Yanındaki `kaynak` alanıyla karıştırma: o, sorunun
+ekrandan hangi yolla **okunduğunu** söyler — OCR mı, erişilebilirlik mi.
+Cevabın hangi kanıtla yazıldığını yalnızca `cevapKaynagi` söyler.) Zayıf
+kanıtla yazılmış cevapları ayıklamak istersen dışa aktarıp bu sütuna göre
+süzebilirsin.
+
 ### Karar kuralları
 
 * **Kırmızı varsa** karar kesin açılmıştır: yeşil olan doğru cevap, sen

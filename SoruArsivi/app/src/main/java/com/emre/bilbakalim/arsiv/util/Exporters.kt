@@ -63,7 +63,10 @@ object Exporters {
     }
 
     private fun toCsv(rows: List<QuestionEntity>): String = buildString {
-        append("soru;A;B;C;D;dogru_sik;dogru_metin;kategori;kac_kez_cikti;cevapladigin;dogru_bildigin;basari_yuzde;kaynak;guven;tarih\n")
+        append(
+            "soru;A;B;C;D;dogru_sik;dogru_metin;cevap_kaynagi;kategori;" +
+                "kac_kez_cikti;cevapladigin;dogru_bildigin;basari_yuzde;kaynak;guven;tarih\n"
+        )
         val df = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
         for (r in rows) {
             append(esc(r.questionText)).append(';')
@@ -73,6 +76,7 @@ object Exporters {
             append(esc(r.optionD)).append(';')
             append(esc(r.correctIndex?.let { ('A' + it).toString() })).append(';')
             append(esc(r.correctText)).append(';')
+            append(esc(r.answerSource)).append(';')
             append(esc(r.category)).append(';')
             append(r.seenCount).append(';')
             append(r.answeredCount).append(';')
@@ -93,6 +97,12 @@ object Exporters {
                     put("siklar", JSONArray(r.options))
                     put("dogruIndeks", r.correctIndex ?: JSONObject.NULL)
                     put("dogruMetin", r.correctText ?: JSONObject.NULL)
+                    // Cevabın nereden öğrenildiği ("renk (kesin)", "renk",
+                    // "süre doldu", "dokunuş", "elle", "içe aktarım").
+                    // "kaynak" alanıyla karıştırılmamalı: o, sorunun ekrandan
+                    // hangi yolla okunduğunu söylüyor. Zayıf kanıtla yazılmış
+                    // cevapları ancak bu alanla ayıklayabilirsin.
+                    put("cevapKaynagi", r.answerSource ?: JSONObject.NULL)
                     put("kategori", r.category ?: JSONObject.NULL)
                     put("kaynak", r.source)
                     put("guven", r.confidence)

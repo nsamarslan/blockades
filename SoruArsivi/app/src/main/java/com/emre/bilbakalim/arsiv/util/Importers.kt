@@ -28,6 +28,8 @@ object Importers {
          * taşındığında hangi listeye yazarsak yazalım doğru şıkka oturuyor.
          */
         val correctText: String?,
+        /** Cevabın nereden öğrenildiği; yedekte varsa olduğu gibi taşınır. */
+        val answerSource: String?,
         val category: String?,
         val source: String,
         val confidence: Float,
@@ -87,6 +89,7 @@ object Importers {
             question = question,
             options = options.take(4),
             correctText = correctText,
+            answerSource = o.str("cevapKaynagi"),
             category = o.str("kategori"),
             source = o.str("kaynak") ?: "MANUAL",
             confidence = o.optDouble("guven", 1.0).toFloat().coerceIn(0f, 1f),
@@ -110,7 +113,10 @@ object Importers {
             optionC = opts.getOrNull(2),
             optionD = opts.getOrNull(3),
             correctIndex = correct,
-            answerSource = if (correct != null) ANSWER_SOURCE else null,
+            // Yedekte kanıtın kendisi varsa onu koruyoruz: "içe aktarım"
+            // en zayıf kanıt sayılıyor ve sağlam bir gözlemi gölgelerdi.
+            answerSource = if (correct == null) null
+                else row.answerSource?.takeIf { it.isNotBlank() } ?: ANSWER_SOURCE,
             category = row.category?.takeIf { it.isNotBlank() },
             source = row.source,
             confidence = row.confidence,
@@ -155,7 +161,10 @@ object Importers {
             optionC = options.getOrNull(2),
             optionD = options.getOrNull(3),
             correctIndex = correct,
-            answerSource = if (answerFromBackup) ANSWER_SOURCE else existing.answerSource,
+            answerSource = when {
+                !answerFromBackup -> existing.answerSource
+                else -> incoming.answerSource?.takeIf { it.isNotBlank() } ?: ANSWER_SOURCE
+            },
             category = existing.category?.takeIf { it.isNotBlank() }
                 ?: incoming.category?.takeIf { it.isNotBlank() },
             confidence = maxOf(existing.confidence, incoming.confidence),

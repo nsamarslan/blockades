@@ -34,6 +34,7 @@ class ImportersTest {
               "dogruBildigin": 2,
               "tarih": 1756900000000,
               "elleDuzenlendi": false,
+              "cevapKaynagi": "renk (kesin)",
               "not": null
             },
             {
@@ -185,10 +186,23 @@ class ImportersTest {
     }
 
     @Test
+    fun `yedekteki kanit korunur`() {
+        // "içe aktarım" en zayıf kanıt sayılıyor; yedekte gerçek kanıt varsa
+        // onu ezmek, sağlam bir gözlemi zayıf göstermek olurdu.
+        val entity = Importers.toEntity(Importers.parse(yedek)[0])
+        assertEquals("renk (kesin)", entity.answerSource)
+
+        // Kanıt yazmayan eski yedeklerde "içe aktarım" damgası kalır.
+        val eski = Importers.parse(
+            """[{"soru":"Kaç kıta vardır?","siklar":["5","6","7","8"],"dogruMetin":"7"}]"""
+        )
+        assertEquals(Importers.ANSWER_SOURCE, Importers.toEntity(eski[0]).answerSource)
+    }
+
+    @Test
     fun `arsivde olmayan satir yeni kayda cevrilir`() {
         val entity = Importers.toEntity(Importers.parse(yedek)[0])
         assertEquals("Ankara", entity.correctText)
-        assertEquals(Importers.ANSWER_SOURCE, entity.answerSource)
         assertTrue(entity.fingerprint.isNotBlank())
 
         // Cevabı bilinmeyen satırda kaynak da boş kalmalı.
