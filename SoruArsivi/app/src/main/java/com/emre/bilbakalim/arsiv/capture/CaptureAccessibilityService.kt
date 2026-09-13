@@ -450,7 +450,17 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (locked || p.key == lastKey) {
             // Şıklar animasyonla yerine oturuyor; bekleyen sorunun kutularını
             // tazeliyoruz ki dokunuş kaymış bir konuma gitmesin.
-            pendingAnswer?.let { if (it.id == currentEncounterId) it.rects = p.optionRects }
+            //
+            // Ama yalnızca şık metinleri **aynı sırada** çıktıysa. Parmak izi
+            // şıkları sıralayarak hesaplandığı için, sırası değişmiş bir okuma
+            // da aynı anahtarı üretiyor; kutuları tek başına tazelemek metin
+            // ile kutuyu birbirinden ayırıyordu. Sonuç: bot bir şıkka basıyor,
+            // oyun başka şıkta tepki veriyor, cevap yanlış kaydediliyordu.
+            pendingAnswer?.let { waiting ->
+                if (waiting.id == currentEncounterId && sameOrder(waiting.options, p.options)) {
+                    waiting.rects = p.optionRects
+                }
+            }
             shot?.let { if (!it.isRecycled) it.recycle() }
             return
         }
@@ -711,6 +721,12 @@ class CaptureAccessibilityService : AccessibilityService() {
         log("tur sonu · tanınan düğme yok · ekranda: $line")
     }
 
+    /** İki şık listesi aynı metinleri aynı sırada mı taşıyor? */
+    private fun sameOrder(a: List<String>, b: List<String>): Boolean =
+        a.size == b.size && a.indices.all {
+            TurkishText.normalizeKey(a[it]) == TurkishText.normalizeKey(b[it])
+        }
+
     private fun scaleRect(r: Rect, fromW: Int, fromH: Int, toW: Int, toH: Int): Rect {
         if (fromW == toW && fromH == toH) return Rect(r)
         val sx = toW.toFloat() / fromW.coerceAtLeast(1)
@@ -855,6 +871,14 @@ class CaptureAccessibilityService : AccessibilityService() {
         userWasRight: Boolean,
         countAsAttempt: Boolean
     ) {
+        // Son emniyet: kutu sayısı ile metin sayısı tutmuyorsa hangi rengin
+        // hangi şıkka ait olduğunu bilmiyoruz demektir. Yanlış cevap yazmaktansa
+        // hiç yazmamak yeğ.
+        if (waiting.rects.size != waiting.options.size) {
+            log("atlandı #${waiting.id}: şık kutusu (${waiting.rects.size}) ve " +
+                "metin (${waiting.options.size}) sayısı tutmuyor")
+            return
+        }
         waiting.knownIndex?.let { known ->
             if (known != index) {
                 log("ÇELİŞKİ #${waiting.id}: arşiv ${'A' + known} diyordu, doğrusu ${'A' + index}")

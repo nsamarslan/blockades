@@ -53,6 +53,15 @@ class TurkishTextTest {
     }
 
     @Test
+    fun `sik isareti soyulunca bos kalan metinler ayirt edilir`() {
+        // Ayrıştırıcı, boş kalan şıkları metin **ve** kutu listesinden birlikte
+        // atmak zorunda. Eskiden yalnızca metin atılıyordu ve listeler kayıyordu:
+        // "2. şıkkın metni" ile "2. şıkkın kutusu" başka şıklara ait oluyordu.
+        assertEquals("", TurkishText.stripOptionPrefix("A) ").trim())
+        assertEquals("Platon", TurkishText.stripOptionPrefix("A) Platon"))
+    }
+
+    @Test
     fun `ilk kayitta sira degismez`() {
         // Soru ilk kez kaydedilirken iki liste aynıdır; eşleştirme sırayı
         // olduğu gibi bırakmalı.

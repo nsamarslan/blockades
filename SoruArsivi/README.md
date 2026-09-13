@@ -155,6 +155,32 @@ Artık bekleme süresi sorunun okunduğu andan değil, **şık kutularının
 mor. Kart dört saniyede oturmazsa yine de dokunuluyor, yoksa hiç dokunmamış
 oluruz.
 
+### Şık metni ile şık kutusu hep birlikte
+
+Her şıkkın iki yüzü var: **metni** (ne yazdığı) ve **kutusu** (nerede
+durduğu). Bot kutuya dokunuyor, cevap ise metinle kaydediliyor. İkisi
+birbirinden ayrılırsa bot bir şıkka basıp oyun başka şıkta tepki veriyor ve
+arşive yanlış cevap yazılıyor:
+
+```
+16:58:59  OTOMATİK #951 → C · rastgele    ← bota göre C
+16:58:59  renk #951: · · · YESIL          ← tepki D'de
+16:59:00  CEVAP #951 → D · bildin         ← D doğru diye kaydedildi
+```
+
+İki yerden ayrılabiliyorlardı, ikisi de kapatıldı:
+
+* **Ayrıştırıcıda:** şık işareti soyulduktan sonra boş kalan metinler
+  listeden atılıyor ama kutuları kalıyordu. Artık ikisi birlikte eleniyor.
+* **Tazelemede:** kutular yeni okumadan tazelenirken metinler ilk okumadan
+  kalıyordu. Parmak izi şıkları **sıralayarak** hesaplandığı için sırası
+  değişmiş bir okuma da aynı anahtarı üretiyor — yani tazeleme kutuları
+  sessizce permüte edebiliyordu. Artık kutular yalnızca şık metinleri
+  **aynı sırada** çıktığında tazeleniyor.
+
+Son bir emniyet olarak, kutu sayısı ile metin sayısı tutmuyorsa hiç cevap
+yazılmıyor: hangi rengin hangi şıkka ait olduğunu bilmiyoruz demektir.
+
 ### Dokunuş yutulursa ne oluyor?
 
 Jest sisteme başarıyla gönderilse bile oyunun onu yuttuğu oluyor: soru ekranda

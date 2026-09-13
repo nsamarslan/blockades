@@ -128,9 +128,14 @@ object QuestionParser {
         val candidates = trimOutliers(ordered)
         if (candidates.size < 3) return reject("şık adayı 3'ten az")
 
+        // Metin ve kutu aynı süzgeçten geçmeli. Eskiden boş metinler
+        // ayıklanıyor ama kutuları listede kalıyordu; o zaman "2. şıkkın
+        // metni" ile "2. şıkkın kutusu" başka şıklara ait oluyordu — dokunuş
+        // bir şıkka, kaydedilen cevap başkasına gidiyordu.
         val options = candidates.take(4)
-        val optionTexts = options.map { TurkishText.stripOptionPrefix(it.text) }
-            .filter { it.isNotBlank() }
+            .map { it to TurkishText.stripOptionPrefix(it.text) }
+            .filter { (_, text) -> text.isNotBlank() }
+        val optionTexts = options.map { it.second }
         if (optionTexts.size < 3) return reject("şık metni 3'ten az")
 
         // Şıklar ekrana teker teker beliriyor. Yarısı gelmişken okursak soru
@@ -142,7 +147,7 @@ object QuestionParser {
         }
 
         // --- 2. Soru metni -----------------------------------------------------
-        val firstOptionTop = options.minOf { it.bounds.top }
+        val firstOptionTop = options.minOf { it.first.bounds.top }
         val questionPool = cleaned.filter {
             it.bounds.bottom <= firstOptionTop + 4 &&
                 it.centerY in qTop..maxOf(qTop + 1, minOf(qBottom, firstOptionTop))
@@ -172,12 +177,13 @@ object QuestionParser {
         if (optionTexts.size == 4) conf += 0.26f else if (optionTexts.size == 3) conf += 0.10f
         if (TurkishText.looksLikeQuestion(question)) conf += 0.22f
         if (question.length in 15..260) conf += 0.10f
-        if (fromAccessibility && options.all { it.clickable }) conf += 0.12f
+        if (fromAccessibility && options.all { it.first.clickable }) conf += 0.12f
         // Şıklar eşit aralıklarla dizilir — bu, gerçek bir soru ekranının en
         // güçlü işaretidir. Metin genişliği ise kelime uzunluğuna göre değişir,
         // o yüzden güven puanında kullanılmaz.
-        if (evenlySpaced(options)) conf += 0.14f
-        if (heightsConsistent(options)) conf += 0.08f
+        val optionItems = options.map { it.first }
+        if (evenlySpaced(optionItems)) conf += 0.14f
+        if (heightsConsistent(optionItems)) conf += 0.08f
         if (optionTexts.all { it.length <= 70 }) conf += 0.05f
         if (question.contains('?')) conf += 0.05f
         conf = conf.coerceIn(0f, 1f)
@@ -186,7 +192,7 @@ object QuestionParser {
         return Parsed(
             question = question,
             options = optionTexts,
-            optionRects = options.map { Rect(it.bounds) },
+            optionRects = options.map { Rect(it.first.bounds) },
             category = category,
             confidence = conf,
             number = detectQuestionNumber(items, screenW, screenH, questionPool.minOf { it.bounds.top })
