@@ -268,10 +268,15 @@ class Repo private constructor(context: Context) {
         screenOptions: List<String> = emptyList(),
         userWasRight: Boolean,
         countAsAttempt: Boolean,
-        source: String = "renk"
+        evidence: AnswerEvidence = AnswerEvidence.GREEN
     ) {
         if (correctIndex !in 0..3) return
         val row = dao.byId(id) ?: return
+
+        // Zayıf bir okuma, güçlü kanıtla yazılmış bir cevabın üstüne yazmasın.
+        // Kayıtta zaten cevap varsa ve elimizdeki kanıt daha zayıfsa
+        // dokunmuyoruz; sayaçlar yine de işleniyor, çünkü karşılaşma gerçek.
+        val keepStored = shouldKeepStored(row.correctIndex, row.answerSource, evidence)
 
         val stored = TurkishText.matchIndex(row.options, screenOptions.getOrNull(correctIndex))
             ?: correctIndex
@@ -280,10 +285,34 @@ class Repo private constructor(context: Context) {
             return
         }
 
-        if (!row.edited) dao.setCorrect(id, stored, source)
+        if (!row.edited && !keepStored) dao.setCorrect(id, stored, evidence.label)
         if (countAsAttempt) dao.recordAttempt(id, if (userWasRight) 1 else 0)
         Log.i(TAG, "Cevap #$id -> ${'A' + stored}, kullanıcı ${if (userWasRight) "bildi" else "bilemedi"}")
     }
+
+    /**
+     * Doğru cevabı ne kadar sağlam bir gözlemden öğrendik.
+     *
+     * Buna ihtiyaç duymamızın sebebi: zayıf bir okuma, daha önce kesin
+     * gözlemle yazılmış doğru cevabın üstüne yazabiliyordu. Arşive bir kez
+     * yanlış cevap girdiğinde otomatik mod her turda ona basmaya devam
+     * ettiği için hata kendini besliyor.
+     */
+    enum class AnswerEvidence(val label: String, val strength: Int) {
+        /** Kırmızı da görüldü: yeşil olan kesinlikle doğru cevaptır. */
+        CERTAIN("renk (kesin)", 3),
+        /** Yalnızca karar yeşili görüldü, kırmızı yok. */
+        GREEN("renk", 2),
+        /** Süre doldu, ekran karardı, ayrışan şık işaretlendi. */
+        TIMEOUT("süre doldu", 2),
+        /**
+         * Dokunulan şık karar açılmadan öylece kaldı. En zayıf kanıt:
+         * "dokunduğuna göre doğrusunu biliyordun" varsayımına dayanıyor.
+         */
+        TOUCH("dokunuş", 1)
+    }
+
+
 
     /**
      * Arşivdeki doğru cevabın **o anki ekrandaki** sırası.
@@ -308,6 +337,31 @@ class Repo private constructor(context: Context) {
 
     companion object {
         private const val TAG = "SoruArsivi/Repo"
+
+        /**
+         * Kayıttaki cevap korunsun mu, yoksa yeni gözlem üstüne yazsın mı?
+         *
+         * Zayıf bir okuma, daha sağlam bir gözlemle yazılmış cevabın üstüne
+         * yazmamalı. Arşive bir kez yanlış cevap girdiğinde otomatik mod her
+         * turda ona basmaya devam ettiği için hata kendini besliyor.
+         *
+         * Eşit güçte gözlem üstüne yazabiliyor: bozuk eski kayıtların yeni
+         * karşılaşmalarda kendiliğinden düzelmesi buna bağlı.
+         */
+        internal fun shouldKeepStored(
+            storedIndex: Int?,
+            storedSource: String?,
+            incoming: AnswerEvidence
+        ): Boolean = storedIndex != null && incoming.strength < strengthOf(storedSource)
+
+        private fun strengthOf(source: String?): Int = when (source) {
+            AnswerEvidence.CERTAIN.label -> AnswerEvidence.CERTAIN.strength
+            AnswerEvidence.GREEN.label -> AnswerEvidence.GREEN.strength
+            AnswerEvidence.TIMEOUT.label -> AnswerEvidence.TIMEOUT.strength
+            AnswerEvidence.TOUCH.label -> AnswerEvidence.TOUCH.strength
+            Importers.ANSWER_SOURCE -> AnswerEvidence.TOUCH.strength
+            else -> 0
+        }
         /** Bulanık tekrar kontrolünün baktığı son kayıt sayısı. */
         private const val RECENT_POOL = 300
         /** Buna ek olarak bakılan, cevabı eksik kayıt sayısı. */

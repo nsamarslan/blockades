@@ -469,6 +469,38 @@ zaman beklemek gerekiyordu. Ama doğru cevapladığında oyun seni bekletmeden
 sonraki soruya geçtiği için o bekleme cevabı kaçırıyordu — arşivde hiç
 "bildin" kaydı çıkmamasının sebebi buydu.
 
+### Otomatik modda "dokunuş" kanıt sayılmaz
+
+Kuralların arasında bir geri düşüş var: dokunduğun şık karar açılmadan
+öylece kaldıysa, doğru bildiğin varsayılıp o şık doğru cevap olarak
+kaydediliyor. Elle oynayan biri için makul — insan bildiğini seçer.
+
+Rastgele dokunan bir bot için **dörtte üç ihtimalle yanlış**. Üstelik hata
+kendini besliyordu: yanlış cevap arşive girince "bilinen cevabı kullan" onu
+her turda yeniden basıyor, oyun her seferinde yanlış diyor, kayıt yine
+düzelmiyordu. Bu yüzden geri düşüş artık yalnızca elle dokunulan sorularda
+işliyor. Cevapsız kalmak, yanlış cevaptan iyidir.
+
+### Hangi gözlem hangisinin üstüne yazar?
+
+Doğru cevabı öğrendiğimiz gözlemin bir de sağlamlık derecesi var:
+
+| Gözlem | Güç | Ne gördük |
+|---|---|---|
+| `renk (kesin)` | 3 | Kırmızı da göründü: yeşil olan kesinlikle doğru |
+| `renk` | 2 | Yalnızca karar yeşili |
+| `süre doldu` | 2 | Ekran karardı, ayrışan şık işaretlendi |
+| `dokunuş` | 1 | Dokunulan şık öylece kaldı |
+| `içe aktarım` | 1 | Yedekten geldi |
+
+Zayıf bir gözlem, daha sağlamıyla yazılmış cevabın üstüne yazamıyor. Eşit
+güçtekiler yazabiliyor — bozuk eski kayıtların yeni karşılaşmalarda
+kendiliğinden düzelmesi buna bağlı.
+
+Arşivdeki cevaba basıldığı hâlde oyun yanlış diyorsa, kayıt bozuk demektir
+ve Teşhis günlüğüne düşer:
+`ÇELİŞKİ #507: arşiv B diyordu, doğrusu D`
+
 ### Karar kuralları
 
 * **Kırmızı varsa** karar kesin açılmıştır: yeşil olan doğru cevap, sen

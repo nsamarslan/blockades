@@ -138,7 +138,18 @@ class CaptureAccessibilityService : AccessibilityService() {
         var taps: Int = 0,
         var lastTapAt: Long = 0L,
         /** Seçilen şık — yeniden denemelerde aynısına basılır. */
-        var chosenIndex: Int? = null
+        var chosenIndex: Int? = null,
+        /**
+         * Bu soruya dokunan uygulamanın kendisi mi (otomatik mod)?
+         *
+         * Önemli, çünkü "dokunduğun şık öyle kaldı, demek doğru bildin"
+         * geri düşüşü elle oynayan biri için makul ama rastgele dokunan bir
+         * bot için dörtte üç ihtimalle yanlış — ve o yanlışı arşive doğru
+         * cevap diye yazıyor.
+         */
+        var autoTapped: Boolean = false,
+        /** Arşivin doğru cevap dediği şıkkın ekrandaki sırası, biliniyorsa. */
+        var knownIndex: Int? = null
     )
     @Volatile private var pendingAnswer: PendingAnswer? = null
     @Volatile private var burstJob: Job? = null
@@ -563,6 +574,8 @@ class CaptureAccessibilityService : AccessibilityService() {
             // bir denemedir, yoksa saniyede birkaç kez yeniden denenirdi.
             waiting.taps++
             waiting.lastTapAt = SystemClock.uptimeMillis()
+            waiting.autoTapped = true
+            waiting.knownIndex = known
 
             if (!auto.tapOption(waiting.rects, index, longPress = retry)) {
                 log("otomatik: #${waiting.id} şıkkına dokunulamadı")
@@ -690,10 +703,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (correct != null) {
             if (a.verdictCertain) {
                 // Kırmızı da var: karar kesin açılmış, bilememişsin.
-                repo.recordReveal(
-                    waiting.id, correct, waiting.options,
-                    userWasRight = false, countAsAttempt = attempt
-                )
+                record(waiting, correct, Repo.AnswerEvidence.CERTAIN, false, attempt)
                 log("CEVAP #${waiting.id} → ${'A' + correct} · bilemedin")
                 finishAnswer(waiting.id)
                 return true
@@ -707,10 +717,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 return false
             }
             if (now - waiting.greenSince < GREEN_CONFIRM_MS) return false
-            repo.recordReveal(
-                waiting.id, correct, waiting.options,
-                userWasRight = true, countAsAttempt = attempt
-            )
+            record(waiting, correct, Repo.AnswerEvidence.GREEN, true, attempt)
             log("CEVAP #${waiting.id} → ${'A' + correct} · bildin")
             finishAnswer(waiting.id)
             return true
@@ -725,14 +732,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             SystemClock.uptimeMillis() - waiting.bornAt >= MIN_TIMEOUT_MS
         }
         if (dimmed != null) {
-            repo.recordReveal(
-                id = waiting.id,
-                correctIndex = dimmed,
-                screenOptions = waiting.options,
-                userWasRight = false,
-                countAsAttempt = false,
-                source = "süre doldu"
-            )
+            record(waiting, dimmed, Repo.AnswerEvidence.TIMEOUT, false, countAsAttempt = false)
             log("CEVAP #${waiting.id} → ${'A' + dimmed} · süre doldu (denemeye sayılmadı)")
             finishAnswer(waiting.id)
             return true
@@ -756,6 +756,13 @@ class CaptureAccessibilityService : AccessibilityService() {
             waiting.pendingIndex = null
             return false
         }
+        // Dokunuşu bot yaptıysa bu geri düşüş geçersiz: rastgele seçilen bir
+        // şık, karar açılmadığı için doğru olmaz. Eskiden burası arşive
+        // rastgele cevabı doğru diye yazıyordu ve otomatik mod sonraki
+        // turlarda o yanlışa basmaya devam ediyordu — hata kendini besliyordu.
+        // Cevapsız kalmak, yanlış cevaptan iyidir.
+        if (waiting.autoTapped) return false
+
         val now = SystemClock.uptimeMillis()
         if (waiting.pendingIndex != pending) {
             waiting.pendingIndex = pending
@@ -763,13 +770,37 @@ class CaptureAccessibilityService : AccessibilityService() {
             return false
         }
         if (now - waiting.pendingSince < VERDICT_CONFIRM_MS) return false
-        repo.recordReveal(
-            waiting.id, pending, waiting.options,
-            userWasRight = true, countAsAttempt = attempt
-        )
+        record(waiting, pending, Repo.AnswerEvidence.TOUCH, true, attempt)
         log("CEVAP #${waiting.id} → ${'A' + pending} · bildin (turkuaz sabit kaldı)")
         finishAnswer(waiting.id)
         return true
+    }
+
+    /**
+     * Doğru cevabı kaydeder ve arşivle çelişiyorsa bunu günlüğe düşürür.
+     *
+     * Çelişki satırı kıymetli: otomatik mod arşivdeki cevaba bastığında
+     * oyun onu yanlış sayıyorsa, arşivdeki kayıt bozuktur. Bu satır olmadan
+     * hata sessizce sürüyordu.
+     */
+    private suspend fun record(
+        waiting: PendingAnswer,
+        index: Int,
+        evidence: Repo.AnswerEvidence,
+        userWasRight: Boolean,
+        countAsAttempt: Boolean
+    ) {
+        waiting.knownIndex?.let { known ->
+            if (known != index) {
+                log("ÇELİŞKİ #${waiting.id}: arşiv ${'A' + known} diyordu, doğrusu ${'A' + index}")
+            }
+        }
+        repo.recordReveal(
+            waiting.id, index, waiting.options,
+            userWasRight = userWasRight,
+            countAsAttempt = countAsAttempt,
+            evidence = evidence
+        )
     }
 
     private fun log(line: String) {
