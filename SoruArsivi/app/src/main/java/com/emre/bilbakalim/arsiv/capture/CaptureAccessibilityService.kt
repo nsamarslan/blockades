@@ -117,8 +117,14 @@ class CaptureAccessibilityService : AccessibilityService() {
          * bilgisi tek başına bir işe yaramıyor: hem kayda doğru cevabı
          * yazarken hem de otomatik modda bilinen cevaba dokunurken metni
          * eşleştirmek gerekiyor.
+         *
+         * **var olmak zorunda.** Oyun şıkların sırasını değiştirdiğinde
+         * [rects] tek başına tazelenirse "2. metin" ile "2. kutu" başka
+         * şıklara ait olur; bot bir şıkka basıp oyun başkasında tepki verir
+         * ve arşive yanlış cevap yazılır. İkisi her zaman birlikte
+         * güncellenmeli.
          */
-        val options: List<String>,
+        var options: List<String>,
         /**
          * Soru ekrana ne zaman geldi. Otomatik dokunuş hem bu süreyi bekler
          * hem de bu değeri karşılaşmanın kimliği olarak kullanır: aynı soru
@@ -450,17 +456,45 @@ class CaptureAccessibilityService : AccessibilityService() {
             TurkishText.similarity(p.question, lockedQuestion) > LOCK_MIN_SIMILARITY
 
         if (locked || p.key == lastKey) {
-            // Şıklar animasyonla yerine oturuyor; bekleyen sorunun kutularını
-            // tazeliyoruz ki dokunuş kaymış bir konuma gitmesin.
+            // Şıklar animasyonla yerine oturuyor. Oyun şıkların sırasını
+            // değiştirdiğinde burada `options` ve `rects` BİRLİKTE
+            // tazelenmek zorunda.
             //
-            // Ama yalnızca şık metinleri **aynı sırada** çıktıysa. Parmak izi
-            // şıkları sıralayarak hesaplandığı için, sırası değişmiş bir okuma
-            // da aynı anahtarı üretiyor; kutuları tek başına tazelemek metin
-            // ile kutuyu birbirinden ayırıyordu. Sonuç: bot bir şıkka basıyor,
-            // oyun başka şıkta tepki veriyor, cevap yanlış kaydediliyordu.
+            // Eskiden yalnızca kutular tazeleniyor, metinler ilk okumadan
+            // kalıyordu. O zaman "2. metin" ile "2. kutu" başka şıklara ait
+            // oluyor: bot bir şıkka basıp oyun başkasında tepki veriyor,
+            // arşive yanlış cevap yazılıyor ve otomatik mod sonraki turlarda
+            // o yanlış cevaba basmaya devam ediyordu — hata kendini besliyordu.
             pendingAnswer?.let { waiting ->
-                if (waiting.id == currentEncounterId && sameOrder(waiting.options, p.options)) {
-                    waiting.rects = p.optionRects
+                if (waiting.id == currentEncounterId) {
+                    if (sameOrder(waiting.options, p.options)) {
+                        // Sıra aynı: kutular animasyonla biraz kaymış olabilir.
+                        waiting.rects = p.optionRects
+                    } else if (waiting.options.size == p.options.size) {
+                        // Sıra değişti. Metinle kutu birlikte güncelleniyor.
+                        waiting.options = p.options
+                        waiting.rects = p.optionRects
+                        // Konuma bağlı bütün durum artık geçersiz: hangi
+                        // kutunun yeşil olduğu, hangisine basıldığı, kaç
+                        // saniyedir beklenildiği — hepsi yeniden okunmalı.
+                        waiting.greenIndex = null
+                        waiting.greenSince = 0L
+                        waiting.pendingIndex = null
+                        waiting.pendingSince = 0L
+                        waiting.chosenIndex = null
+                        waiting.knownIndex = null
+                        waiting.lastSummary = null
+                        waiting.lastSkip = null
+                        // Yeni bir karşılaşma gibi sıfırla: dokunma gecikmesi
+                        // bu andan sayılsın, kart yeniden otursun diye beklesin.
+                        waiting.bornAt = SystemClock.uptimeMillis()
+                        waiting.brightSince = 0L
+                        waiting.taps = 0
+                        waiting.lastTapAt = 0L
+                        waiting.autoTapped = false
+                    }
+                    // Sayılar uyuşmuyorsa (bir tarafta OCR şık düşürmüşse)
+                    // hiçbir şeye dokunmuyoruz: yanlış eşleştirme riski var.
                 }
             }
             shot?.let { if (!it.isRecycled) it.recycle() }
