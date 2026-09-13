@@ -150,7 +150,7 @@ object QuestionParser {
         if (questionPool.isEmpty()) return reject("soru bölgesi boş")
 
         val question = assembleQuestion(questionPool)
-            ?.let { TurkishText.stripLeadingChrome(it) }
+            ?.let { TurkishText.stripQuestionChrome(it) }
             ?: return reject("soru metni kurulamadı")
         if (question.length < 8) return reject("soru metni çok kısa")
 

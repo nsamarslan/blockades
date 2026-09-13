@@ -87,9 +87,23 @@ class AutoPlayer(
         return ok
     }
 
+    /** [pressContinue] sonucu. */
+    sealed interface Continue {
+        /** Basıldı. */
+        data class Pressed(val label: String) : Continue
+        /** Tanıdık bir düğme yok — çağıran taraf ekranı raporlayabilir. */
+        data object NotFound : Continue
+        /**
+         * Düğme var ama az önce basıldı ya da işe yaramadığı için ara
+         * verildi. "Bulunamadı" ile karıştırılmamalı: teşhis günlüğü
+         * eskiden bu durumda da "tanınan düğme yok" yazıyor ve ekranda
+         * duran düğmeyi görmüyormuşuz gibi gösteriyordu.
+         */
+        data object Waiting : Continue
+    }
+
     /**
      * Ekranda soru yokken "Tekrar Oyna" benzeri bir düğme arar ve basar.
-     * Bastığı düğmenin metnini döndürür.
      *
      * [items] ekran koordinatlarında olmalıdır (OCR kutuları önceden
      * ölçeklenmiş halde gelir). [allowDismiss] yalnızca ekran uzun süredir
@@ -101,20 +115,22 @@ class AutoPlayer(
         items: List<TextItem>,
         screenH: Int,
         allowDismiss: Boolean
-    ): String? {
+    ): Continue {
+        // Önce düğmeyi arıyoruz: "bulunamadı" ile "bekliyoruz" ayrımı ancak
+        // böyle doğru kurulur.
+        val target = findButton(items, screenH, allowDismiss) ?: return Continue.NotFound
+
         val now = SystemClock.uptimeMillis()
-        if (now < blockedUntil || now - lastButtonAt < BUTTON_GAP_MS) return null
+        if (now < blockedUntil || now - lastButtonAt < BUTTON_GAP_MS) return Continue.Waiting
 
-        val target = findButton(items, screenH, allowDismiss) ?: return null
         val key = TurkishText.normalizeKey(target.text)
-
         if (key == lastButtonKey) {
             sameButtonCount++
             if (sameButtonCount > SAME_BUTTON_LIMIT) {
                 blockedUntil = now + BUTTON_COOLDOWN_MS
                 sameButtonCount = 0
                 log("otomatik: \"${target.text}\" işe yaramadı, ${BUTTON_COOLDOWN_MS / 1000} sn ara veriliyor")
-                return null
+                return Continue.Waiting
             }
         } else {
             lastButtonKey = key
@@ -122,9 +138,11 @@ class AutoPlayer(
         }
 
         lastButtonAt = now
-        if (!tap(target.bounds.centerX(), target.bounds.centerY(), longPress = false)) return null
+        if (!tap(target.bounds.centerX(), target.bounds.centerY(), longPress = false)) {
+            return Continue.Waiting
+        }
         restartCount++
-        return target.text
+        return Continue.Pressed(target.text)
     }
 
     // -----------------------------------------------------------------------

@@ -232,6 +232,24 @@ hâle geldiyse kilit açılıyor.
 Numaranın doğru okunup okunmadığı Teşhis günlüğünde görünür:
 `4 şık %96 · KAYDEDİLDİ #133 · soru 2`.
 
+## Geçiş karesinde yakalanan sahte sorular
+
+Sorular birbirine solarak geçiyor. Kart henüz çizilmemişken OCR yarım kalmış
+metni okuyor ve her karede başka türlü bozuyor — bu karelerden biri dört
+"şık" bulabildiğinde arşive harfleri karışmış bir soru düşüyordu, hemen
+ardından gerçek soru ayrıca kaydediliyordu. Yani her geçişte bir çöp kayıt.
+Günlükte deseni şöyle görünüyordu:
+
+```
+14:15:35  4 şık %100 · KAYDEDİLDİ #879 · soru 14
+14:15:36  karartma #879: (56,24,152) (72,40,168) ...   ← kart henüz koyu
+14:15:37  4 şık %100 · tekrar #433 · soru 14           ← gerçek 14. soru
+```
+
+Artık aynı okuma **iki kez üst üste** görülmeden yeni kayıt açılmıyor.
+Gerçek soru saniyede birkaç kez okunduğu için beklemenin maliyeti yok; bozuk
+okuma ise kendini iki kez aynı biçimde tekrar edemiyor.
+
 ## Jokerler ve puan balonu
 
 Ekranın altında üç joker var: 50/50, çift cevap ve soru değiştirme. Bunlar
@@ -240,6 +258,16 @@ Ekranın altında üç joker var: 50/50, çift cevap ve soru değiştirme. Bunla
 bundan. İki önlem alındı: şık bölgesinin varsayılan alt sınırı %97'den
 **%90'a** çekildi (jokerler dışarıda kalıyor), ve joker yazıları ile puan
 balonları metin olarak da eleniyor.
+
+Puan balonunun ("+5") ayrı bir yolu daha var: OCR onu bazen **soruyla aynı
+blokta** döndürüyor. O zaman parça bazlı hiçbir süzgeç göremiyor — arşivde
+"…gezegen hangisidir? **+5**" ve "**KOMBO** Türkiye'nin…" diye duran kayıtlar
+bundan. Bu yüzden soru metninin iki ucundan da puan balonu ve "KOMBO",
+"Muhteşem!", "Çok Yaklaştın!" gibi banner'lar sökülüyor.
+
+Sondaki kural işaretten önceki karaktere bakıyor: rakamsa dokunmuyor. Yoksa
+"Sonuç kaçtır: 2 + 2" sorusunun sonundaki toplama da puan balonu sanılıp
+kesiliyordu.
 
 ## Şıklar neden eksik yakalanıyordu?
 

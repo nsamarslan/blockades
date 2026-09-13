@@ -90,6 +90,8 @@ class CaptureAccessibilityService : AccessibilityService() {
      */
     @Volatile private var lockedNumber: Int? = null
     @Volatile private var lockedQuestion: String = ""
+    /** Bir kez görülmüş ama henüz doğrulanmamış okuma (kararlılık kapısı). */
+    @Volatile private var confirmKey: String? = null
     /**
      * Cevabı açılmayı bekleyen soru.
      *
@@ -429,6 +431,21 @@ class CaptureAccessibilityService : AccessibilityService() {
             shot?.let { if (!it.isRecycled) it.recycle() }
             return
         }
+
+        // Aynı okumayı iki kez üst üste görmeden yeni kayıt açmıyoruz.
+        //
+        // Sorular birbirine solarak geçiyor: kart henüz çizilmemişken OCR
+        // yarım kalmış metni okuyor ve her karede başka türlü bozuyor.
+        // Bu karelerden biri dört "şık" bulabiliyor ve arşive harfleri
+        // karışmış bir soru düşüyordu — hemen ardından gerçek soru ayrıca
+        // kaydediliyor, yani her geçişte bir çöp kayıt. Gerçek soru saniyede
+        // birkaç kez okunduğu için ikinci okumayı beklemenin maliyeti yok;
+        // bozuk okuma ise kendini iki kez aynı biçimde tekrar edemiyor.
+        if (p.key != confirmKey) {
+            confirmKey = p.key
+            shot?.let { if (!it.isRecycled) it.recycle() }
+            return
+        }
         lastKey = p.key
 
         // Kullanıcı Ana ekrandan bir kategori seçtiyse o kazanır; yoksa ekrandan tanınan kullanılır.
@@ -586,17 +603,22 @@ class CaptureAccessibilityService : AccessibilityService() {
         // "Atla"/"Devam" gibi yazılara ancak ekran iyice uzun süredir
         // kımıldamıyorsa dokunuruz; "Tekrar Oyna" için o kadar beklemeye gerek yok.
         val allowDismiss = SystemClock.uptimeMillis() - lastQuestionAt > AUTO_DISMISS_IDLE_MS
-        val pressed = auto.pressContinue(items, screenH, allowDismiss)
-        if (pressed == null) {
-            // Basılacak bir şey bulamadıysak ekranda ne yazdığını bir kez
-            // günlüğe düşürüyoruz. Tur sonu ekranı oyundan oyuna değişiyor;
-            // hangi düğmenin tanınmadığını ancak böyle görebiliyoruz.
-            logIdleScreen(items)
-            return
+        when (val sonuc = auto.pressContinue(items, screenH, allowDismiss)) {
+            // Az önce basıldı, sonucu bekleniyor. Ekranı raporlamaya gerek yok.
+            AutoPlayer.Continue.Waiting -> return
+            // Basılacak bir şey yok: ekranda ne yazdığını bir kez günlüğe
+            // düşürüyoruz. Tur sonu ekranı oyundan oyuna değişiyor; hangi
+            // düğmenin tanınmadığını ancak böyle görebiliyoruz.
+            AutoPlayer.Continue.NotFound -> {
+                logIdleScreen(items)
+                return
+            }
+            is AutoPlayer.Continue.Pressed -> {
+                log("OTOMATİK: \"${sonuc.label}\" → yeni tur (${auto.restartCount}. kez)")
+                // Yeni tur birinci sorudan başlıyor; eski numara kilidi kalkmalı.
+                lockedNumber = null
+            }
         }
-        log("OTOMATİK: \"$pressed\" → yeni tur (${auto.restartCount}. kez)")
-        // Yeni tur birinci sorudan başlıyor; eski numara kilidi kalkmalı.
-        lockedNumber = null
         // Ekran değişecek; bir sonraki kare yeniden okunsun.
         lastFrameSig = null
         lastKey = null
@@ -611,8 +633,9 @@ class CaptureAccessibilityService : AccessibilityService() {
         val labels = items
             .filter { it.text.trim().length in 2..28 }
             .sortedBy { it.centerY }
-            .takeLast(6)
             .map { it.text.trim().replace('\n', ' ') }
+            .distinct()
+            .take(12)
         if (labels.isEmpty()) return
         val line = labels.joinToString(" | ")
         if (line == lastIdleScreen) return
@@ -1035,12 +1058,12 @@ class CaptureAccessibilityService : AccessibilityService() {
          * sayılır ve "Tekrar Oyna" düğmesi aranmaya başlanır. Cevap açılıp
          * sonraki sorunun gelmesi ~1,5 saniye sürdüğü için bunun üstünde.
          */
-        private const val AUTO_IDLE_MS = 3000L
+        private const val AUTO_IDLE_MS = 6000L
         /**
          * "Atla", "Devam", "Kapat" gibi yazılar soru ekranında da bulunabiliyor.
          * Onlara ancak bu kadar süredir hiç soru görülmediyse dokunuruz.
          */
-        private const val AUTO_DISMISS_IDLE_MS = 7000L
+        private const val AUTO_DISMISS_IDLE_MS = 12_000L
         /**
          * Karar yoklama. Hızlı yolda ~120 ms'de bir, toplam ~3 saniye:
          * senin seçimin dokunuştan ~0,1 sn, gerçek cevap ~0,5 sn sonra
