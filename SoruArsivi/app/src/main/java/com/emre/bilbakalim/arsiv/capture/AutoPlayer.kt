@@ -164,7 +164,7 @@ class AutoPlayer(
     ): TextItem? {
         var best: TextItem? = null
         var bestScore = 0
-        val minScore = if (allowDismiss) 1 else 3
+        val minScore = if (allowDismiss) 2 else 3
         for (item in items) {
             // Durum çubuğu ve gezinme çubuğu bölgesine hiç dokunma.
             if (item.bounds.bottom < screenH * 0.05f) continue
@@ -188,8 +188,10 @@ class AutoPlayer(
         if (k.length < 2 || k.length > 28) return 0
         if (PLAY_AGAIN.any { it == k }) return 4
         if (k.length <= 20 && PLAY_AGAIN.any { k.contains(it) }) return 3
+        // Kapatma yazılarında yalnızca birebir eşleşme kabul ediliyor.
+        // Parça eşleşmesi "Tümünü kapat" düğmesini de yakalıyordu: bot son
+        // kullanılanlar ekranında ona basıp oyunu tamamen kapatmıştı.
         if (DISMISS.any { it == k }) return 2
-        if (k.length <= 14 && DISMISS.any { k.contains(it) }) return 1
         return 0
     }
 

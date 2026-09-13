@@ -149,7 +149,19 @@ class CaptureAccessibilityService : AccessibilityService() {
          */
         var autoTapped: Boolean = false,
         /** Arşivin doğru cevap dediği şıkkın ekrandaki sırası, biliniyorsa. */
-        var knownIndex: Int? = null
+        var knownIndex: Int? = null,
+        /**
+         * Şık kutuları ne zamandan beri çizilmiş durumda (0 = henüz değil).
+         *
+         * Soru kartı ekrana solarak geliyor ve bu sırada şıklar yerlerine
+         * kayıyor. Metin daha kart kararmışken okunabildiği için, dokunuş
+         * eski konumlara gidiyor ve **başka bir şıkka** basılıyordu: günlükte
+         * "OTOMATİK → C" yazıp ekranda A'nın turkuaza döndüğü kareler bundan.
+         * Üstelik oyunun o yanlış şıkka verdiği tepki doğru cevap diye
+         * arşive yazılıyordu. Bu yüzden bekleme süresi sorunun okunduğu andan
+         * değil, kutuların çizildiği andan itibaren sayılıyor.
+         */
+        var brightSince: Long = 0L
     )
     @Volatile private var pendingAnswer: PendingAnswer? = null
     @Volatile private var burstJob: Job? = null
@@ -549,7 +561,17 @@ class CaptureAccessibilityService : AccessibilityService() {
         // oluyor ve soru ekranda süre dolana kadar öylece kalıyordu. Cevap
         // açılınca soru kapandığı için fazladan dokunuş atılmıyor.
         val now = SystemClock.uptimeMillis()
-        val due = if (waiting.taps == 0) waiting.bornAt + s.autoAnswerDelayMs
+        // Bekleme, sorunun okunduğu andan değil şık kutularının çizildiği
+        // andan başlıyor. Renk okuması kapalıysa ya da kart bir türlü
+        // oturmadıysa sorunun geldiği ana geri düşüyoruz, yoksa hiç
+        // dokunmamış oluruz.
+        val cardAt = when {
+            !s.detectAnswer -> waiting.bornAt
+            waiting.brightSince > 0L -> maxOf(waiting.bornAt, waiting.brightSince)
+            now - waiting.bornAt > CARD_READY_TIMEOUT_MS -> waiting.bornAt
+            else -> return
+        }
+        val due = if (waiting.taps == 0) cardAt + s.autoAnswerDelayMs
                   else waiting.lastTapAt + AUTO_RETAP_MS
         if (now < due) return
 
@@ -707,6 +729,16 @@ class CaptureAccessibilityService : AccessibilityService() {
         timedOutHint: Boolean?
     ): Boolean {
         val a = AnswerColorDetector.analyze(shot, waiting.rects, screenW, screenH)
+
+        // Şık kutuları çizildi mi? Renkli bir şık varsa kart zaten hazırdır;
+        // hepsi soluk/koyuysa geçiş animasyonu sürüyor demektir.
+        val cardReady = a.colors.isEmpty() ||
+            a.colors.all { maxOf(it[0], it[1], it[2]) >= CARD_READY_MIN }
+        waiting.brightSince = when {
+            !cardReady -> 0L
+            waiting.brightSince == 0L -> SystemClock.uptimeMillis()
+            else -> waiting.brightSince
+        }
 
         // Renk deseni her değiştiğinde günlüğe düşüyor; kaçan cevapların
         // sebebini tahmin etmek yerine akışı görebilmek için.
@@ -1145,7 +1177,14 @@ class CaptureAccessibilityService : AccessibilityService() {
          * Oyunun sayacı bir dakikanın üstünde olduğu için bu eşik gerçek bir
          * süre dolmasını hiçbir zaman kaçırmaz.
          */
-        private const val MIN_TIMEOUT_MS = 5_000L
+        private const val MIN_TIMEOUT_MS = 20_000L
+        /**
+         * Şık kutusunun "çizildi" sayılması için en düşük parlaklık.
+         * Oturmuş şıklar bembeyaz (0.97); geçiş kareleri koyu mor.
+         */
+        private const val CARD_READY_MIN = 217
+        /** Kart bu kadar sürede oturmadıysa yine de dokun. */
+        private const val CARD_READY_TIMEOUT_MS = 4000L
         /**
          * Numara kilidinin geçerli sayılması için soru metninin eski metne
          * en az bu kadar benzemesi gerekir. Cevap animasyonu metni biraz

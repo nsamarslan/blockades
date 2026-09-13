@@ -80,6 +80,22 @@ class AnswerColorDetectorTest {
     }
 
     @Test
+    fun `tur sonu solmasi sure dolmus sanilmaz`() {
+        // Gerçek günlükten: tur biterken ekran karardı ve şıklardan biri
+        // ayrıştı. Kural buna karar verirse arşive yanlış cevap yazıyor.
+        // Renk kuralı burada tetikleniyor; onu servisteki 20 saniyelik
+        // "soru ekranda ne kadar durdu" eşiği durduruyor. Bu test kuralın
+        // hangi desende tetiklendiğini kayıt altına alıyor.
+        assertEquals(
+            1,
+            renk(
+                intArrayOf(88, 88, 152), intArrayOf(88, 40, 104),
+                intArrayOf(88, 88, 152), intArrayOf(88, 88, 152)
+            )
+        )
+    }
+
+    @Test
     fun `kucuk renk farklari karar saymaz`() {
         // Gerçek günlükten: koyu ekranda şıklar arasında birkaç birimlik
         // fark var ama hiçbiri "ayrışıyor" denecek kadar uzak değil.

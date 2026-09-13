@@ -130,6 +130,31 @@ dokunurken rastgele seçime düşülür, kaydederken satır olduğu gibi bırak�
 Yanlış şıkka basmak ya da arşive yanlış cevap yazmaktansa bilmediğini söylemek
 yeğdir.
 
+### Kart çizilmeden dokunma
+
+Soru kartı ekrana solarak geliyor ve bu sırada şıklar yerlerine kayıyor.
+Metin daha kart kararmışken okunabildiği için dokunuş **eski konumlara**
+gidiyor ve başka bir şıkka basılıyordu. Günlükteki iz:
+
+```
+15:20:41  4 şık %100 · tekrar #441 · soru 15
+15:20:43  OTOMATİK #441 → C · bilinen cevap
+15:20:43  karartma #441: (56,24,152) (72,40,168) ...   ← kart hâlâ koyu
+15:20:44  karartma #441: (248,248,248) x4              ← ancak şimdi çizildi
+15:20:47  renk #441: turkuaz · · ·                     ← A turkuaz, oysa C'ye basılmıştı
+```
+
+Bunun iki zararı birden var: bilinen doğru cevap ıskalanıyor, **ve** oyunun
+o yanlış şıkka verdiği tepki doğru cevap diye arşive yazılıyor. Ekran
+görüntüsünde "Dünya, Güneş sistemindeki kaçıncı gezegendir? → 2" gibi
+kayıtlar bundan.
+
+Artık bekleme süresi sorunun okunduğu andan değil, **şık kutularının
+çizildiği andan** sayılıyor. Kutuların çizilip çizilmediği zaten her karede
+ölçülen renklerden anlaşılıyor: oturmuş şıklar bembeyaz, geçiş kareleri koyu
+mor. Kart dört saniyede oturmazsa yine de dokunuluyor, yoksa hiç dokunmamış
+oluruz.
+
 ### Dokunuş yutulursa ne oluyor?
 
 Jest sisteme başarıyla gönderilse bile oyunun onu yuttuğu oluyor: soru ekranda
@@ -145,6 +170,9 @@ boşluğa gitmiyor.
 ### Güvenlik frenleri
 
 * Yalnızca **tanıdığı** yazılara basar. "Çıkış", "Hayır", "Vazgeç" listede yok.
+* Kapatma yazılarında yalnızca birebir eşleşme kabul edilir. Parça eşleşmesi
+  "Tümünü kapat" düğmesini de yakalıyordu: bot son kullanılanlar ekranında
+  ona basıp oyunu tamamen kapatmıştı.
 * "Atla", "Devam", "Kapat" gibi soru ekranında da bulunabilen yazılara ancak
   **7 saniyedir** hiç soru görülmediyse dokunur.
 * Aynı düğmeye üst üste 4 kez basıp hiçbir şey değişmezse 30 saniye ara verir —
