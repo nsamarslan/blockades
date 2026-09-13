@@ -131,7 +131,7 @@ class CaptureAccessibilityService : AccessibilityService() {
          * sonraki turda yeniden çıktığında veritabanı kimliği aynı kalır ama
          * bu damga değişir, böylece yeniden cevaplanır.
          */
-        val bornAt: Long = SystemClock.uptimeMillis(),
+        var bornAt: Long = SystemClock.uptimeMillis(),
         /** Kararın yeşili hangi şıkta ve ne zamandan beri görülüyor. */
         var greenIndex: Int? = null,
         var greenSince: Long = 0L,
