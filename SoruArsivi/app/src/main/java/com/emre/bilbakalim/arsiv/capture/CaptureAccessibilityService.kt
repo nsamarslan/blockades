@@ -562,9 +562,22 @@ class CaptureAccessibilityService : AccessibilityService() {
             // Soruyu daha önce görmüşsek doğru şıkka, görmemişsek rastgele
             // birine dokunuyoruz. Kayıttaki sıra değil, kayıttaki doğru
             // cevabın o anki ekrandaki sırası aranıyor: şıklar karışıyor.
-            val known = if (cur.autoUseKnownAnswer) {
-                runCatching { repo.knownAnswerOnScreen(waiting.id, waiting.options) }.getOrNull()
-            } else null
+            val lookup = if (cur.autoUseKnownAnswer) {
+                runCatching { repo.knownAnswerOnScreen(waiting.id, waiting.options) }
+                    .getOrDefault(Repo.KnownAnswer.None)
+            } else Repo.KnownAnswer.None
+
+            // Arşivde cevap olduğu hâlde ekranda bulunamadıysa bu bir arıza:
+            // sessizce rastgeleye düşmek yerine sebebini yazıyoruz.
+            (lookup as? Repo.KnownAnswer.Unmatched)?.let {
+                log(
+                    "UYUŞMAZLIK #${waiting.id}: arşivdeki cevap " +
+                        (it.text?.let { t -> "\"$t\"" } ?: "(kayıt bozuk)") +
+                        " ekranda bulunamadı → rastgele seçiliyor"
+                )
+            }
+
+            val known = (lookup as? Repo.KnownAnswer.OnScreen)?.index
 
             val retry = waiting.taps > 0
             val index = waiting.chosenIndex
@@ -581,9 +594,16 @@ class CaptureAccessibilityService : AccessibilityService() {
                 log("otomatik: #${waiting.id} şıkkına dokunulamadı")
                 return@launch
             }
+            // Neden rastgele seçtiğimizi de yazıyoruz: "yeni soru" ile
+            // "arşivde cevap var ama bulunamadı" bambaşka iki durum.
+            val neden = when (lookup) {
+                is Repo.KnownAnswer.OnScreen -> "bilinen cevap"
+                is Repo.KnownAnswer.Unmatched -> "rastgele (eşleşmedi)"
+                Repo.KnownAnswer.None ->
+                    if (cur.autoUseKnownAnswer) "rastgele (cevabı bilinmiyor)" else "rastgele"
+            }
             log(
-                "OTOMATİK #${waiting.id} → ${'A' + index} · " +
-                    (if (known != null) "bilinen cevap" else "rastgele") +
+                "OTOMATİK #${waiting.id} → ${'A' + index} · $neden" +
                     (if (retry) " · ${waiting.taps}. deneme" else "") +
                     " · bu oturumda ${auto.tapCount} cevap"
             )

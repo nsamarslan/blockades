@@ -481,6 +481,24 @@ her turda yeniden basıyor, oyun her seferinde yanlış diyor, kayıt yine
 düzelmiyordu. Bu yüzden geri düşüş artık yalnızca elle dokunulan sorularda
 işliyor. Cevapsız kalmak, yanlış cevaptan iyidir.
 
+### "Neden bilinen cevaba basmadı?"
+
+Otomatik mod rastgele seçtiğinde bunun üç ayrı sebebi olabilir ve günlük
+artık hangisi olduğunu yazıyor:
+
+| Günlük | Anlamı |
+|---|---|
+| `bilinen cevap` | Arşivdeki cevap ekranda bulundu, ona basıldı |
+| `rastgele (cevabı bilinmiyor)` | Soru yeni ya da cevabı henüz yakalanmamış — normal |
+| `rastgele (eşleşmedi)` | **Arıza:** arşivde cevap var ama ekrandaki şıkların hiçbirine benzemiyor |
+
+Sonuncusu ayrıca kendi satırını da yazar:
+`UYUŞMAZLIK #123: arşivdeki cevap "Ayı" ekranda bulunamadı → rastgele seçiliyor`
+
+Ya OCR şıkları bozuk okumuştur ya da kayıttaki metin ekrandakinden gerçekten
+farklıdır. Bu ayrım olmadan ikisi de sadece "rastgele" görünüyordu ve
+"madem cevabı biliyordu, neden başkasına bastı?" sorusunun izi kalmıyordu.
+
 ### Hangi gözlem hangisinin üstüne yazar?
 
 Doğru cevabı öğrendiğimiz gözlemin bir de sağlamlık derecesi var:

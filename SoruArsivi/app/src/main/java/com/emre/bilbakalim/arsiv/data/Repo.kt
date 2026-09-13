@@ -314,19 +314,42 @@ class Repo private constructor(context: Context) {
 
 
 
+    /** [knownAnswerOnScreen] sonucu. */
+    sealed interface KnownAnswer {
+        /** Arşivdeki doğru cevap ekranda bu sırada duruyor. */
+        data class OnScreen(val index: Int) : KnownAnswer
+        /**
+         * Arşivde cevap var ama ekrandaki şıkların hiçbirine benzemiyor.
+         *
+         * "Arşivde cevap yok" ile karıştırılmamalı: bu bir arıza işareti —
+         * ya OCR şıkları bozuk okumuş ya da kayıttaki metin ekrandakinden
+         * gerçekten farklı. İkisi de tek satır günlükle ayırt edilebilsin
+         * diye ayrı duruyor; yoksa bot sessizce rastgeleye düşüyor ve
+         * "neden bilinen cevaba basmadı" sorusunun izi kalmıyor.
+         */
+        data class Unmatched(val text: String?) : KnownAnswer
+        /** Soru arşivde yok ya da cevabı henüz bilinmiyor. */
+        data object None : KnownAnswer
+    }
+
     /**
      * Arşivdeki doğru cevabın **o anki ekrandaki** sırası.
      *
      * Otomatik mod bunu kullanıyor: soruyu daha önce görmüşsek rastgele
-     * seçmek yerine doğru şıkka basıyoruz. Şıklar karıştığı için kayıttaki
-     * sıra doğrudan kullanılamaz — kayıttaki doğru cevabın metnini alıp
-     * ekrandaki listede arıyoruz. Soru arşivde yoksa, cevabı henüz
-     * bilinmiyorsa ya da metin ekrandakilerin hiçbirine benzemiyorsa null
-     * döner ve seçim rastgele yapılır.
+     * seçmek yerine doğru şıkka basıyoruz. Şıklar her turda karıştığı için
+     * kayıttaki sıra doğrudan kullanılamaz — kayıttaki doğru cevabın
+     * **metnini** alıp ekrandaki listede arıyoruz.
      */
-    suspend fun knownAnswerOnScreen(id: Long, screenOptions: List<String>): Int? {
-        val text = dao.byId(id)?.correctText ?: return null
-        return TurkishText.matchIndex(screenOptions, text)
+    suspend fun knownAnswerOnScreen(id: Long, screenOptions: List<String>): KnownAnswer {
+        val row = dao.byId(id) ?: return KnownAnswer.None
+        if (row.correctIndex == null) return KnownAnswer.None
+
+        // Kayıtlı sıra, kaydın kendi şık listesinin dışını gösteriyorsa
+        // metni de çıkaramayız; bu bozuk bir satırdır.
+        val text = row.correctText ?: return KnownAnswer.Unmatched(null)
+
+        val index = TurkishText.matchIndex(screenOptions, text)
+        return if (index != null) KnownAnswer.OnScreen(index) else KnownAnswer.Unmatched(text)
     }
 
     suspend fun updateManual(q: QuestionEntity) = dao.update(q.copy(edited = true))
