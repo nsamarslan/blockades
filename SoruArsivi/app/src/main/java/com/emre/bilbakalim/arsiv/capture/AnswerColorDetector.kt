@@ -40,6 +40,39 @@ object AnswerColorDetector {
         NEUTRAL
     }
 
+    /**
+     * Tek bir şık kutusundan çıkan ham ölçüm.
+     *
+     * Oranlar günlüğe basılabilsin diye saklanıyor: "renk: YESIL · · ·"
+     * satırı bir şıkkın neden yeşil sayıldığını söylemiyordu ve yanlış
+     * sınıflandırmaları ancak tahmin ederek arayabiliyorduk. Oranlarla
+     * birlikte "%26 yeşil" ile "%78 yeşil" arasındaki fark görünür oluyor —
+     * ilki geçiş karesi, ikincisi gerçek karar.
+     */
+    data class Read(
+        val tint: Tint,
+        val correct: Float,
+        val pending: Float,
+        val wrong: Float,
+        /** Kutunun baskın rengi (metin pikselleri elenmiş hâlde). */
+        val color: IntArray?
+    ) {
+        fun detail(i: Int): String = buildString {
+            append('A' + i).append(' ')
+            append(when (tint) {
+                Tint.CORRECT -> "YESIL"
+                Tint.PENDING -> "turkuaz"
+                Tint.WRONG -> "KIRMIZI"
+                Tint.NEUTRAL -> "-"
+            })
+            append(" ye%").append((correct * 100).toInt())
+            append(" tu%").append((pending * 100).toInt())
+            append(" kı%").append((wrong * 100).toInt())
+            color?.let { append(" (").append(it[0]).append(',').append(it[1])
+                .append(',').append(it[2]).append(')') }
+        }
+    }
+
     data class Analysis(
         val tints: List<Tint>,
         /**
@@ -48,8 +81,26 @@ object AnswerColorDetector {
          */
         val dimmedReveal: Int? = null,
         /** Şıkların baskın renkleri — teşhis günlüğü için. */
-        val colors: List<IntArray> = emptyList()
+        val colors: List<IntArray> = emptyList(),
+        /** Şık başına ham ölçüm — günlükte "neden böyle sınıflandı" için. */
+        val reads: List<Read> = emptyList()
     ) {
+        /**
+         * Şık kutuları ekrana oturmuş mu?
+         *
+         * Bunu [tints] üzerinden dolaylı yoldan çıkarmak bir hataydı:
+         * "renkli bir şık varsa kart hazırdır" diyorduk, ama korunmak
+         * istediğimiz şey zaten geçiş karesinin yanlışlıkla renkli
+         * sayılmasıydı. Kontrol kendi kendini iptal ediyordu. Artık ölçüm
+         * doğrudan parlaklığa bakıyor.
+         */
+        fun cardRendered(minChannel: Int): Boolean =
+            colors.size == tints.size && colors.isNotEmpty() &&
+                colors.all { maxOf(it[0], it[1], it[2]) >= minChannel }
+
+        /** Ölçümün tamamı — bir karar yazılırken ya da atlanırken basılır. */
+        fun detail(): String = reads.mapIndexed { i, r -> r.detail(i) }.joinToString(" | ")
+
         private fun onlyIndexOf(t: Tint): Int? =
             tints.indices.filter { tints[it] == t }.singleOrNull()
 
@@ -113,16 +164,20 @@ object AnswerColorDetector {
                 (r.right * sx).toInt(), (r.bottom * sy).toInt()
             )
         }
-        val tints = scaled.map { tintOf(bitmap, it) }
+        // Renkler her karede ölçülüyor. Eskiden renkli bir şık bulununca
+        // buradan erken dönüyorduk ve `colors` boş kalıyordu; "kart çizildi
+        // mi" kontrolü de boş listeyi "hazır" sayıyordu. Sonuç: kartın
+        // beliriş animasyonunda yanlışlıkla yeşil okunan bir kare, kartı
+        // hazır ilan edip erken dokunuşa yol açıyordu.
+        val reads = scaled.map { readOf(bitmap, it) }
+        val tints = reads.map { it.tint }
+        val colors = reads.mapNotNull { it.color }
 
-        // Renkli bir şık varsa normal karar ekranındayız; karartılmış ekran
-        // kuralını yalnızca oraya düşmediğimizde deniyoruz.
-        if (tints.any { it != Tint.NEUTRAL }) return Analysis(tints)
-
-        // Hiçbir şık renkli değil: süre dolup ekran karartılmış olabilir.
-        val colors = scaled.mapNotNull { dominantColor(bitmap, it) }
-        if (colors.size != scaled.size) return Analysis(tints)
-        return Analysis(tints, dimmedOutlier(colors), colors)
+        // Karartılmış ekran kuralı yalnızca hiçbir şık renkli değilken.
+        val dimmed = if (tints.all { it == Tint.NEUTRAL } && colors.size == scaled.size) {
+            dimmedOutlier(colors)
+        } else null
+        return Analysis(tints, dimmed, colors, reads)
     }
 
     /**
@@ -155,7 +210,9 @@ object AnswerColorDetector {
         }
     }
 
-    fun tintOf(bitmap: Bitmap, rect: Rect): Tint {
+    fun tintOf(bitmap: Bitmap, rect: Rect): Tint = readOf(bitmap, rect).tint
+
+    fun readOf(bitmap: Bitmap, rect: Rect): Read {
         val r = Rect(rect)
         r.inset((r.width() * INSET).toInt(), (r.height() * INSET).toInt())
 
@@ -163,7 +220,7 @@ object AnswerColorDetector {
         val top = r.top.coerceIn(0, bitmap.height - 1)
         val right = r.right.coerceIn(left + 1, bitmap.width)
         val bottom = r.bottom.coerceIn(top + 1, bitmap.height)
-        if (right - left < 4 || bottom - top < 4) return Tint.NEUTRAL
+        if (right - left < 4 || bottom - top < 4) return Read(Tint.NEUTRAL, 0f, 0f, 0f, null)
 
         var correct = 0
         var pending = 0
@@ -199,17 +256,18 @@ object AnswerColorDetector {
             y += stepY
         }
 
-        if (total == 0) return Tint.NEUTRAL
+        if (total == 0) return Read(Tint.NEUTRAL, 0f, 0f, 0f, null)
         val c = correct.toFloat() / total
         val p = pending.toFloat() / total
         val w = wrong.toFloat() / total
         val best = maxOf(c, p, w)
-        if (best < MIN_RATIO) return Tint.NEUTRAL
-        return when (best) {
-            c -> Tint.CORRECT
-            p -> Tint.PENDING
+        val tint = when {
+            best < MIN_RATIO -> Tint.NEUTRAL
+            best == c -> Tint.CORRECT
+            best == p -> Tint.PENDING
             else -> Tint.WRONG
         }
+        return Read(tint, c, p, w, dominantColor(bitmap, rect))
     }
 
     // --- Süre dolduğunda kararan ekran -------------------------------------

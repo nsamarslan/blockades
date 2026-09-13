@@ -134,6 +134,8 @@ class CaptureAccessibilityService : AccessibilityService() {
         var pendingSince: Long = 0L,
         /** Günlüğe aynı deseni tekrar tekrar yazmamak için. */
         var lastSummary: String? = null,
+        /** Atlanan karar satırı da tekrarlanmasın. */
+        var lastSkip: String? = null,
         /** Otomatik modda bu soruya kaç kez dokunuldu ve en son ne zaman. */
         var taps: Int = 0,
         var lastTapAt: Long = 0L,
@@ -544,6 +546,18 @@ class CaptureAccessibilityService : AccessibilityService() {
                 newEncounter -> log("${p.options.size} şık %$conf · tekrar #$savedId$noLabel")
                 // Aynı ekranın yeniden okunması: günlüğe yazmaya değmez.
             }
+            // Sorunun kendisi ve ekrandaki şık sırası, karşılaşma başına bir
+            // kez. Bunlar olmadan sonraki "OTOMATİK → C" ve "ÇELİŞKİ"
+            // satırları havada kalıyordu: hangi metne dokunulduğu, OCR'ın
+            // şıkları doğru okuyup okumadığı görülemiyordu.
+            if (newEncounter) {
+                log("SORU #$savedId «${p.question.take(70)}»")
+                log(
+                    "ŞIKLAR #$savedId: " +
+                        p.options.mapIndexed { i, o -> "${'A' + i}«${o.take(24)}»" }
+                            .joinToString(" ")
+                )
+            }
 
             // Soru dört şıkkıyla düzgün okundu: numara artana kadar bunu
             // yeniden okumaya çalışmayalım.
@@ -604,6 +618,20 @@ class CaptureAccessibilityService : AccessibilityService() {
             // Bekleme sırasında soru değişmiş olabilir.
             if (pendingAnswer?.bornAt != waiting.bornAt) return@launch
 
+            // Kutu sayısı ile metin sayısı tutmuyorsa hangi kutunun hangi
+            // metne ait olduğunu bilmiyoruz. Eskiden burada sessizce
+            // rastgeleye düşülüyordu — üstelik günlük yine "bilinen cevap"
+            // yazdığı için teşhis imkânsızdı. Dokunmamak yeğ: soru zaten
+            // bir sonraki karede yeniden okunacak.
+            if (waiting.rects.size != waiting.options.size) {
+                log(
+                    "otomatik atlandı #${waiting.id}: şık kutusu " +
+                        "(${waiting.rects.size}) ve metin (${waiting.options.size}) " +
+                        "sayısı tutmuyor"
+                )
+                return@launch
+            }
+
             // Soruyu daha önce görmüşsek doğru şıkka, görmemişsek rastgele
             // birine dokunuyoruz. Kayıttaki sıra değil, kayıttaki doğru
             // cevabın o anki ekrandaki sırası aranıyor: şıklar karışıyor.
@@ -617,8 +645,10 @@ class CaptureAccessibilityService : AccessibilityService() {
             (lookup as? Repo.KnownAnswer.Unmatched)?.let {
                 log(
                     "UYUŞMAZLIK #${waiting.id}: arşivdeki cevap " +
-                        (it.text?.let { t -> "\"$t\"" } ?: "(kayıt bozuk)") +
-                        " ekranda bulunamadı → rastgele seçiliyor"
+                        (it.text?.let { t -> "«$t»" } ?: "(kayıt bozuk)") +
+                        " ekranda bulunamadı → rastgele seçiliyor · ekranda: " +
+                        waiting.options.mapIndexed { i, o -> optionLabel(waiting, i) }
+                            .joinToString(" ")
                 )
             }
 
@@ -627,6 +657,16 @@ class CaptureAccessibilityService : AccessibilityService() {
             val retry = waiting.taps > 0
             val index = waiting.chosenIndex
                 ?: auto.pickOption(waiting.rects.size, known).also { waiting.chosenIndex = it }
+            // Arşiv bir şık gösterdiği hâlde ona basmıyorsak sebebi
+            // görünsün; yoksa "bilinen cevap" yazıp başka yere basmış
+            // oluyorduk.
+            if (known != null && index != known) {
+                log(
+                    "SAPMA #${waiting.id}: arşiv ${optionLabel(waiting, known)} diyor ama " +
+                        "${optionLabel(waiting, index)} seçildi " +
+                        "(kutu sayısı ${waiting.rects.size})"
+                )
+            }
 
             // Sayaçlar dokunuştan önce artıyor: jest başarısız olsa bile bu
             // bir denemedir, yoksa saniyede birkaç kez yeniden denenirdi.
@@ -648,7 +688,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                     if (cur.autoUseKnownAnswer) "rastgele (cevabı bilinmiyor)" else "rastgele"
             }
             log(
-                "OTOMATİK #${waiting.id} → ${'A' + index} · $neden" +
+                "OTOMATİK #${waiting.id} → ${optionLabel(waiting, index)} · $neden" +
                     (if (retry) " · ${waiting.taps}. deneme" else "") +
                     " · bu oturumda ${auto.tapCount} cevap"
             )
@@ -721,6 +761,38 @@ class CaptureAccessibilityService : AccessibilityService() {
         log("tur sonu · tanınan düğme yok · ekranda: $line")
     }
 
+    /**
+     * Bir şıkkı günlükte "C «Ayı»" biçiminde yazar.
+     *
+     * Sadece harf yazmak teşhisi imkânsız kılıyordu: şıklar her turda
+     * karıştığı için "arşiv C diyordu, doğrusu A" satırı, arşivin yanlış mı
+     * olduğunu yoksa dokunuşun mu kaydığını söylemiyordu. Metinle birlikte
+     * ikisi bir bakışta ayrılıyor.
+     */
+    private fun optionLabel(waiting: PendingAnswer, index: Int): String {
+        val harf = if (index in 0..3) ('A' + index).toString() else "?$index"
+        val metin = waiting.options.getOrNull(index) ?: return "$harf «?»"
+        return "$harf «${metin.take(28)}»"
+    }
+
+    /**
+     * Bir renk okuması karar sayılmadı — sebebini bir kez yazar.
+     *
+     * Atlanan kareler eskiden hiç görünmüyordu; günlükte "renk: YESIL" yazıp
+     * arkasından hiçbir şey olmaması "acaba kaçırdı mı" sorusunu cevapsız
+     * bırakıyordu.
+     */
+    private fun skipVerdict(
+        waiting: PendingAnswer,
+        neden: String,
+        a: AnswerColorDetector.Analysis
+    ) {
+        val satir = "karar atlandı #${waiting.id}: $neden · ${a.detail()}"
+        if (satir == waiting.lastSkip) return
+        waiting.lastSkip = satir
+        log(satir)
+    }
+
     /** İki şık listesi aynı metinleri aynı sırada mı taşıyor? */
     private fun sameOrder(a: List<String>, b: List<String>): Boolean =
         a.size == b.size && a.indices.all {
@@ -759,14 +831,17 @@ class CaptureAccessibilityService : AccessibilityService() {
     ): Boolean {
         val a = AnswerColorDetector.analyze(shot, waiting.rects, screenW, screenH)
 
-        // Şık kutuları çizildi mi? Renkli bir şık varsa kart zaten hazırdır;
-        // hepsi soluk/koyuysa geçiş animasyonu sürüyor demektir.
-        val cardReady = a.colors.isEmpty() ||
-            a.colors.all { maxOf(it[0], it[1], it[2]) >= CARD_READY_MIN }
-        waiting.brightSince = when {
-            !cardReady -> 0L
-            waiting.brightSince == 0L -> SystemClock.uptimeMillis()
-            else -> waiting.brightSince
+        // Şık kutuları çizildi mi? Ölçüm doğrudan parlaklığa bakıyor.
+        //
+        // İki incelik var. Birincisi: eskiden "renkli bir şık varsa kart
+        // hazırdır" diyorduk, ama korunmak istediğimiz şey zaten geçiş
+        // karesinin yanlışlıkla renkli okunmasıydı — kontrol kendi kendini
+        // iptal ediyordu. İkincisi: bir kez oturan kart geri "çizilmemiş"
+        // hâle dönmez. Karar açılınca kırmızıya dönen şık koyulaşıyor
+        // (184,152,168 gibi) ve eski kural o karede bayrağı sıfırlayıp
+        // beklemeyi baştan başlatıyordu.
+        if (waiting.brightSince == 0L && a.cardRendered(CARD_READY_MIN)) {
+            waiting.brightSince = SystemClock.uptimeMillis()
         }
 
         // Renk deseni her değiştiğinde günlüğe düşüyor; kaçan cevapların
@@ -782,24 +857,40 @@ class CaptureAccessibilityService : AccessibilityService() {
         // --- 1. Kararın yeşili göründü mü? -----------------------------------
         val correct = a.correctIndex
         if (correct != null) {
-            if (a.verdictCertain) {
-                // Kırmızı da var: karar kesin açılmış, bilememişsin.
-                record(waiting, correct, Repo.AnswerEvidence.CERTAIN, false, attempt)
-                log("CEVAP #${waiting.id} → ${'A' + correct} · bilemedin")
-                finishAnswer(waiting.id)
-                return true
+            // Kart daha ekrana oturmadıysa bu bir karar değil, beliriş
+            // animasyonunun ortasından geçen bir karedir. Oyun kararı ancak
+            // birisi (sen ya da bot) dokunduktan sonra açıyor; soru belirir
+            // belirmez gelen "yeşil" fizikselen mümkün değil.
+            if (waiting.brightSince == 0L) {
+                skipVerdict(waiting, "kart henüz çizilmedi", a)
+                waiting.greenIndex = null
+                return false
             }
-            // Kırmızı yok: doğru bilmiş olabilirsin. Ama kırmızı senin şıkkında
-            // birkaç kare geç belirebileceği için kısa bir doğrulama payı var.
             val now = SystemClock.uptimeMillis()
             if (waiting.greenIndex != correct) {
                 waiting.greenIndex = correct
                 waiting.greenSince = now
                 return false
             }
-            if (now - waiting.greenSince < GREEN_CONFIRM_MS) return false
-            record(waiting, correct, Repo.AnswerEvidence.GREEN, true, attempt)
-            log("CEVAP #${waiting.id} → ${'A' + correct} · bildin")
+            // Kırmızı varsa karar kesin açılmıştır, ama yine de tek kareye
+            // güvenmiyoruz: geçiş karelerinde bir şık yeşil bandına, bir
+            // başkası kırmızı bandına aynı anda düşebiliyor ve o tek kare
+            // "renk (kesin)" damgasıyla arşive yazılıyordu. En güçlü kanıt
+            // olduğu için sonraki doğru okumalar onu bir daha düzeltemiyor,
+            // bot da her turda aynı yanlış şıkka basmaya devam ediyordu.
+            val bekle = if (a.verdictCertain) CERTAIN_CONFIRM_MS else GREEN_CONFIRM_MS
+            if (now - waiting.greenSince < bekle) return false
+
+            val kesin = a.verdictCertain
+            record(
+                waiting, correct,
+                if (kesin) Repo.AnswerEvidence.CERTAIN else Repo.AnswerEvidence.GREEN,
+                userWasRight = !kesin, countAsAttempt = attempt
+            )
+            log(
+                "CEVAP #${waiting.id} → ${optionLabel(waiting, correct)} · " +
+                    (if (kesin) "bilemedin" else "bildin") + " · ${a.detail()}"
+            )
             finishAnswer(waiting.id)
             return true
         }
@@ -814,7 +905,10 @@ class CaptureAccessibilityService : AccessibilityService() {
         }
         if (dimmed != null) {
             record(waiting, dimmed, Repo.AnswerEvidence.TIMEOUT, false, countAsAttempt = false)
-            log("CEVAP #${waiting.id} → ${'A' + dimmed} · süre doldu (denemeye sayılmadı)")
+            log(
+                "CEVAP #${waiting.id} → ${optionLabel(waiting, dimmed)} · " +
+                    "süre doldu (denemeye sayılmadı) · ${a.colorSummary()}"
+            )
             finishAnswer(waiting.id)
             return true
         }
@@ -851,8 +945,12 @@ class CaptureAccessibilityService : AccessibilityService() {
             return false
         }
         if (now - waiting.pendingSince < VERDICT_CONFIRM_MS) return false
+        if (waiting.brightSince == 0L) {
+            skipVerdict(waiting, "kart henüz çizilmedi", a)
+            return false
+        }
         record(waiting, pending, Repo.AnswerEvidence.TOUCH, true, attempt)
-        log("CEVAP #${waiting.id} → ${'A' + pending} · bildin (turkuaz sabit kaldı)")
+        log("CEVAP #${waiting.id} → ${optionLabel(waiting, pending)} · bildin (turkuaz sabit kaldı)")
         finishAnswer(waiting.id)
         return true
     }
@@ -881,7 +979,10 @@ class CaptureAccessibilityService : AccessibilityService() {
         }
         waiting.knownIndex?.let { known ->
             if (known != index) {
-                log("ÇELİŞKİ #${waiting.id}: arşiv ${'A' + known} diyordu, doğrusu ${'A' + index}")
+                log(
+                    "ÇELİŞKİ #${waiting.id}: arşiv ${optionLabel(waiting, known)} diyordu, " +
+                        "oyun ${optionLabel(waiting, index)} dedi"
+                )
             }
         }
         repo.recordReveal(
@@ -1203,6 +1304,17 @@ class CaptureAccessibilityService : AccessibilityService() {
          * Doğru cevapta oyun seni bekletmeden geçtiği için kısa tutuldu.
          */
         private const val GREEN_CONFIRM_MS = 300L
+        /**
+         * Kırmızı da görüldüğünde beklenen doğrulama süresi.
+         *
+         * Kırmızı kararın açıldığını gösterdiği için yeşilden kısa; ama sıfır
+         * değil. Tek kareye güvendiğimizde, beliriş/kapanış animasyonunda bir
+         * şıkkın yeşil bandına başkasının kırmızı bandına aynı anda düştüğü
+         * kareler "renk (kesin)" damgasıyla arşive yazılıyordu — en güçlü
+         * kanıt olduğu için de bir daha düzelmiyordu. 50 ms'lik karelerde
+         * bu üç kare demek.
+         */
+        private const val CERTAIN_CONFIRM_MS = 120L
         /** Bu süre içinde aynı soruya ikinci kez cevap yazılmaz. */
         private const val ANSWER_COOLDOWN_MS = 20_000L
         /** Otomatik modda bir soruya en fazla kaç kez dokunulur. */
