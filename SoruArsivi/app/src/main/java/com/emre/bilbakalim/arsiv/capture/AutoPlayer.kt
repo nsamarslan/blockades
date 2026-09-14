@@ -183,17 +183,6 @@ class AutoPlayer(
         return best
     }
 
-    private fun buttonScore(text: String): Int {
-        val k = TurkishText.normalizeKey(text)
-        if (k.length < 2 || k.length > 28) return 0
-        if (PLAY_AGAIN.any { it == k }) return 4
-        if (k.length <= 20 && PLAY_AGAIN.any { k.contains(it) }) return 3
-        // Kapatma yazılarında yalnızca birebir eşleşme kabul ediliyor.
-        // Parça eşleşmesi "Tümünü kapat" düğmesini de yakalıyordu: bot son
-        // kullanılanlar ekranında ona basıp oyunu tamamen kapatmıştı.
-        if (DISMISS.any { it == k }) return 2
-        return 0
-    }
 
     /**
      * Ekrana tek bir dokunuş gönderir.
@@ -244,6 +233,26 @@ class AutoPlayer(
 
     companion object {
         private const val TAG = "SoruArsivi/Auto"
+
+        /**
+         * Bir yazının "tur başlat / pencereyi kapat" düğmesi olma puanı.
+         * Companion'da duruyor ki servis örneği olmadan test edilebilsin.
+         */
+        internal fun buttonScore(text: String): Int {
+            val k = TurkishText.normalizeKey(text)
+            if (k.length < 2 || k.length > 28) return 0
+            if (PLAY_AGAIN.any { it == k }) return 4
+            // Parça eşleşmesi yalnızca baş ya da sonda: "En Çok Oynananlar"
+            // normalize edilince "encokoynananlar" oluyor ve içinde "oyna"
+            // geçtiği için bot lobide o listeye basıp turu geciktiriyordu.
+            // "tekraroyna", "hemenoyna", "oynamayadevam" yine eşleşiyor.
+            if (k.length <= 20 && PLAY_AGAIN.any { k.startsWith(it) || k.endsWith(it) }) return 3
+            // Kapatma yazılarında yalnızca birebir eşleşme kabul ediliyor.
+            // Parça eşleşmesi "Tümünü kapat" düğmesini de yakalıyordu: bot son
+            // kullanılanlar ekranında ona basıp oyunu tamamen kapatmıştı.
+            if (DISMISS.any { it == k }) return 2
+            return 0
+        }
 
         /** Dokunuşun ekranda kaldığı süre. */
         private const val TAP_DURATION_MS = 80L

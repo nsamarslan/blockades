@@ -75,6 +75,16 @@ class CaptureAccessibilityService : AccessibilityService() {
     @Volatile private var pollJob: Job? = null
     @Volatile private var autoJob: Job? = null
     @Volatile private var lastFrameSig: IntArray? = null
+    /** Ekranın en son ne zaman değiştiği — "kaç saniyedir kıpırdamıyor" için. */
+    @Volatile private var lastFrameChangeAt = 0L
+    /** Kıpırdamayan ekranda zorla yapılan son tam tarama. */
+    @Volatile private var lastForcedScanAt = 0L
+    /** Yakın plan OCR'ın denendiği kare; aynı kare için ikinci kez denenmez. */
+    @Volatile private var closeUpSig: IntArray? = null
+    /** Son tam ekran OCR sonucu — yakın plan okumasıyla birleştirmek için. */
+    @Volatile private var lastOcrItems: List<TextItem> = emptyList()
+    @Volatile private var lastAutoIdleLogAt = 0L
+    @Volatile private var lastAutoIdleReason: String? = null
     /** Ekranda en son ne zaman gerçek bir soru görüldü (otomatik mod için). */
     @Volatile private var lastQuestionAt = 0L
     /** Tur sonu ekranında en son hangi yazıları gördük — günlük tekrarı olmasın. */
@@ -374,12 +384,31 @@ class CaptureAccessibilityService : AccessibilityService() {
             else null
 
         // --- 1. Ekran anlamlı biçimde değişti mi? -----------------------------
+        //
+        // Aynı kareyi yeniden okumamak işlemciyi koruyor; ama bekleyen soru
+        // yokken bu atlama bizi kör ediyordu. Soru ekranda dururken ilk
+        // okuma "3/4 şık" diye reddedilince sonraki kareler "aynı ekran"
+        // sayılıp sessizce atlanıyor, ne yeni bir deneme yapılıyor ne de
+        // günlüğe satır düşüyordu: 83 saniyelik boşluklar bundan. Şimdi
+        // bekleyen soru yoksa kıpırdamayan ekran da belirli aralıkla baştan
+        // okunuyor — ikinci okuma aynı sonucu verse bile en azından günlükte
+        // sebebi görünüyor ve yakın plan OCR şansını buluyor.
+        var frameStatic = false
         if (shot != null) {
             val sig = frameSignature(shot)
             val prev = lastFrameSig
-            if (sig != null && prev != null && sameFrame(sig, prev) && !autoIdle) {
-                shot.recycle()
-                return
+            val now = SystemClock.uptimeMillis()
+            if (sig != null && prev != null && sameFrame(sig, prev)) {
+                frameStatic = true
+                val force = waiting == null && now - lastForcedScanAt >= STATIC_RESCAN_MS
+                if (!autoIdle && !force) {
+                    shot.recycle()
+                    return
+                }
+                if (force) lastForcedScanAt = now
+            } else {
+                lastFrameChangeAt = now
+                closeUpSig = null
             }
             if (sig != null) lastFrameSig = sig
         }
@@ -396,9 +425,35 @@ class CaptureAccessibilityService : AccessibilityService() {
         if ((needOcr || autoIdle) && shot != null && ocrDue) {
             lastOcrAt = SystemClock.uptimeMillis()
             ocrItems = OcrEngine.recognize(shot)
-            val viaOcr = QuestionParser.parse(
+            lastOcrItems = ocrItems
+            var viaOcr = QuestionParser.parse(
                 ocrItems, shot.width, shot.height, s, fromAccessibility = false
             )
+            // Dört şıktan üçü okundu ve ekran bir süredir kıpırdamıyor: bu
+            // artık "şıklar teker teker beliriyor" hâli değil, OCR'ın bir
+            // şıkkı görmemesi. Tek karakterlik şıklarda ("1") ML Kit bloğu
+            // sık düşürüyor. Şık şeridini kırpıp iki kat büyüterek bir kez
+            // daha okuyoruz; küçük harfler büyütülünce tanınıyor.
+            if (viaOcr == null && shot != null && frameStatic &&
+                QuestionParser.lastReject?.startsWith("şıklar henüz tamamlanmadı") == true &&
+                SystemClock.uptimeMillis() - lastFrameChangeAt >= CLOSEUP_AFTER_MS &&
+                lastFrameSig?.let { sig -> closeUpSig?.let { sameFrame(it, sig) } } != true
+            ) {
+                closeUpSig = lastFrameSig
+                val onceki = ocrItems.size
+                val yakin = closeUpOptions(shot, s)
+                if (yakin != null) {
+                    ocrItems = yakin
+                    viaOcr = QuestionParser.parse(
+                        ocrItems, shot.width, shot.height, s, fromAccessibility = false
+                    )
+                    log(
+                        "yakın plan OCR: $onceki → ${ocrItems.size} metin · " +
+                            (viaOcr?.let { "${it.options.size} şık bulundu" }
+                                ?: "RED: ${QuestionParser.lastReject ?: "?"}")
+                    )
+                }
+            }
             if (viaOcr != null && (viaNodes == null || viaOcr.confidence > viaNodes.confidence + 0.04f)) {
                 parsed = rescale(viaOcr, shot.width, shot.height, screenW, screenH)
                 source = if (nodes.isNotEmpty()) CaptureSource.HYBRID else CaptureSource.OCR
@@ -588,8 +643,21 @@ class CaptureAccessibilityService : AccessibilityService() {
      * yoksa jestin tamamlanmasını beklerken tarama döngüsü durur.
      */
     private fun autoAnswerTick(s: Prefs.Settings, screenW: Int, screenH: Int) {
-        val waiting = pendingAnswer ?: return
-        if (waiting.rects.size < 2) return
+        val waiting = pendingAnswer
+        if (waiting == null) {
+            // Soru yakalanamadıysa bot dokunmaz — ama bunu sessizce
+            // yapmasın. Sebep, ayrıştırıcının son red gerekçesi: teşhis
+            // ekranında "neden bekliyor" sorusu ancak böyle cevaplanıyor.
+            val since = SystemClock.uptimeMillis() - lastQuestionAt
+            if (since > AUTO_IDLE_LOG_AFTER_MS) {
+                noteAutoIdle("bekleyen soru yok · son red: ${QuestionParser.lastReject ?: "?"}")
+            }
+            return
+        }
+        if (waiting.rects.size < 2) {
+            noteAutoIdle("şık kutusu ${waiting.rects.size}, dokunulmaz")
+            return
+        }
         if (waiting.taps >= AUTO_MAX_TAPS) return
         if (autoJob?.isActive == true) return
 
@@ -791,6 +859,15 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (satir == waiting.lastSkip) return
         waiting.lastSkip = satir
         log(satir)
+    }
+
+    /** Aynı sebep beş saniyede bir; günlüğü boğmadan "ne bekliyor" görünsün. */
+    private fun noteAutoIdle(neden: String) {
+        val now = SystemClock.uptimeMillis()
+        if (neden == lastAutoIdleReason && now - lastAutoIdleLogAt < AUTO_IDLE_LOG_GAP_MS) return
+        lastAutoIdleReason = neden
+        lastAutoIdleLogAt = now
+        log("otomatik: dokunmuyorum · $neden")
     }
 
     /** İki şık listesi aynı metinleri aynı sırada mı taşıyor? */
@@ -1007,6 +1084,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         pendingAnswer = null
         // Sonraki kare kararın rengini taşıyor; yeniden okunsun.
         lastFrameSig = null
+        lastAutoIdleReason = null
         showCountNotification()
     }
 
@@ -1137,6 +1215,44 @@ class CaptureAccessibilityService : AccessibilityService() {
     }.getOrNull()
 
     /** Ekranın kaba bir gri tonlamalı özeti — kare karşılaştırması için. */
+    /**
+     * Şık şeridini kırpıp iki kat büyüterek yeniden okur; sonucu ekranın
+     * geri kalanındaki metinlerle birleştirip döndürür.
+     *
+     * Şerit dışındaki metinler (soru, sayaç) ilk okumadan olduğu gibi
+     * kalıyor; yalnızca şık bölgesi yakın plandan geliyor. Kutular
+     * büyütülmüş görüntüden gelip tam ekran ölçeğine geri çevriliyor —
+     * yoksa dokunuş iki kat aşağıya giderdi.
+     */
+    private suspend fun closeUpOptions(shot: Bitmap, s: Prefs.Settings): List<TextItem>? {
+        val top = (s.optionsTop * shot.height).toInt().coerceIn(0, shot.height - 2)
+        val bottom = (s.optionsBottom * shot.height).toInt().coerceIn(top + 2, shot.height)
+        val crop = runCatching {
+            Bitmap.createBitmap(shot, 0, top, shot.width, bottom - top)
+        }.getOrNull() ?: return null
+        val big = runCatching {
+            Bitmap.createScaledBitmap(crop, crop.width * CLOSEUP_SCALE, crop.height * CLOSEUP_SCALE, true)
+        }.getOrNull()
+        if (big == null) { crop.recycle(); return null }
+        val items = runCatching { OcrEngine.recognize(big) }.getOrDefault(emptyList())
+        if (big !== crop) big.recycle()
+        crop.recycle()
+        if (items.isEmpty()) return null
+
+        val mapped = items.map { it ->
+            it.copy(
+                bounds = Rect(
+                    it.bounds.left / CLOSEUP_SCALE,
+                    it.bounds.top / CLOSEUP_SCALE + top,
+                    it.bounds.right / CLOSEUP_SCALE,
+                    it.bounds.bottom / CLOSEUP_SCALE + top
+                )
+            )
+        }
+        val disaridakiler = lastOcrItems.filter { it.centerY !in top..bottom }
+        return disaridakiler + mapped
+    }
+
     private fun frameSignature(bmp: Bitmap): IntArray? = runCatching {
         val small = Bitmap.createScaledBitmap(bmp, SIG_W, SIG_H, true)
         val px = IntArray(SIG_W * SIG_H)
@@ -1351,6 +1467,23 @@ class CaptureAccessibilityService : AccessibilityService() {
          * ancak ~3 birim değiştirir; eşik 4'te kalsaydı bu değişim kaçardı.
          */
         private const val FRAME_DIFF_LIMIT = 2
+        /**
+         * Bekleyen soru yokken kıpırdamayan ekranın yeniden okunma aralığı.
+         * Aynı ekranı tekrar okumak genelde aynı sonucu verir; ama ilk
+         * okumada bir şık kaçtıysa yakın plan denemesi ancak böyle sıraya
+         * giriyor, ve günlük en azından "hâlâ neden bekliyoruz"u gösteriyor.
+         */
+        private const val STATIC_RESCAN_MS = 1500L
+        /**
+         * Yakın plan OCR'dan önce ekranın en az bu kadar kıpırdamamış olması
+         * gerekiyor: şıklar teker teker belirirken 3/4 normaldir, o anda
+         * büyüterek okumak boşuna işlemci harcar.
+         */
+        private const val CLOSEUP_AFTER_MS = 700L
+        private const val CLOSEUP_SCALE = 2
+        /** Soru görmeyeli bu kadar olduysa bot neden beklediğini yazsın. */
+        private const val AUTO_IDLE_LOG_AFTER_MS = 3000L
+        private const val AUTO_IDLE_LOG_GAP_MS = 5000L
 
         /** Arayüzün servisin açık olup olmadığını görmesi için. */
         val running = MutableStateFlow(false)

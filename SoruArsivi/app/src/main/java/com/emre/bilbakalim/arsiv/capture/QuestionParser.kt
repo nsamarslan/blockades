@@ -143,7 +143,14 @@ object QuestionParser {
         // görünene kadar bekliyoruz. Sonraki tarama saniyenin onda birinde
         // geleceği için bu bekleme fark edilmiyor.
         if (s.requireFourOptions && optionTexts.size < 4) {
-            return reject("şıklar henüz tamamlanmadı (${optionTexts.size}/4)")
+            // Hangi şıkların bulunduğu ve nerede durdukları da yazılıyor:
+            // "3/4" tek başına, dördüncünün OCR'da mı kaybolduğunu yoksa
+            // henüz belirmediğini mi söylemiyordu. Konumlar ekran
+            // yüksekliğinin yüzdesi; boşluğun nerede olduğu görülüyor.
+            val bulunan = options.joinToString(" ") { (item, text) ->
+                "«${text.take(16)}»@%${item.centerY * 100 / screenH}"
+            }
+            return reject("şıklar henüz tamamlanmadı (${optionTexts.size}/4) · $bulunan")
         }
 
         // --- 2. Soru metni -----------------------------------------------------

@@ -218,11 +218,27 @@ object TurkishText {
      */
     fun matchIndex(options: List<String>, text: String?): Int? {
         if (text.isNullOrBlank() || options.isEmpty()) return null
+
+        // 1. Simgeleri koruyan birebir eşleşme. normalizeKey '<' ve '>'
+        //    işaretlerini sildiği için "Satış fiyatı > Maliyet" ile
+        //    "Satış fiyatı < Maliyet" aynı anahtara düşüyor ve ilk bulunan
+        //    kazanıyordu — hem bot yanlış şıkka basıyor hem de arşive
+        //    yanlış cevap yazılıyordu.
+        val soft = softKey(text)
+        if (soft.isNotEmpty()) {
+            options.forEachIndexed { i, o -> if (softKey(o) == soft) return i }
+        }
+
         val key = normalizeKey(text)
         if (key.isEmpty()) return null
 
-        options.forEachIndexed { i, o -> if (normalizeKey(o) == key) return i }
+        // 2. Yalnızca harf-rakam üzerinden birebir. Aynı anahtara düşen
+        //    birden çok şık varsa hangisi olduğu bilinemez: null.
+        val exact = options.indices.filter { normalizeKey(options[it]) == key }
+        if (exact.size == 1) return exact[0]
+        if (exact.size > 1) return null
 
+        // 3. Bulanık benzerlik (OCR harf hataları için).
         var best = -1
         var bestSim = 0f
         options.forEachIndexed { i, o ->
@@ -232,8 +248,15 @@ object TurkishText {
                 best = i
             }
         }
-        return if (best >= 0 && bestSim >= OPTION_MATCH_MIN) best else null
+        if (best < 0 || bestSim < OPTION_MATCH_MIN) return null
+        // En iyi adayla aynı anahtarı taşıyan bir başkası varsa belirsiz.
+        val bestKey = normalizeKey(options[best])
+        return if (options.count { normalizeKey(it) == bestKey } > 1) null else best
     }
+
+    /** Boşluk ve büyük-küçük dışında her şeyi koruyan yumuşak anahtar. */
+    private fun softKey(s: String): String =
+        fold(lower(s)).trim().replace(Regex("\\s+"), " ")
 
     /** Şık eşleşmesi için en düşük benzerlik. */
     private const val OPTION_MATCH_MIN = 0.85f
