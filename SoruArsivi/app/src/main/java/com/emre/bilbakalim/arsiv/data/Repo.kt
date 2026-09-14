@@ -276,12 +276,17 @@ class Repo private constructor(context: Context) {
         // dokunmuyoruz; sayaçlar yine de işleniyor, çünkü karşılaşma gerçek.
         val keepStored = shouldKeepStored(row.correctIndex, row.answerSource, evidence)
 
-        // Ekrandaki metin kayıttaki listede bulunamıyorsa yazmıyoruz. Eski
-        // hâli sıraya düşüyordu ("?: correctIndex"): şıklar her turda
-        // karıştığı için ekrandaki 3. sıra kayıttaki 3. sıra değildir, ve
-        // OCR'ın bozuk okuduğu bir şık yüzünden arşive rastgele bir cevap
-        // giriyordu. Yanlış cevap yazmaktansa cevapsız kalmak yeğ; bir
-        // sonraki karşılaşma zaten yeniden öğretir.
+        // Ekrandaki doğru şıkkın METNİNİ arşivdeki listede ara.
+        //
+        // Kritik: burada sıraya düşmek yasak. Oyun şıkları her turda
+        // karıştırdığı için, ekrandaki 2. şık ile kayıttaki 2. şık aynı
+        // şey değildir. Metin eşleşmiyorsa cevap yazmıyoruz — bir sonraki
+        // karşılaşmada zaten yeniden okunacak; yanlış cevap yazıp otomatik
+        // modun her turda o yanlışa basmasına sebep olmaktan iyidir.
+        //
+        // screenOptions boş bırakılırsa (eski çağrılar) sıra olduğu gibi
+        // kullanılır; bu yalnızca ilk kayıtta güvenlidir, orada iki liste
+        // zaten aynıdır.
         val stored: Int = if (screenOptions.isEmpty()) {
             correctIndex
         } else {
@@ -291,7 +296,10 @@ class Repo private constructor(context: Context) {
                 return
             }
             TurkishText.matchIndex(row.options, screenText) ?: run {
-                Log.w(TAG, "Cevap #$id yazılamadı: «${screenText.take(40)}» kayıtta bulunamadı")
+                Log.w(
+                    TAG,
+                    "Cevap #$id yazılamadı: «${screenText.take(40)}» arşivde bulunamadı"
+                )
                 return
             }
         }

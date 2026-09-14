@@ -127,15 +127,21 @@ class CaptureAccessibilityService : AccessibilityService() {
          * bilgisi tek başına bir işe yaramıyor: hem kayda doğru cevabı
          * yazarken hem de otomatik modda bilinen cevaba dokunurken metni
          * eşleştirmek gerekiyor.
+         *
+         * **var olmak zorunda.** Oyun şıkların sırasını değiştirdiğinde
+         * [rects] tek başına tazelenirse "2. metin" ile "2. kutu" başka
+         * şıklara ait olur; bot bir şıkka basıp oyun başkasında tepki verir
+         * ve arşive yanlış cevap yazılır. İkisi her zaman birlikte
+         * güncellenmeli.
          */
-        val options: List<String>,
+        var options: List<String>,
         /**
          * Soru ekrana ne zaman geldi. Otomatik dokunuş hem bu süreyi bekler
          * hem de bu değeri karşılaşmanın kimliği olarak kullanır: aynı soru
          * sonraki turda yeniden çıktığında veritabanı kimliği aynı kalır ama
          * bu damga değişir, böylece yeniden cevaplanır.
          */
-        val bornAt: Long = SystemClock.uptimeMillis(),
+        var bornAt: Long = SystemClock.uptimeMillis(),
         /** Kararın yeşili hangi şıkta ve ne zamandan beri görülüyor. */
         var greenIndex: Int? = null,
         var greenSince: Long = 0L,
@@ -146,6 +152,17 @@ class CaptureAccessibilityService : AccessibilityService() {
         var lastSummary: String? = null,
         /** Atlanan karar satırı da tekrarlanmasın. */
         var lastSkip: String? = null,
+        /**
+         * Şık yerleşiminin sürümü; oyun şıkları karıştırdıkça artar.
+         *
+         * [bornAt] artık değişebilir olduğu için "bu hâlâ aynı soru mu"
+         * kontrolü tek başına yetmiyor: aynı nesne üzerinde metinler ve
+         * kutular değiştiğinde damga da değiştiği hâlde karşılaştırma hep
+         * eşit çıkıyor. Dokunuş ile kayıt arasında geçen sürede şıklar
+         * karışırsa, elimizdeki kutu artık başka bir metne ait olur. Bu
+         * sayaç o aralığı yakalıyor.
+         */
+        var layout: Int = 0,
         /** Otomatik modda bu soruya kaç kez dokunuldu ve en son ne zaman. */
         var taps: Int = 0,
         var lastTapAt: Long = 0L,
@@ -505,17 +522,48 @@ class CaptureAccessibilityService : AccessibilityService() {
             TurkishText.similarity(p.question, lockedQuestion) > LOCK_MIN_SIMILARITY
 
         if (locked || p.key == lastKey) {
-            // Şıklar animasyonla yerine oturuyor; bekleyen sorunun kutularını
-            // tazeliyoruz ki dokunuş kaymış bir konuma gitmesin.
+            // Şıklar animasyonla yerine oturuyor. Oyun şıkların sırasını
+            // değiştirdiğinde burada `options` ve `rects` BİRLİKTE
+            // tazelenmek zorunda.
             //
-            // Ama yalnızca şık metinleri **aynı sırada** çıktıysa. Parmak izi
-            // şıkları sıralayarak hesaplandığı için, sırası değişmiş bir okuma
-            // da aynı anahtarı üretiyor; kutuları tek başına tazelemek metin
-            // ile kutuyu birbirinden ayırıyordu. Sonuç: bot bir şıkka basıyor,
-            // oyun başka şıkta tepki veriyor, cevap yanlış kaydediliyordu.
+            // Eskiden yalnızca kutular tazeleniyor, metinler ilk okumadan
+            // kalıyordu. O zaman "2. metin" ile "2. kutu" başka şıklara ait
+            // oluyor: bot bir şıkka basıp oyun başkasında tepki veriyor,
+            // arşive yanlış cevap yazılıyor ve otomatik mod sonraki turlarda
+            // o yanlış cevaba basmaya devam ediyordu — hata kendini besliyordu.
             pendingAnswer?.let { waiting ->
-                if (waiting.id == currentEncounterId && sameOrder(waiting.options, p.options)) {
-                    waiting.rects = p.optionRects
+                if (waiting.id == currentEncounterId) {
+                    if (sameOrder(waiting.options, p.options)) {
+                        // Sıra aynı: kutular animasyonla biraz kaymış olabilir.
+                        waiting.rects = p.optionRects
+                    } else if (waiting.options.size == p.options.size) {
+                        // Sıra değişti. Metinle kutu birlikte güncelleniyor.
+                        waiting.options = p.options
+                        waiting.rects = p.optionRects
+                        // Konuma bağlı bütün durum artık geçersiz: hangi
+                        // kutunun yeşil olduğu, hangisine basıldığı, kaç
+                        // saniyedir beklenildiği — hepsi yeniden okunmalı.
+                        waiting.greenIndex = null
+                        waiting.greenSince = 0L
+                        waiting.pendingIndex = null
+                        waiting.pendingSince = 0L
+                        waiting.chosenIndex = null
+                        waiting.knownIndex = null
+                        waiting.lastSummary = null
+                        waiting.lastSkip = null
+                        // Yeni bir karşılaşma gibi sıfırla: dokunma gecikmesi
+                        // bu andan sayılsın, kart yeniden otursun diye beklesin.
+                        waiting.bornAt = SystemClock.uptimeMillis()
+                        waiting.brightSince = 0L
+                        waiting.taps = 0
+                        waiting.lastTapAt = 0L
+                        waiting.autoTapped = false
+                        // Uçuşta olan dokunuş ve kayıt işleri bu artıştan
+                        // eski yerleşimle çalıştıklarını anlayıp vazgeçsin.
+                        waiting.layout++
+                    }
+                    // Sayılar uyuşmuyorsa (bir tarafta OCR şık düşürmüşse)
+                    // hiçbir şeye dokunmuyoruz: yanlış eşleştirme riski var.
                 }
             }
             shot?.let { if (!it.isRecycled) it.recycle() }
@@ -691,6 +739,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             // rastgeleye düşülüyordu — üstelik günlük yine "bilinen cevap"
             // yazdığı için teşhis imkânsızdı. Dokunmamak yeğ: soru zaten
             // bir sonraki karede yeniden okunacak.
+            val layoutAtStart = waiting.layout
             if (waiting.rects.size != waiting.options.size) {
                 log(
                     "otomatik atlandı #${waiting.id}: şık kutusu " +
@@ -743,6 +792,12 @@ class CaptureAccessibilityService : AccessibilityService() {
             waiting.autoTapped = true
             waiting.knownIndex = known
 
+            // Arşiv sorgusu sürerken şıklar karışmış olabilir; o zaman
+            // elimizdeki kutu artık başka bir metne ait.
+            if (waiting.layout != layoutAtStart) {
+                log("otomatik iptal #${waiting.id}: şıklar dokunmadan önce karıştı")
+                return@launch
+            }
             if (!auto.tapOption(waiting.rects, index, longPress = retry)) {
                 log("otomatik: #${waiting.id} şıkkına dokunulamadı")
                 return@launch
@@ -906,6 +961,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         screenH: Int,
         timedOutHint: Boolean?
     ): Boolean {
+        val layout = waiting.layout
         val a = AnswerColorDetector.analyze(shot, waiting.rects, screenW, screenH)
 
         // Şık kutuları çizildi mi? Ölçüm doğrudan parlaklığa bakıyor.
@@ -962,7 +1018,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             record(
                 waiting, correct,
                 if (kesin) Repo.AnswerEvidence.CERTAIN else Repo.AnswerEvidence.GREEN,
-                userWasRight = !kesin, countAsAttempt = attempt
+                userWasRight = !kesin, countAsAttempt = attempt, layout = layout
             )
             log(
                 "CEVAP #${waiting.id} → ${optionLabel(waiting, correct)} · " +
@@ -981,7 +1037,8 @@ class CaptureAccessibilityService : AccessibilityService() {
             SystemClock.uptimeMillis() - waiting.bornAt >= MIN_TIMEOUT_MS
         }
         if (dimmed != null) {
-            record(waiting, dimmed, Repo.AnswerEvidence.TIMEOUT, false, countAsAttempt = false)
+            record(waiting, dimmed, Repo.AnswerEvidence.TIMEOUT, false,
+                countAsAttempt = false, layout = layout)
             log(
                 "CEVAP #${waiting.id} → ${optionLabel(waiting, dimmed)} · " +
                     "süre doldu (denemeye sayılmadı) · ${a.colorSummary()}"
@@ -1026,7 +1083,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             skipVerdict(waiting, "kart henüz çizilmedi", a)
             return false
         }
-        record(waiting, pending, Repo.AnswerEvidence.TOUCH, true, attempt)
+        record(waiting, pending, Repo.AnswerEvidence.TOUCH, true, attempt, layout)
         log("CEVAP #${waiting.id} → ${optionLabel(waiting, pending)} · bildin (turkuaz sabit kaldı)")
         finishAnswer(waiting.id)
         return true
@@ -1044,8 +1101,16 @@ class CaptureAccessibilityService : AccessibilityService() {
         index: Int,
         evidence: Repo.AnswerEvidence,
         userWasRight: Boolean,
-        countAsAttempt: Boolean
+        countAsAttempt: Boolean,
+        /** Rengin okunduğu andaki şık yerleşimi. */
+        layout: Int = waiting.layout
     ) {
+        // Renk okunduktan sonra şıklar karıştıysa, gördüğümüz yeşil kutu
+        // artık başka bir metne ait: o cevabı yazmak arşivi bozar.
+        if (waiting.layout != layout) {
+            log("atlandı #${waiting.id}: renk okunduktan sonra şıklar karıştı")
+            return
+        }
         // Son emniyet: kutu sayısı ile metin sayısı tutmuyorsa hangi rengin
         // hangi şıkka ait olduğunu bilmiyoruz demektir. Yanlış cevap yazmaktansa
         // hiç yazmamak yeğ.
