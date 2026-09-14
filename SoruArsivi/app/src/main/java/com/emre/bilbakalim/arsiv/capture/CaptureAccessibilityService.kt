@@ -293,6 +293,10 @@ class CaptureAccessibilityService : AccessibilityService() {
                     if (active != null && active in cur.targetPackages) {
                         misses = 0
                         if (!cur.paused) requestScan()
+                        // Cevabı bekleyen bir soru varken hızlı yoklama:
+                        // kartın oturduğu an ne kadar erken ölçülürse dokunuş
+                        // da o kadar erken gider.
+                        if (pendingAnswer?.brightSince == 0L) delay(POLL_FAST_MS)
                     } else {
                         misses++
                         // Otomatik modda araya giren bir reklam ya da sistem
@@ -417,12 +421,21 @@ class CaptureAccessibilityService : AccessibilityService() {
             val now = SystemClock.uptimeMillis()
             if (sig != null && prev != null && sameFrame(sig, prev)) {
                 frameStatic = true
-                val force = waiting == null && now - lastForcedScanAt >= STATIC_RESCAN_MS
+                // Bekleyen soru varken kartın oturduğunu HENÜZ ölçmediysek
+                // kareyi atlamak yasak. Oturmuş bir kart zaten kıpırdamayan
+                // karedir: tam ölçmemiz gereken an burasıdır. Atlayınca
+                // brightSince hiç kurulmuyor, otomatik dokunuş da her seferinde
+                // 4 saniyelik emniyet süresini bekliyordu — ayarlardaki
+                // "dokunmadan önce bekleme" değeri bu yüzden hiçbir işe
+                // yaramıyordu.
+                val kartOlculmeli = waiting != null && waiting.brightSince == 0L
+                val force = kartOlculmeli ||
+                    (waiting == null && now - lastForcedScanAt >= STATIC_RESCAN_MS)
                 if (!autoIdle && !force) {
                     shot.recycle()
                     return
                 }
-                if (force) lastForcedScanAt = now
+                if (force && waiting == null) lastForcedScanAt = now
             } else {
                 lastFrameChangeAt = now
                 closeUpSig = null
@@ -810,9 +823,12 @@ class CaptureAccessibilityService : AccessibilityService() {
                 Repo.KnownAnswer.None ->
                     if (cur.autoUseKnownAnswer) "rastgele (cevabı bilinmiyor)" else "rastgele"
             }
+            val gecikme = SystemClock.uptimeMillis() - waiting.bornAt
             log(
                 "OTOMATİK #${waiting.id} → ${optionLabel(waiting, index)} · $neden" +
                     (if (retry) " · ${waiting.taps}. deneme" else "") +
+                    " · ${gecikme} ms" +
+                    (if (waiting.brightSince == 0L) " (kart ölçülemedi)" else "") +
                     " · bu oturumda ${auto.tapCount} cevap"
             )
             // Dokunduk; karar bir iki saniyede açılıp geçecek. Renk turunu
@@ -1513,7 +1529,13 @@ class CaptureAccessibilityService : AccessibilityService() {
          * Oturmuş şıklar bembeyaz (0.97); geçiş kareleri koyu mor.
          */
         private const val CARD_READY_MIN = 217
-        /** Kart bu kadar sürede oturmadıysa yine de dokun. */
+        /**
+         * Kart bu kadar sürede oturmadıysa yine de dokun.
+         *
+         * Bu bir emniyet süresi, normal yol değil. Uzun süre "normal yol"
+         * sanıldı: kıpırdamayan kareler taramadan önce atlandığı için kartın
+         * oturduğu hiç ölçülemiyor, her cevap tam 4 saniye sürüyordu.
+         */
         private const val CARD_READY_TIMEOUT_MS = 4000L
         /**
          * Numara kilidinin geçerli sayılması için soru metninin eski metne

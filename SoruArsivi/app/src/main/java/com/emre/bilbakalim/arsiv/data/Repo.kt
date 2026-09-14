@@ -84,9 +84,23 @@ class Repo private constructor(context: Context) {
                         optionC = opts.getOrNull(2) ?: old.optionC,
                         optionD = opts.getOrNull(3) ?: old.optionD
                     )
+                    // Metin bulunamazsa eski SIRAYA düşmek yasak: o sıra
+                    // eski (kısa) listeye aitti, yeni listede bambaşka bir
+                    // şıkkı gösterir. Kayıtlı cevap böyle sessizce başka bir
+                    // şıkka kayıyor ve otomatik mod ondan sonra hep ona
+                    // basıyordu. Bulunamıyorsa cevabı boşaltıyoruz; bir
+                    // sonraki karşılaşmada renk okuması yeniden öğretir.
                     val remapped = TurkishText.matchIndex(merged.options, old.correctText)
-                        ?: old.correctIndex
-                    dao.update(merged.copy(correctIndex = remapped))
+                    if (remapped == null && old.correctIndex != null) {
+                        Log.w(TAG, "Şıklar tamamlandı ama #${old.id} cevabı " +
+                            "«${old.correctText}» yeni listede yok; cevap boşaltıldı")
+                    }
+                    dao.update(
+                        merged.copy(
+                            correctIndex = remapped,
+                            answerSource = if (remapped == null) null else merged.answerSource
+                        )
+                    )
                 }
             }
             return SaveResult.Duplicate(old.id)

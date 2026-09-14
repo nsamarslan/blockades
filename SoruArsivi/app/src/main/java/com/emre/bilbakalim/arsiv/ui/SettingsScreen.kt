@@ -142,16 +142,20 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Text(
-                            "Şıklar ekrana teker teker geliyor. Çok kısa tutarsan soru " +
-                                "dört şık tamamlanmadan cevaplanır; çok uzun tutarsan süre dolar.",
+                            "Bekleme, sorunun okunduğu andan değil şık kutularının " +
+                                "ekrana oturduğu andan başlar; yani bu süreyi kısmak " +
+                                "yarım çizilmiş bir karta dokunma riski yaratmaz. " +
+                                "600-900 ms çoğu cihazda rahat çalışıyor. Daha da " +
+                                "kısaltırsan oyunun dokunuşu yutma ihtimali artar; " +
+                                "bot o zaman yeniden deniyor ve net bir kazanç kalmıyor.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Slider(
                             value = s.autoAnswerDelayMs.toFloat(),
                             onValueChange = { vm.setAutoAnswerDelay(it.toLong()) },
-                            valueRange = 300f..3000f,
-                            steps = 26
+                            valueRange = 200f..3000f,
+                            steps = 27
                         )
                         Text(
                             "Not: otomatik mod ekrana dokunmak için erişilebilirlik " +
