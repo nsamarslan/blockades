@@ -79,8 +79,17 @@ class CaptureAccessibilityService : AccessibilityService() {
     @Volatile private var lastFrameChangeAt = 0L
     /** Kıpırdamayan ekranda zorla yapılan son tam tarama. */
     @Volatile private var lastForcedScanAt = 0L
-    /** Yakın plan OCR'ın denendiği kare; aynı kare için ikinci kez denenmez. */
+    /** Yakın plan OCR'ın denendiği kare. */
     @Volatile private var closeUpSig: IntArray? = null
+    /**
+     * Bu kare için yakın plan kaç kez denendi.
+     *
+     * OCR aynı görüntüye her zaman aynı cevabı verir; bu yüzden aynı kareyi
+     * aynı ölçekle yeniden okumak boşunadır. Deneme sayısı büyütme oranını
+     * artırmak için tutuluyor: 2x tutmazsa 3x, o da tutmazsa 4x. Yalıtık
+     * rakam şıkları ("2", "12") ancak yeterince büyütülünce tanınıyor.
+     */
+    @Volatile private var closeUpTries = 0
     /** Son tam ekran OCR sonucu — yakın plan okumasıyla birleştirmek için. */
     @Volatile private var lastOcrItems: List<TextItem> = emptyList()
     @Volatile private var lastAutoIdleLogAt = 0L
@@ -520,6 +529,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             } else {
                 lastFrameChangeAt = now
                 closeUpSig = null
+                closeUpTries = 0
             }
             if (sig != null) lastFrameSig = sig
         }
@@ -559,18 +569,26 @@ class CaptureAccessibilityService : AccessibilityService() {
             if (viaOcr == null && shot != null && eksikSik &&
                 (hepsiKisa || frameStatic &&
                     SystemClock.uptimeMillis() - lastFrameChangeAt >= CLOSEUP_AFTER_MS) &&
-                lastFrameSig?.let { sig -> closeUpSig?.let { sameFrame(it, sig) } } != true
+                (lastFrameSig?.let { sig -> closeUpSig?.let { sameFrame(it, sig) } } != true ||
+                    closeUpTries < CLOSEUP_MAX_TRIES)
             ) {
+                // Aynı kare için yeniden deniyorsak ölçeği artırıyoruz;
+                // aynı büyütmeyle ikinci okuma birebir aynı sonucu verirdi.
+                if (lastFrameSig?.let { sig -> closeUpSig?.let { sameFrame(it, sig) } } != true) {
+                    closeUpTries = 0
+                }
                 closeUpSig = lastFrameSig
+                val scale = CLOSEUP_SCALE + closeUpTries
+                closeUpTries++
                 val onceki = ocrItems.size
-                val yakin = closeUpOptions(shot, s)
+                val yakin = closeUpOptions(shot, s, scale)
                 if (yakin != null) {
                     ocrItems = yakin
                     viaOcr = QuestionParser.parse(
                         ocrItems, shot.width, shot.height, s, fromAccessibility = false
                     )
                     log(
-                        "yakın plan OCR: $onceki → ${ocrItems.size} metin · " +
+                        "yakın plan OCR (${scale}x): $onceki → ${ocrItems.size} metin · " +
                             (viaOcr?.let { "${it.options.size} şık bulundu" }
                                 ?: "RED: ${QuestionParser.lastReject ?: "?"}")
                     )
@@ -1453,14 +1471,18 @@ class CaptureAccessibilityService : AccessibilityService() {
      * büyütülmüş görüntüden gelip tam ekran ölçeğine geri çevriliyor —
      * yoksa dokunuş iki kat aşağıya giderdi.
      */
-    private suspend fun closeUpOptions(shot: Bitmap, s: Prefs.Settings): List<TextItem>? {
+    private suspend fun closeUpOptions(
+        shot: Bitmap,
+        s: Prefs.Settings,
+        scale: Int
+    ): List<TextItem>? {
         val top = (s.optionsTop * shot.height).toInt().coerceIn(0, shot.height - 2)
         val bottom = (s.optionsBottom * shot.height).toInt().coerceIn(top + 2, shot.height)
         val crop = runCatching {
             Bitmap.createBitmap(shot, 0, top, shot.width, bottom - top)
         }.getOrNull() ?: return null
         val big = runCatching {
-            Bitmap.createScaledBitmap(crop, crop.width * CLOSEUP_SCALE, crop.height * CLOSEUP_SCALE, true)
+            Bitmap.createScaledBitmap(crop, crop.width * scale, crop.height * scale, true)
         }.getOrNull()
         if (big == null) { crop.recycle(); return null }
         val items = runCatching { OcrEngine.recognize(big) }.getOrDefault(emptyList())
@@ -1471,10 +1493,10 @@ class CaptureAccessibilityService : AccessibilityService() {
         val mapped = items.map { it ->
             it.copy(
                 bounds = Rect(
-                    it.bounds.left / CLOSEUP_SCALE,
-                    it.bounds.top / CLOSEUP_SCALE + top,
-                    it.bounds.right / CLOSEUP_SCALE,
-                    it.bounds.bottom / CLOSEUP_SCALE + top
+                    it.bounds.left / scale,
+                    it.bounds.top / scale + top,
+                    it.bounds.right / scale,
+                    it.bounds.bottom / scale + top
                 )
             )
         }
@@ -1737,7 +1759,13 @@ class CaptureAccessibilityService : AccessibilityService() {
          * büyüterek okumak boşuna işlemci harcar.
          */
         private const val CLOSEUP_AFTER_MS = 700L
+        /** İlk yakın plan denemesinin büyütme oranı; sonraki denemeler artırır. */
         private const val CLOSEUP_SCALE = 2
+        /**
+         * Aynı kare için en fazla kaç yakın plan denemesi (2x, 3x, 4x).
+         * Daha fazlası hem belleği hem süreyi boşa harcıyor.
+         */
+        private const val CLOSEUP_MAX_TRIES = 3
         /**
          * Şık metni bu kadar kısaysa sayı şıkkı sayılır. En uzun gerçek
          * örnekler "165", "1500", "23,5" — dördü de sığıyor.
