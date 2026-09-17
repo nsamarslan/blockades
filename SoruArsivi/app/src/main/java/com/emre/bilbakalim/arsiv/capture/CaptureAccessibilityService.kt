@@ -160,6 +160,8 @@ class CaptureAccessibilityService : AccessibilityService() {
         var lastSummary: String? = null,
         /** Atlanan karar satırı da tekrarlanmasın. */
         var lastSkip: String? = null,
+        /** "Cevap bilinmiyor, dokunmuyorum" satırı bir kez yazılsın. */
+        var skippedUnknown: Boolean = false,
         /**
          * Bu soruda hiç renkli şık görüldü mü (turkuaz/yeşil/kırmızı)?
          *
@@ -322,7 +324,11 @@ class CaptureAccessibilityService : AccessibilityService() {
                         // sorunun kaydedildiği anda yapıldığı için o koşul hep
                         // yanlış çıkıyor ve yoklama yavaş moda dönüyordu —
                         // dokunuş vakti gelse bile 800 ms'ye kadar bekleniyordu.
-                        if (pendingAnswer?.taps == 0) delay(POLL_FAST_MS)
+                        pendingAnswer?.let { w ->
+                            // Kararı kullanıcıya bıraktığımız soruda hızlı
+                            // yoklamanın anlamı yok: dakikalarca bekleyebilir.
+                            if (w.taps == 0 && !w.skippedUnknown) delay(POLL_FAST_MS)
+                        }
                     } else {
                         // Oyun önplanda görünmüyor: reklam, sistem penceresi ya
                         // da rootInActiveWindow'un geçici olarak null dönmesi.
@@ -760,6 +766,16 @@ class CaptureAccessibilityService : AccessibilityService() {
             // satırları havada kalıyordu: hangi metne dokunulduğu, OCR'ın
             // şıkları doğru okuyup okumadığı görülemiyordu.
             if (newEncounter) {
+                // Cevabı arşivde bulunamıyorsa haber ver. Bu, otomatik modun
+                // dokunup dokunmayacağından bağımsız: manuel modda da
+                // "bu soru bizde yok" bilgisini ekrana bakmadan veriyor.
+                val bilinen = runCatching {
+                    repo.knownAnswerOnScreen(savedId, p.options)
+                }.getOrDefault(Repo.KnownAnswer.None)
+                if (bilinen !is Repo.KnownAnswer.OnScreen) {
+                    log("BİLİNMİYOR #$savedId: cevap arşivde bulunamadı")
+                    if (s.unknownChime) Chime.play(this)
+                }
                 log("SORU #$savedId «${p.question.take(70)}»")
                 log(
                     "ŞIKLAR #$savedId: " +
@@ -886,6 +902,17 @@ class CaptureAccessibilityService : AccessibilityService() {
             }
 
             val known = (lookup as? Repo.KnownAnswer.OnScreen)?.index
+
+            // Cevabı bilinmiyorsa ve kullanıcı "kararı bana bırak" dediyse
+            // dokunmuyoruz. Soru ekranda kalır, sen cevaplarsın; doğrusu yine
+            // renk okumasıyla arşive yazılır.
+            if (lookup !is Repo.KnownAnswer.OnScreen && !cur.autoRandomWhenUnknown) {
+                if (!waiting.skippedUnknown) {
+                    waiting.skippedUnknown = true
+                    log("otomatik #${waiting.id}: cevap bilinmiyor, karar sende (ayar)")
+                }
+                return@launch
+            }
 
             val retry = waiting.taps > 0
             val index = waiting.chosenIndex
@@ -1557,6 +1584,7 @@ class CaptureAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         running.value = false
+        Chime.stop()
         pollJob?.cancel()
         burstJob?.cancel()
         autoJob?.cancel()

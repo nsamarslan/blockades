@@ -66,6 +66,23 @@ class Prefs private constructor(context: Context) {
          * Kapatılırsa seçim her zaman rastgele olur.
          */
         val autoUseKnownAnswer: Boolean = true,
+        /**
+         * Cevabı bilinmeyen soruda otomatik mod ne yapsın?
+         *
+         * true  : rastgele bir şıkka basar (oyun akmaya devam eder, cevap
+         *         oyunun kendi tepkisinden öğrenilir).
+         * false : hiç dokunmaz, kararı sana bırakır. Havuzu doldururken
+         *         işe yarıyor: bilmediği soruyu sen cevaplayınca doğrusu
+         *         yine arşive yazılır, ama yanlış bir tahminle tur harcanmaz.
+         */
+        val autoRandomWhenUnknown: Boolean = true,
+        /**
+         * Cevabı arşivde bulunamayan soruda bildirim sesi çal.
+         *
+         * Manuel modda da çalışır: ekrana bakmadan "bu soru bizde yok"
+         * bilgisini almanın tek yolu.
+         */
+        val unknownChime: Boolean = false,
         /** Teşhis ekranı için son ham yakalama dökümü. */
         val lastDebugDump: String = "",
         /** Bilgilendirme ekranı gösterildi mi. */
@@ -92,6 +109,8 @@ class Prefs private constructor(context: Context) {
         autoAnswerDelayMs = sp.getLong(K_AUTO_DELAY, 900L),
         autoRestart = sp.getBoolean(K_AUTO_RESTART, true),
         autoUseKnownAnswer = sp.getBoolean(K_AUTO_KNOWN, true),
+        autoRandomWhenUnknown = sp.getBoolean(K_AUTO_RANDOM_UNKNOWN, true),
+        unknownChime = sp.getBoolean(K_UNKNOWN_CHIME, false),
         lastDebugDump = sp.getString(K_DEBUG, "") ?: "",
         onboarded = sp.getBoolean(K_ONBOARDED, false)
     )
@@ -116,6 +135,8 @@ class Prefs private constructor(context: Context) {
     fun setAutoAnswerDelay(ms: Long) = commit { putLong(K_AUTO_DELAY, ms.coerceIn(200L, 5000L)) }
     fun setAutoRestart(v: Boolean) = commit { putBoolean(K_AUTO_RESTART, v) }
     fun setAutoUseKnownAnswer(v: Boolean) = commit { putBoolean(K_AUTO_KNOWN, v) }
+    fun setAutoRandomWhenUnknown(v: Boolean) = commit { putBoolean(K_AUTO_RANDOM_UNKNOWN, v) }
+    fun setUnknownChime(v: Boolean) = commit { putBoolean(K_UNKNOWN_CHIME, v) }
     fun setOnboarded(v: Boolean) = commit { putBoolean(K_ONBOARDED, v) }
     fun setDebugDump(v: String) = commit { putString(K_DEBUG, v) }
 
@@ -146,6 +167,8 @@ class Prefs private constructor(context: Context) {
         private const val K_AUTO_DELAY = "otomatik_gecikme"
         private const val K_AUTO_RESTART = "otomatik_yeniden_basla"
         private const val K_AUTO_KNOWN = "otomatik_bilinen_cevap"
+        private const val K_AUTO_RANDOM_UNKNOWN = "otomatik_bilinmeyende_rastgele"
+        private const val K_UNKNOWN_CHIME = "bilinmeyen_uyari_sesi"
         private const val K_DEBUG = "teshis_dokumu"
         private const val K_ONBOARDED = "tanitim_goruldu"
 

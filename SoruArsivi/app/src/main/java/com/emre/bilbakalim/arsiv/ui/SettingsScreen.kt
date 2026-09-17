@@ -136,6 +136,16 @@ fun SettingsScreen(
                             s.autoUseKnownAnswer
                         ) { vm.setAutoUseKnownAnswer(it) }
 
+                        SettingSwitch(
+                            "Cevap bilinmiyorsa rastgele bas",
+                            "Açıkken bilmediği soruda da bir şıkka dokunur; oyun " +
+                                "akmaya devam eder ve doğru cevap oyunun tepkisinden " +
+                                "öğrenilir. Kapatırsan o soruda hiç dokunmaz, kararı " +
+                                "sana bırakır — sen cevapladığında doğrusu yine arşive " +
+                                "yazılır ama yanlış bir tahminle tur harcanmaz.",
+                            s.autoRandomWhenUnknown
+                        ) { vm.setAutoRandomWhenUnknown(it) }
+
                         Spacer(Modifier.height(8.dp))
                         Text(
                             "Dokunmadan önce bekleme: ${s.autoAnswerDelayMs} ms",
@@ -165,6 +175,17 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+
+                    // Bilerek otomatik blokunun dışında: ses manuel modda da
+                    // çalışıyor, oyunu kendin oynarken de "bu soru bizde yok"
+                    // bilgisini veriyor.
+                    SettingSwitch(
+                        "Cevabı bilinmeyen soruda uyarı sesi",
+                        "Sorunun cevabı arşivde yoksa ya da kayıttaki cevap " +
+                            "ekrandaki şıklara uymuyorsa telefonun bildirim sesi çalar. " +
+                            "Manuel modda da çalışır. Telefon sessizdeyse duyulmaz.",
+                        s.unknownChime
+                    ) { vm.setUnknownChime(it) }
                 }
             }
 

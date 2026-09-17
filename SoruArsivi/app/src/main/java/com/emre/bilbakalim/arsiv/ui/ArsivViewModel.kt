@@ -103,6 +103,8 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setAutoAnswerDelay(ms: Long) = prefs.setAutoAnswerDelay(ms)
     fun setAutoRestart(v: Boolean) = prefs.setAutoRestart(v)
     fun setAutoUseKnownAnswer(v: Boolean) = prefs.setAutoUseKnownAnswer(v)
+    fun setAutoRandomWhenUnknown(v: Boolean) = prefs.setAutoRandomWhenUnknown(v)
+    fun setUnknownChime(v: Boolean) = prefs.setUnknownChime(v)
     fun setOnboarded(v: Boolean) = prefs.setOnboarded(v)
     fun setRegions(qt: Float, qb: Float, ot: Float, ob: Float) = prefs.setRegions(qt, qb, ot, ob)
     fun resetRegions() = prefs.resetRegions()
