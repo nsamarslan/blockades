@@ -285,6 +285,10 @@ class CaptureAccessibilityService : AccessibilityService() {
      * Uygulamadan çıkılınca kendiliğinden durur: her turda etkin pencerenin
      * hangi uygulamaya ait olduğuna bakar.
      */
+    /** Kaç ıskalamadan sonra yoklama yavaş bekleme kipine geçsin. */
+    private fun idleLimit(s: Prefs.Settings): Int =
+        if (s.autoPlay) POLL_MISS_LIMIT_AUTO else POLL_MISS_LIMIT
+
     private fun ensurePolling() {
         if (pollJob?.isActive == true) return
         pollJob = scope.launch {
@@ -299,6 +303,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                         runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
                     }
                     if (active != null && active in cur.targetPackages) {
+                        if (misses >= idleLimit(cur)) log("yoklama yeniden devrede")
                         misses = 0
                         if (!cur.paused) requestScan()
                         // Dokunulmayı bekleyen bir soru varken hızlı yoklama.
@@ -308,16 +313,44 @@ class CaptureAccessibilityService : AccessibilityService() {
                         // dokunuş vakti gelse bile 800 ms'ye kadar bekleniyordu.
                         if (pendingAnswer?.taps == 0) delay(POLL_FAST_MS)
                     } else {
+                        // Oyun önplanda görünmüyor: reklam, sistem penceresi ya
+                        // da rootInActiveWindow'un geçici olarak null dönmesi.
+                        //
+                        // Burada döngüyü BIRAKMAK ölümcül bir hataydı. Oyun
+                        // ekranı kendi yüzeyine çizildiği için Android hiç
+                        // "içerik değişti" olayı üretmiyor; yoklama durunca
+                        // onu yeniden başlatacak hiçbir şey kalmıyordu. Ekrandaki
+                        // soru sonsuza kadar cevapsız kalıyor, kullanıcı elle
+                        // ekrana dokunana dek hiçbir satır bile yazılmıyordu.
+                        // Hızlı yakalama açıkken sınır 40 x 200 ms = 8 saniyeye
+                        // denk geliyordu; yani sekiz saniyelik bir reklam
+                        // tarayıcıyı temelli durduruyordu.
+                        //
+                        // Artık bırakmıyoruz, yavaşlıyoruz: ekranı okumadan
+                        // yalnızca "önplanda kim var" diye bakmak ucuz bir
+                        // sorgu. Oyun geri geldiğinde kaldığımız yerden devam.
                         misses++
-                        // Otomatik modda araya giren bir reklam ya da sistem
-                        // penceresi yüzünden yoklamayı bırakırsak bot orada
-                        // takılı kalır; bu yüzden çok daha uzun bekleriz.
-                        val limit = if (cur.autoPlay) POLL_MISS_LIMIT_AUTO else POLL_MISS_LIMIT
-                        if (misses >= limit) break
+                        if (misses == idleLimit(cur)) {
+                            log("yoklama bekleme kipinde · önplanda: ${active ?: "bilinmiyor"}")
+                        }
+                        if (misses >= idleLimit(cur)) delay(IDLE_POLL_MS)
                     }
                 }
             } finally {
                 pollJob = null
+                // Emniyet ağı. Yoklama duran bir servis, oyun ekranı hiç olay
+                // üretmediği için bir daha kendine gelemiyor: soruyu gören
+                // tek şey bu döngü. Beklenmedik bir sebeple (istisna, servis
+                // tuhaflığı) bittiyse kendini yeniden kuruyor. İptal edilerek
+                // bitmişse — mod kapandı, servis düşüyor — scope da iptal
+                // olduğu için bu launch hiç çalışmaz, yani kapatma yolu
+                // etkilenmiyor.
+                if (running.value && prefs.state.value.targetPackages.isNotEmpty()) {
+                    scope.launch {
+                        delay(IDLE_POLL_MS)
+                        ensurePolling()
+                    }
+                }
             }
         }
     }
@@ -1510,12 +1543,21 @@ class CaptureAccessibilityService : AccessibilityService() {
         /** Tur sonu ekranı kıpırdamıyor; orada metin tanıma aralığı. */
         private const val AUTO_IDLE_OCR_GAP_MS = 1200L
         /** Bu kadar turda hedef uygulama önplanda değilse yoklamayı bırak. */
+        /**
+         * Kaç ıskalamadan sonra yavaş bekleme kipine geçilir. Eskiden bu bir
+         * "vazgeç" sınırıydı; artık yalnızca tempo düşürüyor.
+         */
         private const val POLL_MISS_LIMIT = 3
         /**
          * Otomatik modda aynı sınır: reklam ya da sistem penceresi araya
          * girdiğinde bot orada takılı kalmasın diye çok daha uzun.
          */
         private const val POLL_MISS_LIMIT_AUTO = 40
+        /**
+         * Oyun önplanda değilken yoklama aralığı. Ekran okunmuyor, yalnızca
+         * etkin pencerenin hangi uygulamaya ait olduğu soruluyor.
+         */
+        private const val IDLE_POLL_MS = 2000L
         /**
          * Otomatik modda bu kadar süredir soru görülmüyorsa tur bitmiş
          * sayılır ve "Tekrar Oyna" düğmesi aranmaya başlanır. Cevap açılıp
