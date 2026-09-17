@@ -85,6 +85,14 @@ class CaptureAccessibilityService : AccessibilityService() {
     @Volatile private var lastOcrItems: List<TextItem> = emptyList()
     @Volatile private var lastAutoIdleLogAt = 0L
     @Volatile private var lastAutoIdleReason: String? = null
+    /**
+     * Oyunun en son ne zaman önplanda olduğu doğrulandı.
+     *
+     * "Etkin pencereyi okuyamadım" ile "oyun kapandı" ayrımı buna dayanıyor:
+     * biraz önce oradaydıysa, null dönen bir sorgu yüzünden taramayı
+     * durdurmuyoruz.
+     */
+    @Volatile private var lastForegroundAt = 0L
     /** Ekranda en son ne zaman gerçek bir soru görüldü (otomatik mod için). */
     @Volatile private var lastQuestionAt = 0L
     /** Tur sonu ekranında en son hangi yazıları gördük — günlük tekrarı olmasın. */
@@ -302,8 +310,11 @@ class CaptureAccessibilityService : AccessibilityService() {
                     val active = withContext(Dispatchers.Main) {
                         runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
                     }
-                    if (active != null && active in cur.targetPackages) {
+                    val grace = active == null &&
+                        SystemClock.uptimeMillis() - lastForegroundAt < FOREGROUND_GRACE_MS
+                    if (active != null && active in cur.targetPackages || grace) {
                         if (misses >= idleLimit(cur)) log("yoklama yeniden devrede")
+                        if (active != null) lastForegroundAt = SystemClock.uptimeMillis()
                         misses = 0
                         if (!cur.paused) requestScan()
                         // Dokunulmayı bekleyen bir soru varken hızlı yoklama.
@@ -330,7 +341,13 @@ class CaptureAccessibilityService : AccessibilityService() {
                         // yalnızca "önplanda kim var" diye bakmak ucuz bir
                         // sorgu. Oyun geri geldiğinde kaldığımız yerden devam.
                         misses++
-                        if (misses == idleLimit(cur)) {
+                        // Bekleme kipinde tarama yapılmadığı için günlük de
+                        // susuyor; bu, geçen sefer 20 saniyelik boşlukların
+                        // sebebini bulmayı zorlaştırmıştı. Girişte bir kez,
+                        // sonra onar saniyede bir yazıyoruz.
+                        val heartbeat = idleLimit(cur) + (IDLE_HEARTBEAT_MS / IDLE_POLL_MS).toInt()
+                        if (misses == idleLimit(cur) || (misses > idleLimit(cur) &&
+                                (misses - idleLimit(cur)) % (heartbeat - idleLimit(cur)) == 0)) {
                             log("yoklama bekleme kipinde · önplanda: ${active ?: "bilinmiyor"}")
                         }
                         if (misses >= idleLimit(cur)) delay(IDLE_POLL_MS)
@@ -407,13 +424,28 @@ class CaptureAccessibilityService : AccessibilityService() {
         val front = withContext(Dispatchers.Main) {
             runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
         }
-        if (front == null || front !in s.targetPackages) {
+        // "front == null" demek "oyun kapandı" değil, "hangi pencerenin etkin
+        // olduğunu öğrenemedim" demek. rootInActiveWindow bu cihazda geçici
+        // olarak null dönebiliyor (günlükte "önplanda: bilinmiyor"). Bunu
+        // yabancı uygulama saymak taramayı tümden durduruyordu: ekranda soru
+        // dururken hiçbir satır yazılmıyor, hiç dokunulmuyordu.
+        //
+        // Az önce bir soru gördüysek oyun neredeyse kesin hâlâ orada; ekran
+        // görüntüsü de erişilebilirlik ağacından değil MediaProjection'dan
+        // geldiği için okumaya devam edebiliriz. Başka bir uygulama gerçekten
+        // önplandaysa rootInActiveWindow onun paketini döndürür, null değil.
+        val oyunVardi =
+            SystemClock.uptimeMillis() - lastForegroundAt < FOREGROUND_GRACE_MS
+        val usable = front != null && front in s.targetPackages ||
+            front == null && oyunVardi
+        if (!usable) {
             if (front != lastLoggedFront) {
                 lastLoggedFront = front
                 log("atlandı · önplanda: ${front ?: "bilinmiyor"}")
             }
             return
         }
+        if (front != null) lastForegroundAt = SystemClock.uptimeMillis()
         lastLoggedFront = front
 
         // Otomatik mod: ekranda cevabı beklenen bir soru varsa şıklardan
@@ -507,9 +539,20 @@ class CaptureAccessibilityService : AccessibilityService() {
             // şıkkı görmemesi. Tek karakterlik şıklarda ("1") ML Kit bloğu
             // sık düşürüyor. Şık şeridini kırpıp iki kat büyüterek bir kez
             // daha okuyoruz; küçük harfler büyütülünce tanınıyor.
-            if (viaOcr == null && shot != null && frameStatic &&
-                QuestionParser.lastReject?.startsWith("şıklar henüz tamamlanmadı") == true &&
-                SystemClock.uptimeMillis() - lastFrameChangeAt >= CLOSEUP_AFTER_MS &&
+            val eksikSik =
+                QuestionParser.lastReject?.startsWith("şıklar henüz tamamlanmadı") == true
+            // Bulunan şıkların hepsi kısaysa (sayı soruları: "2", "12", "165")
+            // beklemenin anlamı yok. Bu şıklar teker teker belirmiyor —
+            // hepsi aynı anda çiziliyor; eksik olan, ML Kit'in yalıtık
+            // rakam bloğunu düşürmesi. Kullanıcının bildirdiği "tüm şıkları
+            // sayı olan sorularda bazen hiç dokunmuyor" durumu bu: kare
+            // durulana kadar beklerken sorunun süresi doluyordu.
+            val hepsiKisa = QuestionParser.lastPartial.let { p ->
+                p.isNotEmpty() && p.all { it.length <= NUMERIC_OPTION_MAX_LEN }
+            }
+            if (viaOcr == null && shot != null && eksikSik &&
+                (hepsiKisa || frameStatic &&
+                    SystemClock.uptimeMillis() - lastFrameChangeAt >= CLOSEUP_AFTER_MS) &&
                 lastFrameSig?.let { sig -> closeUpSig?.let { sameFrame(it, sig) } } != true
             ) {
                 closeUpSig = lastFrameSig
@@ -1558,6 +1601,13 @@ class CaptureAccessibilityService : AccessibilityService() {
          * etkin pencerenin hangi uygulamaya ait olduğu soruluyor.
          */
         private const val IDLE_POLL_MS = 2000L
+        /** Bekleme kipinde günlüğe ne sıklıkla "hâlâ bekliyorum" yazılsın. */
+        private const val IDLE_HEARTBEAT_MS = 10_000L
+        /**
+         * Oyun bu kadar süre önce önplanda doğrulandıysa, etkin pencere
+         * okunamasa bile hâlâ orada sayılıyor.
+         */
+        private const val FOREGROUND_GRACE_MS = 30_000L
         /**
          * Otomatik modda bu kadar süredir soru görülmüyorsa tur bitmiş
          * sayılır ve "Tekrar Oyna" düğmesi aranmaya başlanır. Cevap açılıp
@@ -1660,6 +1710,11 @@ class CaptureAccessibilityService : AccessibilityService() {
          */
         private const val CLOSEUP_AFTER_MS = 700L
         private const val CLOSEUP_SCALE = 2
+        /**
+         * Şık metni bu kadar kısaysa sayı şıkkı sayılır. En uzun gerçek
+         * örnekler "165", "1500", "23,5" — dördü de sığıyor.
+         */
+        private const val NUMERIC_OPTION_MAX_LEN = 5
         /** Soru görmeyeli bu kadar olduysa bot neden beklediğini yazsın. */
         private const val AUTO_IDLE_LOG_AFTER_MS = 3000L
         private const val AUTO_IDLE_LOG_GAP_MS = 5000L

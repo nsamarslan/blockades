@@ -28,6 +28,9 @@ object QuestionParser {
 
     private fun reject(reason: String): Parsed? {
         lastReject = reason
+        // Eksik şık listesi yalnızca kendi reddine ait olmalı; başka bir
+        // sebeple reddedilen kare onu bayat bırakmasın.
+        if (!reason.startsWith("şıklar henüz tamamlanmadı")) lastPartial = emptyList()
         return null
     }
 
@@ -49,6 +52,16 @@ object QuestionParser {
     ) {
         val key: String get() = TurkishText.fingerprint(question, options)
     }
+
+    /**
+     * Son "şıklar tamamlanmadı" reddinde bulunabilen şık metinleri.
+     *
+     * Kısa ve sayısal şıklarda ("2", "12") ML Kit metin bloğunu bütünüyle
+     * düşürebiliyor; o zaman beklemenin faydası yok, şeridi büyütüp yeniden
+     * okumak gerekiyor. Yakalama tarafı kararı buna bakarak veriyor.
+     */
+    @Volatile var lastPartial: List<String> = emptyList()
+        private set
 
     /** Sayaç, puan, buton gibi soru olmayan metinler. */
     private val CHROME = setOf(
@@ -160,6 +173,9 @@ object QuestionParser {
             val bulunan = options.joinToString(" ") { (item, text) ->
                 "«${text.take(16)}»@%${item.centerY * 100 / screenH}"
             }
+            // Yakalama tarafı "bu eksik şık OCR'ın gözünden mi kaçtı" sorusunu
+            // buradan cevaplıyor: kısa/sayısal şıklarda ML Kit bloğu düşürüyor.
+            lastPartial = optionTexts
             return reject("şıklar henüz tamamlanmadı (${optionTexts.size}/4) · $bulunan")
         }
 
