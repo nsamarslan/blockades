@@ -145,11 +145,30 @@ class Repo private constructor(context: Context) {
         fun matches(row: DedupRow): Boolean = matches(row.questionText, row.options)
 
         fun matches(oldQuestion: String, oldOptions: List<String>): Boolean {
+            val oldKey = TurkishText.normalizeKey(oldQuestion)
+            // Şıklar birebir aynı olmak zorunda değil: OCR bir şıkkın
+            // sonundaki harfi düşürünce ("Fransa" / "Frans") birebir eşitlik
+            // tutmuyor ve kırpılmış okuma yakalanamıyordu. Sayı şıklarında
+            // yine birebir eşitlik aranıyor.
+            val optionsMatchStrict = TurkishText.optionsNearlyMatch(oldOptions, options)
+
+            // Sorunun sonu okunamamış olabilir: OCR son kelimeyi düşürdüğünde
+            // "…kullanım amaçlarından biri" ile "…kullanım amaçlarından biri
+            // değildir?" iki ayrı kayıt oluyordu. Üstelik düşen kelime tam da
+            // olumsuzluk kelimesi olduğu için aşağıdaki olumsuzluk kontrolü
+            // ikisini birleştirmeyi kesin olarak reddediyordu.
+            //
+            // Bu yüzden kırpılmış okuma kontrolü olumsuzluk kontrolünden ÖNCE
+            // geliyor. Ölçüt dar tutuldu: dört şık birebir aynı olacak ve kısa
+            // metin uzun metnin başlangıcıyla örtüşecek. "Hangisi X'tir?" ile
+            // "Hangisi X değildir?" birbirinin başlangıcı olmadığı için bu
+            // kapıdan geçemez.
+            if (optionsMatchStrict && truncatedHead(oldQuestion, question)) return true
+
             // Olumsuzluk farkı varsa hiçbir benzerlik ölçüsü bunları
             // birleştiremez — zıt anlamlı iki ayrı sorudur.
             if (TurkishText.negationSignature(oldQuestion) != negation) return false
 
-            val oldKey = TurkishText.normalizeKey(oldQuestion)
             val sim = TurkishText.similarity(oldQuestion, question)
 
             val optionsMatch = options.size >= 3 && oldOptions.size == options.size &&
@@ -176,6 +195,34 @@ class Repo private constructor(context: Context) {
             val sameOptions = optionsMatch && sim >= 0.80f
 
             return contained || sameOptions || sim >= 0.92f
+        }
+
+        /**
+         * Biri diğerinin, sonundan bir iki kelime düşmüş hâli mi?
+         *
+         * Karşılaştırma KELİME bazında. Karakter dizisi üzerinden bakmak
+         * tehlikeliydi: "…ölçütlerindendir?" ile "…ölçütlerinden değildir?"
+         * harf harf neredeyse aynı görünüyor ve kural bu iki ayrı soruyu
+         * birleştiriyordu — birim test bunu yakaladı. Kelimelere bölününce
+         * son kelimelerin farkı ("olcutlerindendir" ≠ "olcutlerinden")
+         * ortaya çıkıyor.
+         *
+         * Kelimeler birebir değil benzerlikle karşılaştırılıyor, çünkü OCR
+         * aynı karede ortadaki bir harfi de kaçırabiliyor ("uydularin" /
+         * "uydulariin").
+         */
+        private fun truncatedHead(a: String, b: String): Boolean {
+            val wa = TurkishText.words(a)
+            val wb = TurkishText.words(b)
+            val kisa = if (wa.size <= wb.size) wa else wb
+            val uzun = if (wa.size <= wb.size) wb else wa
+            val fazla = uzun.size - kisa.size
+            if (fazla !in 1..MAX_MISSING_WORDS) return false
+            if (kisa.size < MIN_HEAD_WORDS) return false
+            return kisa.indices.all { i ->
+                kisa[i] == uzun[i] ||
+                    TurkishText.similarity(kisa[i], uzun[i]) >= WORD_MIN_SIMILARITY
+            }
         }
     }
 
@@ -407,6 +454,23 @@ class Repo private constructor(context: Context) {
 
     companion object {
         private const val TAG = "SoruArsivi/Repo"
+
+        /**
+         * Kırpılmış okumada en fazla bu kadar kelime düşmüş olabilir.
+         *
+         * Temizlenmiş arşivdeki 732 sorunun tüm çiftleri tarandı: bu kural
+         * 1..5 aralığının tamamında yalnızca tek bir çifti birleştiriyor ve
+         * o çift gerçekten aynı sorunun kırpılmış hâli ("Aşağıdaki ülkelerden
+         * hangisi Uluslararası Uzay İstasyonu" / "…İstasyonu misyonu
+         * içerisinde değildir?" — üç kelime düşmüş). Yani gözlenen tek gerçek
+         * vaka iki kelimeyle yakalanamıyordu; üç, yanlış birleşme üretmeden
+         * onu da kapsıyor.
+         */
+        private const val MAX_MISSING_WORDS = 3
+        /** Kısa metin en az bu kadar kelime taşımalı. */
+        private const val MIN_HEAD_WORDS = 4
+        /** Aynı sıradaki kelimeler bu kadar benzemeli. */
+        private const val WORD_MIN_SIMILARITY = 0.85f
 
         /**
          * Kayıttaki cevap korunsun mu, yoksa yeni gözlem üstüne yazsın mı?

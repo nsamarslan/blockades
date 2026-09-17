@@ -102,6 +102,9 @@ class CaptureAccessibilityService : AccessibilityService() {
      * durdurmuyoruz.
      */
     @Volatile private var lastForegroundAt = 0L
+    /** Soru kartı okunamıyor: ne zamandan beri, uyarı verildi mi. */
+    @Volatile private var unreadableSince = 0L
+    @Volatile private var unreadableWarned = false
     /** Ekranda en son ne zaman gerçek bir soru görüldü (otomatik mod için). */
     @Volatile private var lastQuestionAt = 0L
     /** Tur sonu ekranında en son hangi yazıları gördük — günlük tekrarı olmasın. */
@@ -621,6 +624,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             if (ocrItems.isNotEmpty() || nodes.size > 1) {
                 log("düğüm:${nodes.size} ocr:${ocrItems.size} · RED: ${QuestionParser.lastReject ?: "?"}")
             }
+            noteUnreadable(s)
             // Ekranda soru yok ve bir süredir de yoktu: tur bitmiş olabilir.
             if (autoIdle) tryContinue(nodes, ocrItems, shot, screenW, screenH)
             shot?.let { if (!it.isRecycled) it.recycle() }
@@ -634,6 +638,8 @@ class CaptureAccessibilityService : AccessibilityService() {
         // Ekranda gerçek bir soru var: tur sonu yoklamasının sayacı sıfırlanır.
         lastQuestionAt = SystemClock.uptimeMillis()
         lastIdleScreen = null
+        unreadableSince = 0L
+        unreadableWarned = false
         if (s.autoPlay) auto.noteQuestion()
         // Aynı soru numarası duruyorsa bu hâlâ aynı sorudur: ekran değişmiş
         // olabilir ama yeni bir kayıt açılmaz. Numara okunamadıysa (null)
@@ -1080,6 +1086,43 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (satir == waiting.lastSkip) return
         waiting.lastSkip = satir
         log(satir)
+    }
+
+    /**
+     * Ekranda soru kartı var ama okuyamıyoruz.
+     *
+     * Bu durumda kayıt açılmadığı için "cevabı bilinmiyor" kontrolü de hiç
+     * çalışmıyordu: kullanıcı ne uyarı sesi duyuyor ne de bir dokunuş
+     * görüyordu — botun takıldığını ancak ekrana bakarak anlıyordu. Oysa
+     * tam olarak haber verilmesi gereken an burası.
+     *
+     * Yanlış alarmı önleyen üç koşul: red sebebi gerçekten "şıklar eksik"
+     * olacak (menü ekranları genelde başka sebeple düşüyor), bulunan şık
+     * adayları olacak, ve az önce gerçek bir soru görmüş olacağız — yani
+     * turun ortasındayız, lobide değil.
+     */
+    private fun noteUnreadable(s: Prefs.Settings) {
+        val eksik = QuestionParser.lastReject
+            ?.startsWith("şıklar henüz tamamlanmadı") == true &&
+            QuestionParser.lastPartial.size >= 3
+        val turOrtasi =
+            SystemClock.uptimeMillis() - lastQuestionAt < UNREADABLE_ROUND_MS
+        if (!eksik || !turOrtasi) {
+            unreadableSince = 0L
+            return
+        }
+        val now = SystemClock.uptimeMillis()
+        if (unreadableSince == 0L) {
+            unreadableSince = now
+            return
+        }
+        if (unreadableWarned || now - unreadableSince < UNREADABLE_WARN_MS) return
+        unreadableWarned = true
+        log(
+            "OKUNAMADI: ekranda soru var ama şıklar çıkarılamıyor · " +
+                (QuestionParser.lastReject ?: "?")
+        )
+        if (s.unknownChime) Chime.play(this)
     }
 
     /** Aynı sebep beş saniyede bir; günlüğü boğmadan "ne bekliyor" görünsün. */
@@ -1658,6 +1701,13 @@ class CaptureAccessibilityService : AccessibilityService() {
          * okunamasa bile hâlâ orada sayılıyor.
          */
         private const val FOREGROUND_GRACE_MS = 30_000L
+        /**
+         * Soru kartı bu kadar süredir okunamıyorsa haber ver. Şıklar teker
+         * teker belirirken bir iki saniye "eksik" görünmesi normal.
+         */
+        private const val UNREADABLE_WARN_MS = 4000L
+        /** Son gerçek soruyu bu kadar süre önce gördüysek hâlâ turdayız. */
+        private const val UNREADABLE_ROUND_MS = 30_000L
         /**
          * Otomatik modda bu kadar süredir soru görülmüyorsa tur bitmiş
          * sayılır ve "Tekrar Oyna" düğmesi aranmaya başlanır. Cevap açılıp

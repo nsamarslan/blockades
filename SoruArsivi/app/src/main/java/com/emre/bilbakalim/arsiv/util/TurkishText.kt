@@ -68,6 +68,17 @@ object TurkishText {
     fun normalizeKey(s: String): String =
         fold(lower(s)).replace(Regex("[^a-z0-9]"), "")
 
+    /**
+     * Metni normalleştirilmiş kelimelere ayırır.
+     *
+     * normalizeKey boşlukları da sildiği için kelime sınırlarını kaybediyor;
+     * "…ölçütlerindendir" ile "…ölçütlerinden değildir" karakter dizisi
+     * olarak neredeyse aynı görünüyor. Kelime listesiyle bakıldığında ise
+     * son kelimeler açıkça farklı.
+     */
+    fun words(s: String): List<String> =
+        fold(lower(s)).split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+
     /** Soru metninden kararlı bir parmak izi üretir. */
     fun fingerprint(question: String, options: List<String>): String {
         val key = buildString {
@@ -195,6 +206,46 @@ object TurkishText {
         if (low.contains("dışında")) sig = sig or 16
         if (low.contains("söylenemez")) sig = sig or 32
         return sig
+    }
+
+    private val DIGITS_ONLY = Regex("\\d+")
+
+    /**
+     * İki şık metni "aynı şık" sayılır mı?
+     *
+     * Birebir eşitlik yetmiyor: OCR aynı şıkkın sonundaki harfi düşürebiliyor
+     * ("Fransa" yerine "Frans"). Bu yüzden dört harften uzun kelimelerde tek
+     * harflik fark hoş görülüyor.
+     *
+     * Sayı şıklarında ise tek harf farkı gerçek bir fark: "82" ile "92" ayrı
+     * cevaplar. Orada birebir eşitlik aranıyor.
+     */
+    fun sameOptionText(a: String, b: String): Boolean {
+        val x = normalizeKey(a)
+        val y = normalizeKey(b)
+        if (x == y) return x.isNotEmpty()
+        if (DIGITS_ONLY.matches(x) || DIGITS_ONLY.matches(y)) return false
+        if (minOf(x.length, y.length) < 4) return false
+        if (kotlin.math.abs(x.length - y.length) > 1) return false
+        return levenshtein(x, y) <= 1
+    }
+
+    /**
+     * İki şık listesi (sıraları değişmiş olabilir) aynı dörtlü mü?
+     *
+     * Sıra her turda değiştiği için birebir eşleştirme yapılıyor: soldaki her
+     * şıkkın sağda kendine ait bir karşılığı olmalı, aynı karşılık iki kez
+     * kullanılamaz.
+     */
+    fun optionsNearlyMatch(a: List<String>, b: List<String>): Boolean {
+        if (a.size < 4 || a.size != b.size) return false
+        val kalan = b.toMutableList()
+        for (o in a) {
+            val i = kalan.indexOfFirst { sameOptionText(o, it) }
+            if (i < 0) return false
+            kalan.removeAt(i)
+        }
+        return true
     }
 
     /** Metinde arayüz uyarısı geçiyor mu — iki kayıttan temiz olanı seçmek için. */
