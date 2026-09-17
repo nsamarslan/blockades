@@ -389,6 +389,16 @@ class Repo private constructor(context: Context) {
         return if (index != null) KnownAnswer.OnScreen(index) else KnownAnswer.Unmatched(text)
     }
 
+    /**
+     * Bu parmak izi arşivde var mı?
+     *
+     * Yakalama tarafı bunu "ikinci okumayı beklemeye gerek var mı" sorusunu
+     * yanıtlamak için kullanıyor: parmak izi soru metni ve sıralanmış
+     * şıklardan hesaplandığı için, bozuk bir OCR okuması daha önce
+     * kaydedilmiş bir kaydın izini birebir üretemez.
+     */
+    suspend fun isKnownFingerprint(fp: String): Boolean = dao.byFingerprint(fp) != null
+
     suspend fun updateManual(q: QuestionEntity) = dao.update(q.copy(edited = true))
     suspend fun delete(id: Long) = dao.delete(id)
     suspend fun deleteAll() = dao.deleteAll()

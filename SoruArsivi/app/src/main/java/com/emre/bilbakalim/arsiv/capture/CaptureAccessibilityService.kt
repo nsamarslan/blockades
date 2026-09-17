@@ -153,6 +153,14 @@ class CaptureAccessibilityService : AccessibilityService() {
         /** Atlanan karar satırı da tekrarlanmasın. */
         var lastSkip: String? = null,
         /**
+         * Bu soruda hiç renkli şık görüldü mü (turkuaz/yeşil/kırmızı)?
+         *
+         * "Dokunuş yutuldu mu" kararı buna bakıyor. lastSummary'ye bakmak
+         * yanlış olurdu: o, renk bulunamadığında ölçülen ham renkleri de
+         * yazıyor ve dokunuşa hiç tepki gelmese bile doluyor.
+         */
+        var tintSeen: Boolean = false,
+        /**
          * Şık yerleşiminin sürümü; oyun şıkları karıştırdıkça artar.
          *
          * [bornAt] artık değişebilir olduğu için "bu hâlâ aynı soru mu"
@@ -293,10 +301,12 @@ class CaptureAccessibilityService : AccessibilityService() {
                     if (active != null && active in cur.targetPackages) {
                         misses = 0
                         if (!cur.paused) requestScan()
-                        // Cevabı bekleyen bir soru varken hızlı yoklama:
-                        // kartın oturduğu an ne kadar erken ölçülürse dokunuş
-                        // da o kadar erken gider.
-                        if (pendingAnswer?.brightSince == 0L) delay(POLL_FAST_MS)
+                        // Dokunulmayı bekleyen bir soru varken hızlı yoklama.
+                        // Eskiden koşul "kart henüz ölçülmedi" idi; ölçüm artık
+                        // sorunun kaydedildiği anda yapıldığı için o koşul hep
+                        // yanlış çıkıyor ve yoklama yavaş moda dönüyordu —
+                        // dokunuş vakti gelse bile 800 ms'ye kadar bekleniyordu.
+                        if (pendingAnswer?.taps == 0) delay(POLL_FAST_MS)
                     } else {
                         misses++
                         // Otomatik modda araya giren bir reklam ya da sistem
@@ -605,7 +615,14 @@ class CaptureAccessibilityService : AccessibilityService() {
         // kaydediliyor, yani her geçişte bir çöp kayıt. Gerçek soru saniyede
         // birkaç kez okunduğu için ikinci okumayı beklemenin maliyeti yok;
         // bozuk okuma ise kendini iki kez aynı biçimde tekrar edemiyor.
-        if (p.key != confirmKey) {
+        // Bu kapı bozuk geçiş okumalarına karşı. Soru arşivde bu haliyle
+        // zaten varsa (parmak izi soru metni + sıralanmış şıklardan
+        // hesaplanıyor) bozuk okuma olamaz: bozulmuş bir metin kendini daha
+        // önce kaydedilmiş bir kayıtla birebir aynı üretemez. O yüzden
+        // tanıdık sorularda ikinci okumayı beklemiyoruz; her soruda bir
+        // tarama turu (300-600 ms) kazanıyoruz.
+        val taniniyor = runCatching { repo.isKnownFingerprint(p.key) }.getOrDefault(false)
+        if (!taniniyor && p.key != confirmKey) {
             confirmKey = p.key
             shot?.let { if (!it.isRecycled) it.recycle() }
             return
@@ -686,7 +703,17 @@ class CaptureAccessibilityService : AccessibilityService() {
                 SystemClock.uptimeMillis() - lastAnsweredAt < ANSWER_COOLDOWN_MS
             val current = pendingAnswer
             if (!answeredJustNow && (current == null || current.id != savedId)) {
-                pendingAnswer = PendingAnswer(savedId, p.optionRects, p.options)
+                // Kartın oturduğu bu noktada ZATEN ölçülmüş durumda: birkaç
+                // satır yukarıdaki optionsRendered() kapısını geçemeseydik
+                // buraya hiç gelmezdik. Eskiden brightSince 0 ile başlıyor ve
+                // ölçüm için bir tarama turu daha bekleniyordu; dokunuş o tur
+                // kadar (300-600 ms) geç gidiyordu. Ölçümü burada kabul etmek
+                // hiçbir güvenliği gevşetmiyor, sadece aynı bilgiyi iki kez
+                // toplamayı bırakıyor.
+                val now = SystemClock.uptimeMillis()
+                pendingAnswer = PendingAnswer(savedId, p.optionRects, p.options).apply {
+                    if (shot != null) brightSince = now
+                }
             }
         }
 
@@ -803,6 +830,8 @@ class CaptureAccessibilityService : AccessibilityService() {
             waiting.taps++
             waiting.lastTapAt = SystemClock.uptimeMillis()
             waiting.autoTapped = true
+            // Yeni dokunuşun tepkisi ayrıca ölçülsün.
+            waiting.tintSeen = false
             waiting.knownIndex = known
 
             // Arşiv sorgusu sürerken şıklar karışmış olabilir; o zaman
@@ -996,6 +1025,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         // Renk deseni her değiştiğinde günlüğe düşüyor; kaçan cevapların
         // sebebini tahmin etmek yerine akışı görebilmek için.
         val summary = a.summary()
+        if (a.tints.any { it != AnswerColorDetector.Tint.NEUTRAL }) waiting.tintSeen = true
         if (summary != waiting.lastSummary && summary.contains(Regex("YESIL|turkuaz|KIRMIZI"))) {
             waiting.lastSummary = summary
             log("renk #${waiting.id}: $summary")
@@ -1177,9 +1207,24 @@ class CaptureAccessibilityService : AccessibilityService() {
     private fun startVerdictBurst(waiting: PendingAnswer, screenW: Int, screenH: Int) {
         if (burstJob?.isActive == true) return
         val fast = fastCapture
+        // Dokunduktan sonra hiçbir renk kıpırdamıyorsa jest yutulmuş
+        // demektir. Turu sonuna kadar (3 sn) sürdürmek yeniden denemeyi de
+        // o kadar geciktiriyordu: tarama döngüsü tur bitene dek duruyor,
+        // AUTO_RETAP_MS'in 2,5 saniyesi hiç işlemiyordu. Renk görülmeden
+        // geçen kare sayısı sınırı dolunca turu erken bitiriyoruz.
+        val tapCountAtStart = waiting.taps
         burstJob = scope.launch {
+            var sessiz = 0
             repeat(if (fast) VERDICT_TRIES_FAST else VERDICT_TRIES_SLOW) {
                 if (pendingAnswer?.id != waiting.id) return@launch
+                if (tapCountAtStart > 0 && !waiting.tintSeen) {
+                    if (++sessiz >= SILENT_BURST_LIMIT) {
+                        log("otomatik #${waiting.id}: dokunuşa tepki yok, yeniden denenecek")
+                        return@launch
+                    }
+                } else {
+                    sessiz = 0
+                }
                 if (fast) {
                     delay(VERDICT_GAP_FAST_MS)
                     // peek() yeniden kullanılan kareyi döndürür: hiç bellek
@@ -1518,6 +1563,11 @@ class CaptureAccessibilityService : AccessibilityService() {
         private const val AUTO_MAX_TAPS = 3
         /** Dokunuşa yanıt gelmezse bu kadar sonra yeniden denenir. */
         private const val AUTO_RETAP_MS = 2500L
+        /**
+         * Dokunuştan sonra kaç kare renk değişimi görmezsek jestin yutulduğuna
+         * hükmedip renk turunu erken bitiriyoruz. 50 ms'lik karelerde ~1 sn.
+         */
+        private const val SILENT_BURST_LIMIT = 20
         /**
          * "Süre doldu" kararı için sorunun ekranda durması gereken en az süre.
          * Oyunun sayacı bir dakikanın üstünde olduğu için bu eşik gerçek bir

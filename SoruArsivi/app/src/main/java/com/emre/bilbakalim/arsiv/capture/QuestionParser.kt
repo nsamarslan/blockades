@@ -118,7 +118,17 @@ object QuestionParser {
         if (fromAccessibility && clickablePool.size in 3..6) {
             optionPool = clickablePool
         }
-        optionPool = dropNumberStrips(optionPool, screenH)
+        // Rozet şeridi elenince geriye üçten az metin kalıyorsa, şık
+        // bölgesinde gerçek şık yok demektir — orada duran yalnızca joker
+        // bedelleri. Eskiden bu durumda eleme geri alınıyor ve rozetler şık
+        // adayı olarak kalıyordu; günlükteki «200»@%89 «200»@%89 «100»@%89
+        // satırları bundan. Kaydı bozmuyordu ama kareyi boşa harcıyor ve
+        // gerçek sebebi gizliyordu.
+        val rozetsiz = dropNumberStrips(optionPool, screenH)
+        if (rozetsiz.size < 3 && optionPool.size >= 3) {
+            return reject("şık bölgesinde joker/puan rozetinden başka şık yok")
+        }
+        optionPool = rozetsiz
         if (optionPool.size < 3) return reject("şık bölgesinde 3'ten az metin")
 
         val rows = groupIntoRows(optionPool, screenH)
@@ -326,11 +336,21 @@ object QuestionParser {
      */
     private fun dropNumberStrips(items: List<TextItem>, screenH: Int): List<TextItem> {
         if (items.size < 3) return items
-        val kept = groupIntoRows(items, screenH)
-            .filterNot { row -> row.size >= 3 && row.all { it.text.trim().matches(NUMBER_ONLY) } }
+        return groupIntoRows(items, screenH)
+            .filterNot { row -> isNumberStrip(row.map { it.text }) }
             .flatten()
-        return if (kept.size >= 3) kept else items
     }
+
+    /**
+     * Aynı satırdaki metinler bir rozet şeridi mi?
+     *
+     * Joker bedelleri ("200 200 100") yan yana üç sayı olarak duruyor.
+     * Gerçek sayı şıkları ise alt alta, satır başına bir tane — bu yüzden
+     * "aynı satırda üç veya daha fazla salt sayı" ayrımı ikisini ayırmaya
+     * yetiyor ve matematik sorularının şıklarını elemiyor.
+     */
+    internal fun isNumberStrip(texts: List<String>): Boolean =
+        texts.size >= 3 && texts.all { it.trim().matches(NUMBER_ONLY) }
 
     /** Dikey merkezleri birbirine yakın olanları aynı satıra koyar. */
     private fun groupIntoRows(items: List<TextItem>, screenH: Int): List<List<TextItem>> {
