@@ -33,6 +33,7 @@ import com.emre.bilbakalim.arsiv.ui.DebugScreen
 import com.emre.bilbakalim.arsiv.ui.DetailScreen
 import com.emre.bilbakalim.arsiv.ui.HomeScreen
 import com.emre.bilbakalim.arsiv.ui.ListScreen
+import com.emre.bilbakalim.arsiv.ui.MissesScreen
 import com.emre.bilbakalim.arsiv.ui.SettingsScreen
 import com.emre.bilbakalim.arsiv.ui.SoruArsiviTheme
 
@@ -41,6 +42,7 @@ sealed interface Screen {
     data object Liste : Screen
     data object Ayarlar : Screen
     data object Teshis : Screen
+    data object Hatalar : Screen
     data object UygulamaSec : Screen
     data class Detay(val id: Long) : Screen
 }
@@ -102,6 +104,7 @@ private fun AppRoot(vm: ArsivViewModel) {
                 onOpenList = { go(Screen.Liste) },
                 onOpenSettings = { go(Screen.Ayarlar) },
                 onOpenDebug = { go(Screen.Teshis) },
+                onOpenMisses = { go(Screen.Hatalar) },
                 onPickApp = { go(Screen.UygulamaSec) },
                 onOpenDetail = { go(Screen.Detay(it)) }
             )
@@ -117,6 +120,11 @@ private fun AppRoot(vm: ArsivViewModel) {
                 onOpenDebug = { go(Screen.Teshis) }
             )
             Screen.Teshis -> DebugScreen(vm = vm, onBack = { back() })
+            Screen.Hatalar -> MissesScreen(
+                vm = vm,
+                onBack = { back() },
+                onOpenDetail = { go(Screen.Detay(it)) }
+            )
             Screen.UygulamaSec -> AppPickerScreen(
                 vm = vm,
                 selected = settings.targetPackages,

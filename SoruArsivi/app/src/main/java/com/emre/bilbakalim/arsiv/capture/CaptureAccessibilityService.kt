@@ -123,6 +123,31 @@ class CaptureAccessibilityService : AccessibilityService() {
     /** Bir kez görülmüş ama henüz doğrulanmamış okuma (kararlılık kapısı). */
     @Volatile private var confirmKey: String? = null
     /**
+     * Bu oturumda yapılan bir hata.
+     *
+     * Amaç tek bir soruyu cevaplamak: "neye bastık, doğrusu neydi".
+     * Arşivdeki kayıt bunu söylemiyor — orada yalnızca doğru cevap var,
+     * bizim seçtiğimiz şık değil. Liste bellekte duruyor ve oturumla
+     * birlikte gidiyor; kalıcı olması istenen şey zaten arşivin kendisi.
+     */
+    data class Miss(
+        /** Liste anahtarı; zaman damgası aynı milisaniyede çakışabiliyor. */
+        val seq: Long,
+        val at: Long,
+        val questionId: Long,
+        val question: String,
+        /** Bastığımız şık; süre dolduysa null. */
+        val chosen: String?,
+        val chosenLabel: String?,
+        val correct: String,
+        val correctLabel: String,
+        /** Dokunuşu bot mu yaptı? */
+        val byAuto: Boolean,
+        /** Kimse basmadı, süre doldu. */
+        val timedOut: Boolean
+    )
+
+    /**
      * Cevabı açılmayı bekleyen soru.
      *
      * [pendingIndex]: yeşil bantta görülen ama henüz onaylanmamış şık.
@@ -131,6 +156,14 @@ class CaptureAccessibilityService : AccessibilityService() {
      */
     private data class PendingAnswer(
         val id: Long,
+        /**
+         * Sorunun kendi metni.
+         *
+         * Yalnızca "bu turdaki hatalar" listesi için taşınıyor: hata anında
+         * veritabanına gitmek gerekmesin ve liste kayıt silinse bile
+         * okunabilir kalsın.
+         */
+        val question: String,
         /**
          * Şıkların ekrandaki kutuları.
          *
@@ -574,13 +607,18 @@ class CaptureAccessibilityService : AccessibilityService() {
             var viaOcr = QuestionParser.parse(
                 ocrItems, shot.width, shot.height, s, fromAccessibility = false
             )
-            // Dört şıktan üçü okundu ve ekran bir süredir kıpırdamıyor: bu
-            // artık "şıklar teker teker beliriyor" hâli değil, OCR'ın bir
-            // şıkkı görmemesi. Tek karakterlik şıklarda ("1") ML Kit bloğu
-            // sık düşürüyor. Şık şeridini kırpıp iki kat büyüterek bir kez
-            // daha okuyoruz; küçük harfler büyütülünce tanınıyor.
-            val eksikSik =
-                QuestionParser.lastReject?.startsWith("şıklar henüz tamamlanmadı") == true
+            // Şık bölgesi okunamadı: şıkların orada durduğunu biliyoruz ama
+            // metinleri çıkmıyor. Tek karakterlik şıklarda ("1") ML Kit bloğu
+            // sık düşürüyor. Şık şeridini kırpıp büyüterek bir kez daha
+            // okuyoruz; küçük rakamlar büyütülünce tanınıyor.
+            //
+            // Bu kapı eskiden red metninin başına bakıyordu ve yalnızca
+            // "3/4" hâlini yakalıyordu. OCR dört sayı şıkkından İKİSİNİ
+            // birden düşürdüğünde red "şık bölgesinde 3'ten az metin"
+            // oluyor, yakın plan hiç denenmiyordu: soru ekranda cevapsız
+            // kalıyor, bot hiçbir tuşa basmıyordu. Ayrıştırıcı artık bu
+            // türü kendisi işaretliyor.
+            val eksikSik = QuestionParser.lastOptionsShort
             // Bulunan şıkların hepsi kısaysa (sayı soruları: "2", "12", "165")
             // beklemenin anlamı yok. Bu şıklar teker teker belirmiyor —
             // hepsi aynı anda çiziliyor; eksik olan, ML Kit'in yalıtık
@@ -590,7 +628,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             val hepsiKisa = QuestionParser.lastPartial.let { p ->
                 p.isNotEmpty() && p.all { it.length <= NUMERIC_OPTION_MAX_LEN }
             }
-            if (viaOcr == null && shot != null && eksikSik &&
+            if (viaOcr == null && eksikSik &&
                 (hepsiKisa || frameStatic &&
                     SystemClock.uptimeMillis() - lastFrameChangeAt >= CLOSEUP_AFTER_MS) &&
                 (lastFrameSig?.let { sig -> closeUpSig?.let { sameFrame(it, sig) } } != true ||
@@ -616,6 +654,26 @@ class CaptureAccessibilityService : AccessibilityService() {
                             (viaOcr?.let { "${it.options.size} şık bulundu" }
                                 ?: "RED: ${QuestionParser.lastReject ?: "?"}")
                     )
+                }
+                // Şerit hâlâ okunamadı. Son çare: kutuları görüntüden bulup
+                // her birini TEK BAŞINA büyütüp okumak. Şeridin içinde dört
+                // ufak rakam ararken blok bulucu kaçırabiliyor; rakam kendi
+                // kutusuyla, ekranı dolduracak kadar büyütülmüş hâlde
+                // gelince tanınıyor. Şıkları tamamen sayı olan sorularda
+                // ("4 / 3 / 2 / 1") gereken bu.
+                if (viaOcr == null) {
+                    val kutular = closeUpPerBox(shot, s, scale)
+                    if (kutular != null) {
+                        ocrItems = kutular
+                        viaOcr = QuestionParser.parse(
+                            ocrItems, shot.width, shot.height, s, fromAccessibility = false
+                        )
+                        log(
+                            "kutu kutu OCR (${scale}x): ${kutular.size} metin · " +
+                                (viaOcr?.let { "${it.options.size} şık bulundu" }
+                                    ?: "RED: ${QuestionParser.lastReject ?: "?"}")
+                        )
+                    }
                 }
             }
             if (viaOcr != null && (viaNodes == null || viaOcr.confidence > viaNodes.confidence + 0.04f)) {
@@ -848,7 +906,9 @@ class CaptureAccessibilityService : AccessibilityService() {
                 // hiçbir güvenliği gevşetmiyor, sadece aynı bilgiyi iki kez
                 // toplamayı bırakıyor.
                 val now = SystemClock.uptimeMillis()
-                pendingAnswer = PendingAnswer(savedId, p.optionRects, p.options).apply {
+                pendingAnswer = PendingAnswer(
+                    savedId, p.question, p.optionRects, p.options
+                ).apply {
                     if (shot != null) brightSince = now
                 }
             }
@@ -1092,6 +1152,37 @@ class CaptureAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * "Bu turdaki hatalar" listesine bir satır ekler.
+     *
+     * Aynı soru bir turda birkaç kez okunabiliyor; kimlik + karşılaşma
+     * damgası aynıysa satır tekrarlanmıyor.
+     */
+    private fun noteMiss(
+        waiting: PendingAnswer,
+        chosen: Int?,
+        correct: Int,
+        timedOut: Boolean
+    ) {
+        val dogru = waiting.options.getOrNull(correct) ?: return
+        val varOlan = misses.value.firstOrNull()
+        if (varOlan?.questionId == waiting.id && varOlan.correct == dogru) return
+        addMiss(
+            Miss(
+                seq = missSeq.incrementAndGet(),
+                at = System.currentTimeMillis(),
+                questionId = waiting.id,
+                question = waiting.question,
+                chosen = chosen?.let { waiting.options.getOrNull(it) },
+                chosenLabel = chosen?.takeIf { it in 0..3 }?.let { ('A' + it).toString() },
+                correct = dogru,
+                correctLabel = if (correct in 0..3) ('A' + correct).toString() else "?",
+                byAuto = waiting.autoTapped,
+                timedOut = timedOut
+            )
+        )
+    }
+
+    /**
      * Bir renk okuması karar sayılmadı — sebebini bir kez yazar.
      *
      * Atlanan kareler eskiden hiç görünmüyordu; günlükte "renk: YESIL" yazıp
@@ -1260,6 +1351,23 @@ class CaptureAccessibilityService : AccessibilityService() {
                 "CEVAP #${waiting.id} → ${optionLabel(waiting, correct)} · " +
                     (if (kesin) "bilemedin" else "bildin") + " · ${a.detail()}"
             )
+            // Hata listesi için: bildiremedik mi?
+            //
+            // Kırmızı göründüyse kesin. Ama kırmızı her karede ölçülemiyor ve
+            // otomatik modda buna hiç ihtiyaç yok: bot hangi şıkka bastığını
+            // zaten biliyor, açılan yeşil başka bir şıksa hata yapmıştır.
+            // Elle oynarken bastığın şıkkı yalnızca renkten öğrenebiliyoruz,
+            // orada kırmızı şart.
+            //
+            // Bu yalnızca listeyi besliyor; arşive ne yazıldığını
+            // değiştirmiyor.
+            val botYanildi = waiting.autoTapped &&
+                waiting.chosenIndex != null && waiting.chosenIndex != correct
+            if (kesin || botYanildi) {
+                val basilan = a.wrongIndex
+                    ?: waiting.chosenIndex.takeIf { waiting.autoTapped }
+                noteMiss(waiting, basilan, correct, timedOut = false)
+            }
             finishAnswer(waiting.id)
             return true
         }
@@ -1279,6 +1387,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 "CEVAP #${waiting.id} → ${optionLabel(waiting, dimmed)} · " +
                     "süre doldu (denemeye sayılmadı) · ${a.colorSummary()}"
             )
+            noteMiss(waiting, chosen = null, correct = dimmed, timedOut = true)
             finishAnswer(waiting.id)
             return true
         }
@@ -1593,6 +1702,65 @@ class CaptureAccessibilityService : AccessibilityService() {
         return disaridakiler + mapped
     }
 
+    /**
+     * Şık kutularını görüntüden bulup her birini tek başına okur.
+     *
+     * Şeridin tamamını büyütmek yetmediğinde devreye giriyor. Fark şu:
+     * ML Kit'e dört ufak rakam barındıran uzun bir şerit yerine, içinde tek
+     * bir rakam olan kutu boyu bir görüntü veriyoruz. Şıkları tamamen sayı
+     * olan sorularda ("4 / 3 / 2 / 1") blok bulucunun kaçırdığı yer tam
+     * burasıydı.
+     *
+     * Yan kazanç: dönen kutular şıkkın gerçek sınırları, yani hem dokunuş
+     * hem renk ölçümü metin kutusundan değil kutunun kendisinden geliyor.
+     *
+     * Metni okunamayan kutu listeye girmiyor: konumdan ibaret, metinsiz bir
+     * şık arşive yazılmamalı.
+     */
+    private suspend fun closeUpPerBox(
+        shot: Bitmap,
+        s: Prefs.Settings,
+        scale: Int
+    ): List<TextItem>? {
+        val top = (s.optionsTop * shot.height).toInt().coerceIn(0, shot.height - 2)
+        val bottom = (s.optionsBottom * shot.height).toInt().coerceIn(top + 2, shot.height)
+        // Aranan bant şık bölgesinden biraz geniş. Sebebi: kutu bulucu
+        // banda yapışık aralıkları "kırpılmış" sayıp atıyor, ve en alttaki
+        // şık çoğu ayarda bandın alt ucuna değiyor. Biraz pay bırakınca
+        // kutunun altı da üstü de zeminle çevrili görünüyor. Bulunanlardan
+        // yalnızca merkezi gerçek şık bölgesinde kalanları alıyoruz, yani
+        // pay bölge tanımını genişletmiyor.
+        val pay = (shot.height * BOX_PROBE_PAD).toInt()
+        val boxes = OptionBoxFinder
+            .find(shot, (top - pay).coerceAtLeast(0), (bottom + pay).coerceAtMost(shot.height))
+            .filter { it.centerY() in top..bottom }
+        if (boxes.size < 3) return null
+
+        val out = ArrayList<TextItem>(boxes.size)
+        for (box in boxes) {
+            val crop = runCatching {
+                Bitmap.createBitmap(shot, box.left, box.top, box.width(), box.height())
+            }.getOrNull() ?: continue
+            val big = runCatching {
+                Bitmap.createScaledBitmap(crop, crop.width * scale, crop.height * scale, true)
+            }.getOrNull()
+            if (big == null) { crop.recycle(); continue }
+            val items = runCatching { OcrEngine.recognize(big) }.getOrDefault(emptyList())
+            if (big !== crop) big.recycle()
+            crop.recycle()
+            // Kutunun içinde birden çok blok çıkabilir ("1", "5" → "15");
+            // soldan sağa birleştiriyoruz.
+            val text = items.sortedBy { it.bounds.left }
+                .joinToString(" ") { it.text.trim() }
+                .trim()
+            if (text.isNotEmpty()) out.add(TextItem(text, Rect(box), clickable = false))
+        }
+        if (out.size < 3) return null
+
+        val disaridakiler = lastOcrItems.filter { it.centerY !in top..bottom }
+        return disaridakiler + out
+    }
+
     private fun frameSignature(bmp: Bitmap): IntArray? = runCatching {
         val small = Bitmap.createScaledBitmap(bmp, SIG_W, SIG_H, true)
         val px = IntArray(SIG_W * SIG_H)
@@ -1867,6 +2035,11 @@ class CaptureAccessibilityService : AccessibilityService() {
          * örnekler "165", "1500", "23,5" — dördü de sığıyor.
          */
         private const val NUMERIC_OPTION_MAX_LEN = 5
+        /**
+         * Kutu aranırken şık bölgesinin altına ve üstüne bırakılan pay
+         * (ekran yüksekliğinin oranı).
+         */
+        private const val BOX_PROBE_PAD = 0.04f
         /** Soru görmeyeli bu kadar olduysa bot neden beklediğini yazsın. */
         private const val AUTO_IDLE_LOG_AFTER_MS = 3000L
         private const val AUTO_IDLE_LOG_GAP_MS = 5000L
@@ -1890,6 +2063,25 @@ class CaptureAccessibilityService : AccessibilityService() {
         const val LOG_LIMIT = 4000
         /** Teşhis ekranında gösterilen satır sayısı. */
         const val LOG_VISIBLE = 80
+
+        /** Bellekte tutulan en fazla hata sayısı. */
+        const val MISS_LIMIT = 300
+
+        /**
+         * Bu oturumun hataları, yenisi başta.
+         *
+         * Aynı soru bir turda birkaç kez okunabildiği için kimlik+karşılaşma
+         * başına tek satır tutuluyor; yoksa liste aynı hatayla şişerdi.
+         */
+        val misses = MutableStateFlow<List<Miss>>(emptyList())
+
+        fun clearMisses() { misses.value = emptyList() }
+
+        private val missSeq = java.util.concurrent.atomic.AtomicLong(0)
+
+        private fun addMiss(m: Miss) {
+            misses.value = (listOf(m) + misses.value).take(MISS_LIMIT)
+        }
 
         private val logLock = Any()
         /** Geçmişin tamamı, yenisi başta. Yazma [logLock] altında. */

@@ -59,6 +59,12 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     /** Arkada tutulan toplam satır sayısı — akış yalnızca pencereyi taşıyor. */
     val scanLogTotal: StateFlow<Int> = CaptureAccessibilityService.scanLogTotal
 
+    /** Bu oturumda bildiremediğimiz sorular (Hatalar ekranı). */
+    val misses: StateFlow<List<CaptureAccessibilityService.Miss>> =
+        CaptureAccessibilityService.misses
+
+    fun clearMisses() = CaptureAccessibilityService.clearMisses()
+
     fun clearScanLog() = CaptureAccessibilityService.clearLog()
 
     /** Tarama geçmişini düz metin olarak paylaşır — tanı için dışarı aktarmak kolay olsun. */

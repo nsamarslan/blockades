@@ -26,11 +26,29 @@ object QuestionParser {
     @Volatile var lastReject: String? = null
         private set
 
-    private fun reject(reason: String): Parsed? {
+    /**
+     * [reason] ile reddeder.
+     *
+     * [optionsShort] "şık bölgesinden yeterince metin çıkmadı" demektir ve
+     * yakalama tarafı yakın plan OCR'ı buna bakarak deniyor. Eskiden bu karar
+     * red metninin başına bakarak veriliyordu ve yalnızca "3/4" hâlini
+     * yakalıyordu: OCR dört sayı şıkkından ikisini birden düşürdüğünde red
+     * "şık bölgesinde 3'ten az metin" oluyor, yakın plan hiç denenmiyor ve
+     * soru ekranda cevapsız kalıyordu. Şıkları tamamen sayı olan sorularda
+     * ML Kit yalıtık rakam bloğunu sıkça düşürdüğü için tam da olan buydu.
+     *
+     * [partial] o ana kadar okunabilen şık metinleri; boş olabilir.
+     */
+    private fun reject(
+        reason: String,
+        optionsShort: Boolean = false,
+        partial: List<String> = emptyList()
+    ): Parsed? {
         lastReject = reason
+        lastOptionsShort = optionsShort
         // Eksik şık listesi yalnızca kendi reddine ait olmalı; başka bir
         // sebeple reddedilen kare onu bayat bırakmasın.
-        if (!reason.startsWith("şıklar henüz tamamlanmadı")) lastPartial = emptyList()
+        lastPartial = partial
         return null
     }
 
@@ -61,6 +79,16 @@ object QuestionParser {
      * okumak gerekiyor. Yakalama tarafı kararı buna bakarak veriyor.
      */
     @Volatile var lastPartial: List<String> = emptyList()
+        private set
+
+    /**
+     * Son red, "şık bölgesinden yeterince metin çıkmadı" türünden miydi?
+     *
+     * Yakın plan OCR yalnızca bu durumda anlamlı: şıkların yerinde durduğunu
+     * biliyoruz, okuyamıyoruz. Lobi ekranı ya da soru cümlesine benzemeyen
+     * bir metin yüzünden gelen redler bunu tetiklememeli.
+     */
+    @Volatile var lastOptionsShort: Boolean = false
         private set
 
     /** Sayaç, puan, buton gibi soru olmayan metinler. */
@@ -121,7 +149,7 @@ object QuestionParser {
             .map { it.copy(text = TurkishText.cleanOcr(it.text)) }
             .filter { keep(it, screenH, it.centerY in optTop..optBottom) }
 
-        if (cleaned.size < 3) return reject("anlamlı metin 3'ten az")
+        if (cleaned.size < 3) return reject("anlamlı metin 3'ten az", optionsShort = true)
 
         // --- 1. Şık adayları ---------------------------------------------------
         var optionPool = cleaned.filter { it.centerY in optTop..optBottom }
@@ -139,17 +167,20 @@ object QuestionParser {
         // gerçek sebebi gizliyordu.
         val rozetsiz = dropNumberStrips(optionPool, screenH)
         if (rozetsiz.size < 3 && optionPool.size >= 3) {
-            return reject("şık bölgesinde joker/puan rozetinden başka şık yok")
+            return reject(
+                "şık bölgesinde joker/puan rozetinden başka şık yok",
+                optionsShort = true
+            )
         }
         optionPool = rozetsiz
-        if (optionPool.size < 3) return reject("şık bölgesinde 3'ten az metin")
+        if (optionPool.size < 3) return reject("şık bölgesinde 3'ten az metin", optionsShort = true)
 
         val rows = groupIntoRows(optionPool, screenH)
         val ordered = rows.flatMap { row -> row.sortedBy { it.bounds.left } }
 
         // Şıklar birbirine benzer genişlikte olmalı; ortalamadan çok sapanı at.
         val candidates = trimOutliers(ordered)
-        if (candidates.size < 3) return reject("şık adayı 3'ten az")
+        if (candidates.size < 3) return reject("şık adayı 3'ten az", optionsShort = true)
 
         // Metin ve kutu aynı süzgeçten geçmeli. Eskiden boş metinler
         // ayıklanıyor ama kutuları listede kalıyordu; o zaman "2. şıkkın
@@ -159,7 +190,9 @@ object QuestionParser {
             .map { it to TurkishText.stripOptionPrefix(it.text) }
             .filter { (_, text) -> text.isNotBlank() }
         val optionTexts = options.map { it.second }
-        if (optionTexts.size < 3) return reject("şık metni 3'ten az")
+        if (optionTexts.size < 3) {
+            return reject("şık metni 3'ten az", optionsShort = true, partial = optionTexts)
+        }
 
         // Şıklar ekrana teker teker beliriyor. Yarısı gelmişken okursak soru
         // eksik şıkla kaydolur ve bir daha düzelmez; bu yüzden dördü de
@@ -175,8 +208,11 @@ object QuestionParser {
             }
             // Yakalama tarafı "bu eksik şık OCR'ın gözünden mi kaçtı" sorusunu
             // buradan cevaplıyor: kısa/sayısal şıklarda ML Kit bloğu düşürüyor.
-            lastPartial = optionTexts
-            return reject("şıklar henüz tamamlanmadı (${optionTexts.size}/4) · $bulunan")
+            return reject(
+                "şıklar henüz tamamlanmadı (${optionTexts.size}/4) · $bulunan",
+                optionsShort = true,
+                partial = optionTexts
+            )
         }
 
         // --- 2. Soru metni -----------------------------------------------------
@@ -222,6 +258,8 @@ object QuestionParser {
         conf = conf.coerceIn(0f, 1f)
 
         lastReject = null
+        lastOptionsShort = false
+        lastPartial = emptyList()
         return Parsed(
             question = question,
             options = optionTexts,
