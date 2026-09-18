@@ -92,6 +92,10 @@ class CaptureAccessibilityService : AccessibilityService() {
     @Volatile private var closeUpTries = 0
     /** Son tam ekran OCR sonucu — yakın plan okumasıyla birleştirmek için. */
     @Volatile private var lastOcrItems: List<TextItem> = emptyList()
+    /** Ekrandan ölçülen şık kutusu sayısı; yalnızca değişince günlüğe düşer. */
+    @Volatile private var sonKutuSayisi = -1
+    /** Son teşhis karesinin yazıldığı an; diski doldurmamak için kısılıyor. */
+    @Volatile private var lastTeshisAt = 0L
     @Volatile private var lastAutoIdleLogAt = 0L
     @Volatile private var lastAutoIdleReason: String? = null
     /**
@@ -546,11 +550,38 @@ class CaptureAccessibilityService : AccessibilityService() {
         val ocrGap = if (autoIdle && !needOcr) AUTO_IDLE_OCR_GAP_MS else MIN_OCR_GAP_MS
         val ocrDue = SystemClock.uptimeMillis() - lastOcrAt >= ocrGap
         var ocrItems: List<TextItem> = emptyList()
+        var kutular: List<OptionBoxFinder.Box> = emptyList()
+        // Kutu yolunun kendi reddi: eski yol arkasından çalıştığı için
+        // QuestionParser.lastReject'i eziyor, ama teşhis için asıl anlamlı
+        // olan bu ("dört kutu gördüm, birinin metnini okuyamadım").
+        var kutuRed: String? = null
         if ((needOcr || autoIdle) && shot != null && ocrDue) {
             lastOcrAt = SystemClock.uptimeMillis()
             ocrItems = OcrEngine.recognize(shot)
             lastOcrItems = ocrItems
-            var viaOcr = QuestionParser.parse(
+
+            // Önce kutu yolu: şıkların yeri ve sayısı ekrandan piksel olarak
+            // ölçülür, metin sonra doldurulur. Ölçüm tutmazsa (boş liste)
+            // hiçbir şey değişmez, aşağıdaki eski yol devreye girer.
+            var viaOcr: QuestionParser.Parsed? = null
+            if (s.findOptionBoxes) {
+                kutular = OptionBoxFinder.find(shot, s.optionsTop, s.optionsBottom)
+                if (kutular.size >= 3) {
+                    val kutuMetinleri = optionTextsFromBoxes(shot, kutular, ocrItems)
+                    viaOcr = QuestionParser.parse(
+                        ocrItems, shot.width, shot.height, s,
+                        fromAccessibility = false, knownOptions = kutuMetinleri
+                    )
+                    if (viaOcr == null) kutuRed = QuestionParser.lastReject
+                    // Ölçüm her karede aynı sonucu verdiği sürece sessiz;
+                    // yalnızca kutu sayısı değiştiğinde günlüğe düşüyor.
+                    if (sonKutuSayisi != kutular.size) {
+                        sonKutuSayisi = kutular.size
+                        log("şık kutusu ekrandan ölçüldü: ${kutular.size} hap")
+                    }
+                }
+            }
+            if (viaOcr == null) viaOcr = QuestionParser.parse(
                 ocrItems, shot.width, shot.height, s, fromAccessibility = false
             )
             // Dört şıktan üçü okundu ve ekran bir süredir kıpırdamıyor: bu
@@ -621,8 +652,17 @@ class CaptureAccessibilityService : AccessibilityService() {
         // --- 4. Yeni soru mu? -------------------------------------------------
         val p = parsed
         if (p == null) {
+            // Kutu yolu denenip başarısız olduysa asıl sebep onunki; eski
+            // yolun reddi ikinci sırada yazılıyor.
+            val sebep = kutuRed ?: QuestionParser.lastReject ?: "?"
+            val ek = if (kutuRed != null) " · eski yol: ${QuestionParser.lastReject}" else ""
             if (ocrItems.isNotEmpty() || nodes.size > 1) {
-                log("düğüm:${nodes.size} ocr:${ocrItems.size} · RED: ${QuestionParser.lastReject ?: "?"}")
+                log("düğüm:${nodes.size} ocr:${ocrItems.size} kutu:${kutular.size} · RED: $sebep$ek")
+            }
+            // Şık bölgesiyle ilgili bir redse kareyi diske yaz: sebebi
+            // günlükten geriye doğru tahmin etmek yerine bakabilelim.
+            if (s.saveFailedFrames && shot != null && sebep.startsWith("şık")) {
+                teshisKaydet(shot, ocrItems, kutular, sebep + ek)
             }
             noteUnreadable(s)
             // Ekranda soru yok ve bir süredir de yoktu: tur bitmiş olabilir.
@@ -1488,6 +1528,122 @@ class CaptureAccessibilityService : AccessibilityService() {
             }
         }
 
+    /**
+     * Her şık kutusunun içinde ne yazdığını bulur.
+     *
+     * Önce tam ekran OCR'ından o kutunun **içine tam oturan** metinler
+     * aranıyor; kelime şıklarında bu tutuyor ve fazladan hiçbir okuma
+     * yapılmıyor. Bir metin bloğu birden çok kutuya taşıyorsa (ML Kit dört
+     * rakamı tek blokta birleştirdiğinde olan budur) hiçbirine yazılmıyor —
+     * o kutular yakın plandan okunuyor.
+     *
+     * Yakın plan okuma kutunun kendisini kırpıp büyütüyor: tek bir rakam,
+     * beyaz zemin, etrafında başka hiçbir şey yok. ML Kit'in tam ekranda
+     * düşürdüğü rakamı burada görmemesi için sebep kalmıyor.
+     */
+    private suspend fun optionTextsFromBoxes(
+        shot: Bitmap,
+        boxes: List<OptionBoxFinder.Box>,
+        ocr: List<TextItem>
+    ): List<TextItem> {
+        val rects = boxes.map { Rect(it.left, it.top, it.right, it.bottom) }
+        return rects.map { kutu ->
+            val pay = (kutu.height() * BOX_TEXT_SLACK).toInt()
+            val icerdekiler = ocr.filter { t ->
+                t.bounds.top >= kutu.top - pay && t.bounds.bottom <= kutu.bottom + pay &&
+                    t.centerX in kutu.left..kutu.right && t.centerY in kutu.top..kutu.bottom
+            }
+            var metin = icerdekiler.sortedBy { it.bounds.left }
+                .joinToString(" ") { it.text.replace('\n', ' ') }
+                .trim()
+            if (metin.isBlank()) metin = readBox(shot, kutu, BOX_SCALE)
+            if (metin.isBlank()) metin = readBox(shot, kutu, BOX_SCALE_RETRY)
+            TextItem(metin, Rect(kutu))
+        }
+    }
+
+    /** Tek bir şık kutusunu kırpıp büyüterek okur. */
+    private suspend fun readBox(shot: Bitmap, kutu: Rect, scale: Int): String {
+        val pay = (kutu.height() * BOX_CROP_INSET).toInt()
+        val left = (kutu.left + pay).coerceIn(0, shot.width - 2)
+        val top = (kutu.top + pay).coerceIn(0, shot.height - 2)
+        val right = (kutu.right - pay).coerceIn(left + 1, shot.width)
+        val bottom = (kutu.bottom - pay).coerceIn(top + 1, shot.height)
+        val crop = runCatching {
+            Bitmap.createBitmap(shot, left, top, right - left, bottom - top)
+        }.getOrNull() ?: return ""
+        val big = runCatching {
+            Bitmap.createScaledBitmap(crop, crop.width * scale, crop.height * scale, true)
+        }.getOrNull()
+        if (big == null) { crop.recycle(); return "" }
+        val items = runCatching { OcrEngine.recognize(big) }.getOrDefault(emptyList())
+        if (big !== crop) big.recycle()
+        crop.recycle()
+        return items.sortedBy { it.bounds.left }
+            .joinToString(" ") { it.text.replace('\n', ' ') }
+            .trim()
+    }
+
+    /**
+     * Ayrıştırma başarısız olduğunda o anın ekran görüntüsünü ve ham OCR
+     * dökümünü diske yazar.
+     *
+     * Bunu eklememizin sebebi: sayı şıklarındaki tıkanmayı on tur boyunca
+     * günlük satırlarından geriye doğru tahmin ederek aramak zorunda kaldık.
+     * ML Kit'in gerçekte ne döndürdüğünü, kutu ölçümünün neyi gördüğünü
+     * kimse görmüyordu. Artık başarısız kare diskte duruyor; eşikler ölçülen
+     * veriye göre ayarlanabiliyor.
+     *
+     * Dosyalar uygulamanın kendi klasöründe, en yeni [TESHIS_MAX] kare
+     * tutuluyor ve ayarlardan kapatılabiliyor.
+     */
+    private fun teshisKaydet(
+        shot: Bitmap,
+        ocr: List<TextItem>,
+        boxes: List<OptionBoxFinder.Box>,
+        sebep: String
+    ) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastTeshisAt < TESHIS_GAP_MS) return
+        lastTeshisAt = now
+        runCatching {
+            val dir = File(filesDir, "teshis").apply { mkdirs() }
+            // En eskiler silinir; klasör sınırsız büyümesin.
+            dir.listFiles()?.sortedBy { it.name }?.let { hepsi ->
+                val fazla = hepsi.size - TESHIS_MAX * 2
+                if (fazla > 0) hepsi.take(fazla).forEach { it.delete() }
+            }
+            val ad = "kare_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                .format(java.util.Date())
+            saveShotTo(shot, File(dir, "$ad.jpg"))
+            val sb = StringBuilder()
+            sb.append("sebep: ").append(sebep).append('\n')
+            sb.append("ekran: ").append(shot.width).append('x').append(shot.height).append('\n')
+            sb.append("şık kutusu: ").append(boxes.size).append('\n')
+            boxes.forEach {
+                sb.append("  kutu ").append(it.left).append(',').append(it.top)
+                    .append(' ').append(it.width).append('x').append(it.height).append('\n')
+            }
+            sb.append("OCR blokları: ").append(ocr.size).append('\n')
+            ocr.forEach {
+                sb.append("  [").append(it.bounds.left).append(',').append(it.bounds.top)
+                    .append(' ').append(it.bounds.width()).append('x').append(it.bounds.height())
+                    .append("] ").append(it.text.replace('\n', '|')).append('\n')
+            }
+            File(dir, "$ad.txt").writeText(sb.toString())
+        }
+    }
+
+    private fun saveShotTo(bmp: Bitmap, target: File) {
+        val maxW = 820
+        val scaled = if (bmp.width > maxW) {
+            val ratio = maxW.toFloat() / bmp.width
+            Bitmap.createScaledBitmap(bmp, maxW, (bmp.height * ratio).toInt(), true)
+        } else bmp
+        FileOutputStream(target).use { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }
+        if (scaled !== bmp) scaled.recycle()
+    }
+
     private fun saveShot(bmp: Bitmap, key: String): String? = runCatching {
         val dir = File(filesDir, "shots").apply { mkdirs() }
         val target = File(dir, "${key.take(24)}.jpg")
@@ -1821,6 +1977,28 @@ class CaptureAccessibilityService : AccessibilityService() {
          * örnekler "165", "1500", "23,5" — dördü de sığıyor.
          */
         private const val NUMERIC_OPTION_MAX_LEN = 5
+
+        /**
+         * Bir metnin şık kutusuna ait sayılması için kutunun dışına
+         * taşabileceği pay (kutu yüksekliğine oran).
+         *
+         * Küçük tutuluyor: dört rakamı tek blokta birleştiren bir OCR
+         * bloğu bu payı aşar ve hiçbir kutuya yazılmaz — o kutular yakın
+         * plandan okunur. Pay büyük olsaydı birleşmiş blok dört kutunun
+         * dördüne birden aynı metni yazardı.
+         */
+        private const val BOX_TEXT_SLACK = 0.15f
+        /** Şık kutusu yakın plandan okunurken kullanılan büyütme. */
+        private const val BOX_SCALE = 3
+        /** İlk okuma boş dönerse denenen büyütme. */
+        private const val BOX_SCALE_RETRY = 5
+        /** Kırpma payı: hapın yuvarlak köşeleri metne karışmasın. */
+        private const val BOX_CROP_INSET = 0.12f
+
+        /** Diskte tutulan teşhis karesi sayısı. */
+        private const val TESHIS_MAX = 20
+        /** İki teşhis karesi arasındaki en kısa süre. */
+        private const val TESHIS_GAP_MS = 6_000L
         /** Soru görmeyeli bu kadar olduysa bot neden beklediğini yazsın. */
         private const val AUTO_IDLE_LOG_AFTER_MS = 3000L
         private const val AUTO_IDLE_LOG_GAP_MS = 5000L

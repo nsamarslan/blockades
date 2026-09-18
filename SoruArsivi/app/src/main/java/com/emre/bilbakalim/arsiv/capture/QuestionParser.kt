@@ -34,6 +34,12 @@ object QuestionParser {
         return null
     }
 
+    /** [reject] ile aynı iş; şık listesi döndüren yardımcılar için. */
+    private fun rejectOptions(reason: String): List<Pair<TextItem, String>>? {
+        reject(reason)
+        return null
+    }
+
     data class Parsed(
         val question: String,
         val options: List<String>,
@@ -102,14 +108,24 @@ object QuestionParser {
     private val SCORE_POPUP =
         Regex("^(?=[^0-9]*[0-9])(?=[^+\\-\u00b1]*[+\\-\u00b1])[0-9\\s+\\-\u00b1]+$")
 
+    /**
+     * @param knownOptions Şık kutuları ekrandan **piksel olarak** bulunduysa
+     *   (bkz. [OptionBoxFinder]) buradan geçirilir. O zaman "kaç şık var ve
+     *   nerede" sorusu metne hiç sorulmaz: konum tabanlı sezgiler, rozet
+     *   eleme ve genişlik süzgeçleri tümüyle atlanır. Sayı şıklarında
+     *   tıkanmanın sebebi bu sezgilerdi — ML Kit tek başına duran bir "1"i
+     *   döndürmeyince ekranda şık yokmuş gibi görünüyordu.
+     */
     fun parse(
         items: List<TextItem>,
         screenW: Int,
         screenH: Int,
         s: Prefs.Settings,
-        fromAccessibility: Boolean
+        fromAccessibility: Boolean,
+        knownOptions: List<TextItem>? = null
     ): Parsed? {
-        if (items.isEmpty() || screenW <= 0 || screenH <= 0) return reject("ekranda metin yok")
+        if (screenW <= 0 || screenH <= 0) return reject("ekranda metin yok")
+        if (items.isEmpty() && knownOptions.isNullOrEmpty()) return reject("ekranda metin yok")
 
         val optTop = (s.optionsTop * screenH).toInt()
         val optBottom = (s.optionsBottom * screenH).toInt()
@@ -121,45 +137,16 @@ object QuestionParser {
             .map { it.copy(text = TurkishText.cleanOcr(it.text)) }
             .filter { keep(it, screenH, it.centerY in optTop..optBottom) }
 
-        if (cleaned.size < 3) return reject("anlamlı metin 3'ten az")
+        // Şık kutuları ekrandan bulunduysa bu eşik geçerli değil: şıkların
+        // metni ayrı ayrı okunuyor ve soru metni kendi bölgesinde aranıyor.
+        if (knownOptions == null && cleaned.size < 3) return reject("anlamlı metin 3'ten az")
 
         // --- 1. Şık adayları ---------------------------------------------------
-        var optionPool = cleaned.filter { it.centerY in optTop..optBottom }
-
-        // Erişilebilirlik yolunda tıklanabilir olanlar çok daha güvenilir.
-        val clickablePool = optionPool.filter { it.clickable }
-        if (fromAccessibility && clickablePool.size in 3..6) {
-            optionPool = clickablePool
-        }
-        // Rozet şeridi elenince geriye üçten az metin kalıyorsa, şık
-        // bölgesinde gerçek şık yok demektir — orada duran yalnızca joker
-        // bedelleri. Eskiden bu durumda eleme geri alınıyor ve rozetler şık
-        // adayı olarak kalıyordu; günlükteki «200»@%89 «200»@%89 «100»@%89
-        // satırları bundan. Kaydı bozmuyordu ama kareyi boşa harcıyor ve
-        // gerçek sebebi gizliyordu.
-        val rozetsiz = dropNumberStrips(optionPool, screenH)
-        if (rozetsiz.size < 3 && optionPool.size >= 3) {
-            return reject("şık bölgesinde joker/puan rozetinden başka şık yok")
-        }
-        optionPool = rozetsiz
-        if (optionPool.size < 3) return reject("şık bölgesinde 3'ten az metin")
-
-        val rows = groupIntoRows(optionPool, screenH)
-        val ordered = rows.flatMap { row -> row.sortedBy { it.bounds.left } }
-
-        // Şıklar birbirine benzer genişlikte olmalı; ortalamadan çok sapanı at.
-        val candidates = trimOutliers(ordered)
-        if (candidates.size < 3) return reject("şık adayı 3'ten az")
-
-        // Metin ve kutu aynı süzgeçten geçmeli. Eskiden boş metinler
-        // ayıklanıyor ama kutuları listede kalıyordu; o zaman "2. şıkkın
-        // metni" ile "2. şıkkın kutusu" başka şıklara ait oluyordu — dokunuş
-        // bir şıkka, kaydedilen cevap başkasına gidiyordu.
-        val options = candidates.take(4)
-            .map { it to TurkishText.stripOptionPrefix(it.text) }
-            .filter { (_, text) -> text.isNotBlank() }
+        val options =
+            if (knownOptions != null) fromBoxes(knownOptions)
+            else fromText(cleaned, optTop, optBottom, screenH, fromAccessibility)
+        if (options == null) return null
         val optionTexts = options.map { it.second }
-        if (optionTexts.size < 3) return reject("şık metni 3'ten az")
 
         // Şıklar ekrana teker teker beliriyor. Yarısı gelmişken okursak soru
         // eksik şıkla kaydolur ve bir daha düzelmez; bu yüzden dördü de
@@ -230,6 +217,83 @@ object QuestionParser {
             confidence = conf,
             number = detectQuestionNumber(items, screenW, screenH, questionPool.minOf { it.bounds.top })
         )
+    }
+
+    /**
+     * Şık kutuları ekrandan bulunduğunda izlenen yol.
+     *
+     * Burada hiçbir sezgi yok: kutular zaten kesin, tek iş her kutunun
+     * metnini sıraya koymak. Metni okunamayan kutu listeden düşmüyor, açıkça
+     * reddediliyor — çünkü "dört kutu gördüm, üçünü okuyabildim" ile "ekranda
+     * üç şık var" bambaşka iki durum ve ikincisi sanıldığında eksik şıkla
+     * kayıt açılıyordu.
+     */
+    private fun fromBoxes(boxes: List<TextItem>): List<Pair<TextItem, String>>? {
+        val sorted = boxes.sortedBy { it.bounds.top }
+        val named = sorted.map { it to TurkishText.stripOptionPrefix(TurkishText.cleanOcr(it.text)) }
+        val okunamayan = named.count { it.second.isBlank() }
+        if (okunamayan > 0) {
+            val yerler = named.joinToString(" ") { (item, text) ->
+                if (text.isBlank()) "«?»@${item.bounds.top}" else "«${text.take(16)}»"
+            }
+            return rejectOptions(
+                "şık kutusu ${sorted.size} bulundu, $okunamayan tanesinin metni okunamadı · $yerler"
+            )
+        }
+        return named
+    }
+
+    /**
+     * Şık kutuları bulunamadığında izlenen eski yol: şıkları metin
+     * parçalarının konumundan tahmin eder.
+     */
+    private fun fromText(
+        cleaned: List<TextItem>,
+        optTop: Int,
+        optBottom: Int,
+        screenH: Int,
+        fromAccessibility: Boolean
+    ): List<Pair<TextItem, String>>? {
+        var optionPool = cleaned.filter { it.centerY in optTop..optBottom }
+
+        // Erişilebilirlik yolunda tıklanabilir olanlar çok daha güvenilir.
+        val clickablePool = optionPool.filter { it.clickable }
+        if (fromAccessibility && clickablePool.size in 3..6) {
+            optionPool = clickablePool
+        }
+        // Rozet şeridi elenince geriye üçten az metin kalıyorsa, şık
+        // bölgesinde okunabilen gerçek şık yok demektir. Mesaj eskiden
+        // "rozetten başka şık yok" diyordu ve bizi sebebi rozetlerde
+        // aramaya itmişti; oysa anlatmak istediği "şıkları okuyamadım".
+        val rozetsiz = dropNumberStrips(optionPool, screenH)
+        if (rozetsiz.size < 3 && optionPool.size >= 3) {
+            val elenen = optionPool.filterNot { it in rozetsiz }
+                .joinToString(" ") { "«${it.text.take(10)}»" }
+            val kalan = rozetsiz.joinToString(" ") { "«${it.text.take(16)}»" }
+            return rejectOptions(
+                "şık bölgesinde okunabilen ${rozetsiz.size} metin var · " +
+                    "kalan: ${kalan.ifBlank { "yok" }} · rozet sayılıp elenen: $elenen"
+            )
+        }
+        optionPool = rozetsiz
+        if (optionPool.size < 3) return rejectOptions("şık bölgesinde 3'ten az metin")
+
+        val rows = groupIntoRows(optionPool, screenH)
+        val ordered = rows.flatMap { row -> row.sortedBy { it.bounds.left } }
+
+        // Şıklar birbirine benzer genişlikte olmalı; ortalamadan çok sapanı at.
+        val candidates = trimOutliers(ordered)
+        if (candidates.size < 3) return rejectOptions("şık adayı 3'ten az")
+
+        // Metin ve kutu aynı süzgeçten geçmeli. Eskiden boş metinler
+        // ayıklanıyor ama kutuları listede kalıyordu; o zaman "2. şıkkın
+        // metni" ile "2. şıkkın kutusu" başka şıklara ait oluyordu — dokunuş
+        // bir şıkka, kaydedilen cevap başkasına gidiyordu.
+        val options = candidates.take(4)
+            .map { it to TurkishText.stripOptionPrefix(it.text) }
+            .filter { (_, text) -> text.isNotBlank() }
+        if (options.size < 3) return rejectOptions("şık metni 3'ten az")
+        return options
     }
 
     /** Soru numarası balonu: "2", "2.", "2)". */

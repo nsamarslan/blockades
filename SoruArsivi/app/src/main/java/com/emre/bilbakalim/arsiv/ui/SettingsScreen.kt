@@ -192,6 +192,23 @@ fun SettingsScreen(
             item {
                 SectionCard("Okuma yöntemi") {
                     SettingSwitch(
+                        "Şık kutularını ekrandan ölç",
+                        "Şıkların kaç tane olduğunu ve nerede durduğunu yazıdan değil, " +
+                            "ekrandaki parlak hapların kendisinden bulur; her hap ayrı " +
+                            "okunur. Şıkları sayı olan sorular (\"1\", \"3\", \"4\") ancak " +
+                            "böyle okunabiliyor. Kapatırsan eski yönteme dönülür.",
+                        s.findOptionBoxes
+                    ) { vm.setFindOptionBoxes(it) }
+
+                    SettingSwitch(
+                        "Okunamayan kareyi teşhis için sakla",
+                        "Şıklar okunamadığında o anın görüntüsü ve ham OCR dökümü " +
+                            "uygulamanın klasörüne yazılır (en son 20 kare). Arıza " +
+                            "tekrarlarsa sebebi tahmin etmek yerine bakılabiliyor.",
+                        s.saveFailedFrames
+                    ) { vm.setSaveFailedFrames(it) }
+
+                    SettingSwitch(
                         "Metin okunamazsa OCR'a düş",
                         "Uygulama yazıyı normal metin olarak vermiyorsa ekran görüntüsü alınıp " +
                             "karakter tanıma yapılır.",

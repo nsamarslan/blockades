@@ -97,6 +97,8 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setDetectAnswer(v: Boolean) = prefs.setDetectAnswer(v)
     fun setSaveScreenshots(v: Boolean) = prefs.setSaveScreenshots(v)
     fun setMinConfidence(v: Float) = prefs.setMinConfidence(v)
+    fun setFindOptionBoxes(v: Boolean) = prefs.setFindOptionBoxes(v)
+    fun setSaveFailedFrames(v: Boolean) = prefs.setSaveFailedFrames(v)
     fun setRequireQuestionShape(v: Boolean) = prefs.setRequireQuestionShape(v)
     fun setRequireFourOptions(v: Boolean) = prefs.setRequireFourOptions(v)
     fun setAutoPlay(v: Boolean) = prefs.setAutoPlay(v)

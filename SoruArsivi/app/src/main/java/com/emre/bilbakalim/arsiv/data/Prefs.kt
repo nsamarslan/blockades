@@ -47,6 +47,25 @@ class Prefs private constructor(context: Context) {
         val optionsBottom: Float = 0.90f,
         /** Bu değerin altındaki ayrıştırmalar kaydedilmez. */
         val minConfidence: Float = 0.45f,
+        /**
+         * Şık kutularını ekrandan piksel olarak bul.
+         *
+         * Açıkken "kaç şık var ve nerede" sorusu OCR'a hiç sorulmaz; şıkların
+         * çizildiği parlak haplar doğrudan ölçülür ve her hap ayrı ayrı
+         * okunur. Şıkları sayı olan sorularda ML Kit tek başına duran bir
+         * rakamı çoğu zaman döndürmediği için soru hiç okunamıyordu; bu
+         * ölçüm o bağı kopartıyor. Kapatılırsa eski (metin tabanlı) yola
+         * dönülür.
+         */
+        val findOptionBoxes: Boolean = true,
+        /**
+         * Şıkları okuyamadığı kareyi ekran görüntüsü + ham OCR dökümü olarak
+         * sakla.
+         *
+         * Teşhis için: arıza tekrarladığında ML Kit'in gerçekte ne
+         * döndürdüğüne ve kutu ölçümünün neyi gördüğüne bakılabiliyor.
+         */
+        val saveFailedFrames: Boolean = true,
         /** Sadece gerçekten soru cümlesine benzeyen metinleri kaydet. */
         val requireQuestionShape: Boolean = true,
         /** Dört şıkkın tamamı görünmeden kaydetme (şıklar teker teker beliriyor). */
@@ -103,6 +122,8 @@ class Prefs private constructor(context: Context) {
         optionsTop = sp.getFloat(K_O_TOP, 0.45f),
         optionsBottom = sp.getFloat(K_O_BOTTOM, 0.90f),
         minConfidence = sp.getFloat(K_MIN_CONF, 0.45f),
+        findOptionBoxes = sp.getBoolean(K_BOXES, true),
+        saveFailedFrames = sp.getBoolean(K_FAIL_FRAMES, true),
         requireQuestionShape = sp.getBoolean(K_REQ_Q, true),
         requireFourOptions = sp.getBoolean(K_REQ_4, true),
         autoPlay = sp.getBoolean(K_AUTO_PLAY, false),
@@ -129,6 +150,8 @@ class Prefs private constructor(context: Context) {
     fun setDetectAnswer(v: Boolean) = commit { putBoolean(K_DETECT_ANSWER, v) }
     fun setSaveScreenshots(v: Boolean) = commit { putBoolean(K_SHOTS, v) }
     fun setMinConfidence(v: Float) = commit { putFloat(K_MIN_CONF, v) }
+    fun setFindOptionBoxes(v: Boolean) = commit { putBoolean(K_BOXES, v) }
+    fun setSaveFailedFrames(v: Boolean) = commit { putBoolean(K_FAIL_FRAMES, v) }
     fun setRequireQuestionShape(v: Boolean) = commit { putBoolean(K_REQ_Q, v) }
     fun setRequireFourOptions(v: Boolean) = commit { putBoolean(K_REQ_4, v) }
     fun setAutoPlay(v: Boolean) = commit { putBoolean(K_AUTO_PLAY, v) }
@@ -161,6 +184,8 @@ class Prefs private constructor(context: Context) {
         private const val K_O_TOP = "sik_ust"
         private const val K_O_BOTTOM = "sik_alt"
         private const val K_MIN_CONF = "min_guven"
+        private const val K_BOXES = "sik_kutusu_olcumu"
+        private const val K_FAIL_FRAMES = "teshis_kareleri"
         private const val K_REQ_Q = "soru_sekli_zorunlu"
         private const val K_REQ_4 = "dort_sik_zorunlu"
         private const val K_AUTO_PLAY = "otomatik_mod"

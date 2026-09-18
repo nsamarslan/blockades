@@ -23,6 +23,9 @@ veritabanına kaydeden küçük bir Android uygulaması. Soru metnini, dört ş�
   hatasızdır: ı, ğ, ş, ö, ç, ü hiç bozulmaz ve pil neredeyse hiç harcamaz.
 * Metin bu yolla alınamıyorsa (uygulama yazıyı kendi çiziyorsa) ekran görüntüsü
   alıp **çevrimdışı OCR** yapar. İnternet gerekmez.
+* Şıkların **kaç tane olduğunu ve nerede durduğunu** yazıdan değil, ekrandaki
+  parlak hapların kendisinden ölçer; her hap ayrı ayrı okunur. Şıkları sayı
+  olan sorular ("1 / 3 / 4 / 2") ancak böyle okunabiliyor — aşağıya bak.
 * Cevap verildikten sonra yeşile dönen şıkkı doğru cevap olarak işaretler.
 * Her şeyi cihazdaki yerel veritabanında tutar. CSV / JSON / Anki olarak dışa aktarır.
 * Otomatik modda oyunu kendisi oynar (aşağıya bak).
@@ -478,6 +481,7 @@ app/src/main/java/com/emre/bilbakalim/arsiv/
 │   ├── CaptureAccessibilityService.kt   motor: olay → tarama → kayıt
 │   ├── NodeHarvester.kt         erişilebilirlik ağacından metin toplama
 │   ├── OcrEngine.kt             ML Kit çevrimdışı metin tanıma
+│   ├── OptionBoxFinder.kt       şık kutularını ekrandan piksel olarak bulma
 │   ├── QuestionParser.kt        metin yığınından soru + şık çıkarma
 │   ├── AnswerColorDetector.kt   yeşile dönen şıkkı bulma
 │   ├── AutoPlayer.kt            otomatik mod: şıkka ve "Tekrar Oyna"ya dokunma
@@ -638,6 +642,66 @@ kaçını doğru bildin. Liste ekranında şu şekilde görünür:
 Detay ekranında ayrıntısı var, CSV ve JSON çıktılarına da sütun olarak giriyor.
 Böylece sürekli yanıldığın soruları `Cevabı eksik` yerine başarı oranına
 bakarak ayıklayabilirsin.
+
+## Şıkları sayı olan sorular neden okunamıyordu?
+
+Şıkları "1 / 3 / 4 / 2" olan bir soruda uygulama hiç dokunmuyor, günlüğe
+`RED: şık bölgesinde joker/puan rozetinden başka şık yok` yazıp sorunun
+süresinin dolmasını bekliyordu. Sebep iki katmanlıydı.
+
+**Birincisi: şık sayısını OCR belirliyordu.** "Ekranda kaç şık var ve
+neredeler" sorusunun cevabı ML Kit'in metin bloklarından çıkarılıyordu.
+Kelime şıklarında bu iyi çalışıyor. Ama koyu mor zemin üstünde tek başına
+duran bir **"1"**, ML Kit'in metin/metin-değil sınıflandırıcısı için zayıf
+bir aday: ya hiç döndürülmüyor, ya da dört rakam tek bloğa birleşiyor. İki
+durumda da ayrıştırıcının eline dört değil sıfır-iki şık geçiyordu.
+
+**İkincisi: kurtarma mekanizması tam da bu durumda çalışmıyordu.** Şık
+şeridini büyütüp yeniden okuyan "yakın plan OCR", yalnızca red sebebi
+*"şıklar henüz tamamlanmadı"* olduğunda tetikleniyordu — o mesaj ise ancak
+**dört şıktan üçü** okunduğunda üretiliyor. Sıfır, bir veya iki şık
+okunduğunda red başka bir mesajla dönüyor ve büyütme hiç denenmiyordu.
+Büyütme ölçeğini ve bekleme sürelerini ayarlayan birkaç turluk düzeltme bu
+yüzden sonuç vermedi: ayarlanan kod hiç çalışmıyordu.
+
+**Çözüm: geometriyi OCR'dan çıkarmayı bırakmak.** Şıklar koyu mor zemin
+üstünde geniş, parlak, eşit aralıklı haplar olarak çiziliyor. Bu dizilim,
+içinde ne yazdığından bağımsız olarak ölçülebilir (`OptionBoxFinder.kt`):
+
+1. Şık bandındaki her satırda "hap rengi" piksellerin oranı sayılır. Hapın
+   dört hâli de (beyaz, turkuaz, yeşil, kırmızı) zemin morundan belirgin
+   şekilde parlak.
+2. Geniş **ve içi dolu** bir aralık veren satırlar hap satırıdır. "İçi
+   dolu" şartı alttaki joker düğmelerini eliyor: üç altıgen de geniş bir
+   aralığa yayılıyor ama aralarında mor boşluk var (doluluk %64'te kalıyor,
+   hapta %100).
+3. Ardışık hap satırları bir kutu olur; aynı yükseklikte ve eşit aralıklı
+   dörtlü şık kutularıdır. Soru kartı da beyaz ve geniştir ama yazısı
+   satırları böldüğü için tek parça bir kutu veremiyor, verdiği parça da
+   haptan yüksek kalıyor.
+4. Her hap **ayrı ayrı** kırpılıp üç kat büyütülerek okunuyor: tek bir
+   rakam, beyaz zemin, etrafında başka hiçbir şey yok. Tam ekran OCR'ı o
+   kutunun içine tam oturan bir metin zaten verdiyse (kelime şıkları) o
+   kullanılıyor, fazladan okuma yapılmıyor.
+
+Ölçüm tutmazsa hiçbir şey bozulmuyor: eski metin tabanlı yol olduğu gibi
+yedekte duruyor ve devreye giriyor. Ayarlardan (*Şık kutularını ekrandan
+ölç*) kapatılabiliyor.
+
+**Yan kazanç: renk okuması da düzeliyor.** `optionRects` eskiden OCR metninin
+sınırlarıydı — bir rakam şıkkında 25x50 piksellik bir harf kutusu. Renk
+okuyucu onu örneklediği için günlüklerde bir şıkkın baskın rengi **mor**
+çıkabiliyordu (kutu hapın üstünde değildi). Artık kutu hapın tamamı: "kart
+oturdu mu", "hangi şık yeşil" ve "nereye dokunayım" ölçümlerinin üçü birden
+doğru kutuya bakıyor.
+
+**Teşhis kaydı.** Şıklar okunamadığında o anın ekran görüntüsü ve ham OCR
+dökümü uygulamanın klasörüne yazılıyor (`files/teshis/`, en son 20 kare).
+Bu arızayı turlarca günlük satırlarından geriye doğru tahmin ederek aramak
+zorunda kaldık; artık başarısız kare diskte duruyor ve eşikler ölçülen
+veriye göre ayarlanabiliyor. Ayarlardan kapatılabilir.
+
+---
 
 ## OCR bir harfi yanlış okursa
 
