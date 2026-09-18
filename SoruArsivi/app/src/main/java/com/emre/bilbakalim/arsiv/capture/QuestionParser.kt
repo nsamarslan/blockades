@@ -91,6 +91,16 @@ object QuestionParser {
     @Volatile var lastOptionsShort: Boolean = false
         private set
 
+    /**
+     * Son ayrıştırmada kaç OCR bloğu satırlarına ayrıldı.
+     *
+     * Teşhis için: sayı şıklarının tek bloğa yapışması gözle görülmeyen
+     * bir arıza. Günlükte "blok bölündü" yazmıyorsa şıklar zaten ayrı
+     * gelmiş demektir.
+     */
+    @Volatile var lastSplit: Int = 0
+        private set
+
     /** Sayaç, puan, buton gibi soru olmayan metinler. */
     private val CHROME = setOf(
         "puan", "altin", "altın", "can", "sure", "süre", "soru", "geri", "cikis", "çıkış",
@@ -131,18 +141,27 @@ object QuestionParser {
         Regex("^(?=[^0-9]*[0-9])(?=[^+\\-\u00b1]*[+\\-\u00b1])[0-9\\s+\\-\u00b1]+$")
 
     fun parse(
-        items: List<TextItem>,
+        raw: List<TextItem>,
         screenW: Int,
         screenH: Int,
         s: Prefs.Settings,
         fromAccessibility: Boolean
     ): Parsed? {
-        if (items.isEmpty() || screenW <= 0 || screenH <= 0) return reject("ekranda metin yok")
+        if (raw.isEmpty() || screenW <= 0 || screenH <= 0) return reject("ekranda metin yok")
 
         val optTop = (s.optionsTop * screenH).toInt()
         val optBottom = (s.optionsBottom * screenH).toInt()
         val qTop = (s.questionTop * screenH).toInt()
         val qBottom = (s.questionBottom * screenH).toInt()
+
+        // ML Kit alt alta duran kısa şıkları tek bloğa toplayabiliyor;
+        // öyleyse şık bölgesindeki blokları satırlarına ayırıyoruz.
+        var bolunen = 0
+        val items = raw.flatMap {
+            if (it.centerY !in optTop..optBottom) listOf(it)
+            else splitStacked(it).also { parts -> if (parts.size > 1) bolunen++ }
+        }
+        lastSplit = bolunen
 
         // Süzgeç şık bölgesinde gevşiyor: orada sayılar şıkkın kendisi olabilir.
         val cleaned = items
@@ -167,8 +186,12 @@ object QuestionParser {
         // gerçek sebebi gizliyordu.
         val rozetsiz = dropNumberStrips(optionPool, screenH)
         if (rozetsiz.size < 3 && optionPool.size >= 3) {
+            // Bölgede ne bulunduğu da yazılıyor. Bu satır olmadan red,
+            // "gerçekten yalnızca rozet mi vardı yoksa şıklar tek parçaya
+            // mı yapışmıştı" sorusunu yanıtlamıyordu — ve yanıt ikincisiydi.
+            val bulunan = optionPool.joinToString(" ") { "«${it.text.take(20)}»" }
             return reject(
-                "şık bölgesinde joker/puan rozetinden başka şık yok",
+                "şık bölgesinde joker/puan rozetinden başka şık yok · $bulunan",
                 optionsShort = true
             )
         }
@@ -405,6 +428,80 @@ object QuestionParser {
      */
     internal fun isNumberStrip(texts: List<String>): Boolean =
         texts.size >= 3 && texts.all { it.trim().matches(NUMBER_ONLY) }
+
+    /**
+     * Bir OCR bloğunu, satırları ayrı ayrı şık gibi duruyorsa böler.
+     *
+     * ML Kit'in blok birleştirmesi çok satırlı soruyu tek parçada tuttuğu
+     * için genelde işimize geliyor. Ama şıkları kısa sayılar olan
+     * sorularda ("240 / 1 / 365 / 24") dört rakam alt alta, aynı yazı
+     * boyunda ve aynı eksende durduğu için ML Kit dördünü TEK bloğa
+     * topluyor. Blok metni "240\n1\n365\n24" oluyor; [TurkishText.cleanOcr]
+     * satır sonlarını boşluğa çevirince de elimizde dört şıkkın yerine
+     * "240 1 365 24" yazan tek bir parça kalıyor — üstelik kutusu dört
+     * şıkkı birden kapsıyor. Ayrıştırıcı şık bulamıyor, bot hiçbir tuşa
+     * basmıyordu.
+     */
+    private fun splitStacked(item: TextItem): List<TextItem> {
+        val l = item.lines
+        if (l.size < 2) return listOf(item)
+        val kumeler = clusterRows(l.map { it.bounds.top }, l.map { it.bounds.bottom })
+        if (kumeler.size < 2) return listOf(item)
+        return kumeler.map { küme ->
+            val grup = küme.map { l[it] }
+            TextItem(
+                text = grup.joinToString(" ") { it.text },
+                bounds = Rect(
+                    grup.minOf { it.bounds.left },
+                    grup.minOf { it.bounds.top },
+                    grup.maxOf { it.bounds.right },
+                    grup.maxOf { it.bounds.bottom }
+                ),
+                clickable = item.clickable
+            )
+        }
+    }
+
+    /**
+     * Blok satırlarını "aynı kutuda duranlar" diye gruplar.
+     *
+     * Ayrım aradaki boşlukta. Ölçülen gerçek ekranda (1080x2400):
+     *
+     *  • Ayrı şık kutularındaki satırlar: metin yüksekliği 36 piksel,
+     *    aralarındaki boşluk 171 piksel — oran **4,75**.
+     *  • Sarmalanmış soru paragrafının satırları: yükseklik 38 piksel,
+     *    boşluk 34 piksel — oran **0,89**.
+     *
+     * Eşik ikisinin ortasında duruyor, ikisine de geniş pay bırakarak.
+     *
+     * Kümeleme, tek tek bölmekten daha doğru: uzun bir şık kendi kutusunda
+     * iki satıra sarmalanmışsa o iki satır birlikte kalır, kutular arası
+     * boşluklarda ise bölünür.
+     */
+    internal fun clusterRows(tops: List<Int>, bottoms: List<Int>): List<IntRange> {
+        if (tops.isEmpty() || tops.size != bottoms.size) return emptyList()
+        val heights = tops.indices.map { bottoms[it] - tops[it] }
+        if (heights.any { it <= 0 }) return listOf(tops.indices)
+        val ortanca = heights.sorted()[heights.size / 2]
+        if (ortanca <= 0) return listOf(tops.indices)
+
+        val out = ArrayList<IntRange>()
+        var start = 0
+        for (i in 0 until tops.size - 1) {
+            if (tops[i + 1] - bottoms[i] >= ortanca * SPLIT_MIN_GAP) {
+                out.add(start..i)
+                start = i + 1
+            }
+        }
+        out.add(start..tops.lastIndex)
+        return out
+    }
+
+    /**
+     * Satırın "ayrı kutuda" sayılması için gereken boşluk / satır
+     * yüksekliği oranı. Ölçülen değerler: ayrı kutu 4,75 — paragraf 0,89.
+     */
+    private const val SPLIT_MIN_GAP = 2.0
 
     /** Dikey merkezleri birbirine yakın olanları aynı satıra koyar. */
     private fun groupIntoRows(items: List<TextItem>, screenH: Int): List<List<TextItem>> {
