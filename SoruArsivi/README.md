@@ -632,6 +632,28 @@ Doğru cevap yine kaydedilir, kaynak olarak `süre doldu` yazar, ama **deneme
 sayılmaz**. Soru 3 kez çıkıp birinde süreye takıldıysan başarı oranın diğer
 2 tur üzerinden hesaplanır: *3 kez çıktı · 2 denemede %50*.
 
+## Bu oturumun hataları
+
+Ana ekranda **Hatalar** bölümü, ondan açılan listede de bu oturumda
+bildiremediğimiz sorular var. Arşiv ekranı "doğru cevap neydi" sorusunu
+zaten yanıtlıyor; burada yanıtlanan başka bir soru: **biz neye bastık.**
+Bot rastgele mi seçti, arşivdeki cevap yanlış mıydı, yoksa süre mi doldu —
+ikisi yan yana görülmeden anlaşılmıyor.
+
+Her satırda dokunuşu kimin yaptığı (otomatik / elle / süre doldu), soru
+metni, bastığımız şık ve doğrusu var; satıra dokununca sorunun arşivdeki
+kaydı açılıyor.
+
+Liste **bellekte** duruyor ve uygulama kapanınca gidiyor: bu bir arşiv
+değil, "az önce ne oldu" defteri. Kalıcı olması istenen şey zaten arşivin
+kendisi; burada olup arşivde olmayan tek bilgi bizim seçtiğimiz şık. En
+fazla 300 satır tutuluyor, üstünde bir de Temizle var.
+
+Bir tur içinde aynı soru birkaç kez okunabildiği için listenin başındaki
+satır aynı soruya ve aynı doğru cevaba aitse tekrar eklenmiyor.
+
+---
+
 ## Soru başına istatistik
 
 Her kayıt üç sayı tutar: kaç kez karşına çıktı, kaçında cevabın gözlendi,

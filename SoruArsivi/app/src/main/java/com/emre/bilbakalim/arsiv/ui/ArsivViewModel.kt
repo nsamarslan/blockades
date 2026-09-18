@@ -58,6 +58,12 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearScanLog() { CaptureAccessibilityService.scanLog.value = emptyList() }
 
+    /** Bu oturumda bildiremediğimiz sorular (Hatalar ekranı). */
+    val misses: StateFlow<List<CaptureAccessibilityService.Miss>> =
+        CaptureAccessibilityService.misses
+
+    fun clearMisses() = CaptureAccessibilityService.clearMisses()
+
     /** Tarama geçmişini düz metin olarak paylaşır — tanı için dışarı aktarmak kolay olsun. */
     fun shareScanLog(context: Context) {
         val text = scanLog.value.joinToString("\n").ifBlank { "Kayıt yok." }

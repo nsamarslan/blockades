@@ -127,6 +127,31 @@ class CaptureAccessibilityService : AccessibilityService() {
     /** Bir kez görülmüş ama henüz doğrulanmamış okuma (kararlılık kapısı). */
     @Volatile private var confirmKey: String? = null
     /**
+     * Bu oturumda yapılan bir hata.
+     *
+     * Amaç tek bir soruyu cevaplamak: **neye bastık, doğrusu neydi.**
+     * Arşivdeki kayıt bunu söylemiyor — orada yalnızca doğru cevap var,
+     * bizim seçtiğimiz şık değil. Liste bellekte duruyor ve oturumla
+     * birlikte gidiyor; kalıcı olması istenen şey zaten arşivin kendisi.
+     */
+    data class Miss(
+        /** Liste anahtarı; zaman damgası aynı milisaniyede çakışabiliyor. */
+        val seq: Long,
+        val at: Long,
+        val questionId: Long,
+        val question: String,
+        /** Bastığımız şık; süre dolduysa null. */
+        val chosen: String?,
+        val chosenLabel: String?,
+        val correct: String,
+        val correctLabel: String,
+        /** Dokunuşu bot mu yaptı? */
+        val byAuto: Boolean,
+        /** Kimse basmadı, süre doldu. */
+        val timedOut: Boolean
+    )
+
+    /**
      * Cevabı açılmayı bekleyen soru.
      *
      * [pendingIndex]: yeşil bantta görülen ama henüz onaylanmamış şık.
@@ -135,6 +160,14 @@ class CaptureAccessibilityService : AccessibilityService() {
      */
     private data class PendingAnswer(
         val id: Long,
+        /**
+         * Sorunun kendi metni.
+         *
+         * Yalnızca "bu oturumun hataları" listesi için taşınıyor: hata
+         * anında veritabanına gitmek gerekmesin ve liste kayıt silinse bile
+         * okunabilir kalsın.
+         */
+        val question: String,
         /**
          * Şıkların ekrandaki kutuları.
          *
@@ -867,7 +900,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 // hiçbir güvenliği gevşetmiyor, sadece aynı bilgiyi iki kez
                 // toplamayı bırakıyor.
                 val now = SystemClock.uptimeMillis()
-                pendingAnswer = PendingAnswer(savedId, p.optionRects, p.options).apply {
+                pendingAnswer = PendingAnswer(savedId, p.question, p.optionRects, p.options).apply {
                     if (shot != null) brightSince = now
                 }
             }
@@ -1274,6 +1307,23 @@ class CaptureAccessibilityService : AccessibilityService() {
                 "CEVAP #${waiting.id} → ${optionLabel(waiting, correct)} · " +
                     (if (kesin) "bilemedin" else "bildin") + " · ${a.detail()}"
             )
+            // Hata listesine yalnızca gerçekten yanıldığımız tur giriyor.
+            //
+            // Kırmızı göründüyse kesin. Ama kırmızı her karede ölçülemiyor ve
+            // otomatik modda buna hiç ihtiyaç yok: bot hangi şıkka bastığını
+            // zaten biliyor, açılan yeşil başka bir şıksa yanılmıştır. Elle
+            // oynarken bastığın şıkkı yalnızca renkten öğrenebildiğimiz için
+            // orada kırmızı şart.
+            //
+            // Bu yalnızca listeyi besliyor; arşive ne yazıldığını
+            // değiştirmiyor.
+            val botYanildi = waiting.autoTapped &&
+                waiting.chosenIndex != null && waiting.chosenIndex != correct
+            if (kesin || botYanildi) {
+                val basilan = a.wrongIndex
+                    ?: waiting.chosenIndex.takeIf { waiting.autoTapped }
+                noteMiss(waiting, basilan, correct, timedOut = false)
+            }
             finishAnswer(waiting.id)
             return true
         }
@@ -1293,6 +1343,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 "CEVAP #${waiting.id} → ${optionLabel(waiting, dimmed)} · " +
                     "süre doldu (denemeye sayılmadı) · ${a.colorSummary()}"
             )
+            noteMiss(waiting, chosen = null, correct = dimmed, timedOut = true)
             finishAnswer(waiting.id)
             return true
         }
@@ -1382,6 +1433,37 @@ class CaptureAccessibilityService : AccessibilityService() {
             userWasRight = userWasRight,
             countAsAttempt = countAsAttempt,
             evidence = evidence
+        )
+    }
+
+    /**
+     * "Bu oturumun hataları" listesine bir satır ekler.
+     *
+     * Aynı soru bir turda birkaç kez okunabiliyor; en üstteki satır aynı
+     * soruya ve aynı doğru cevaba aitse tekrarlanmıyor.
+     */
+    private fun noteMiss(
+        waiting: PendingAnswer,
+        chosen: Int?,
+        correct: Int,
+        timedOut: Boolean
+    ) {
+        val dogru = waiting.options.getOrNull(correct) ?: return
+        val varOlan = misses.value.firstOrNull()
+        if (varOlan?.questionId == waiting.id && varOlan.correct == dogru) return
+        addMiss(
+            Miss(
+                seq = missSeq.incrementAndGet(),
+                at = System.currentTimeMillis(),
+                questionId = waiting.id,
+                question = waiting.question,
+                chosen = chosen?.let { waiting.options.getOrNull(it) },
+                chosenLabel = chosen?.takeIf { it in 0..3 }?.let { ('A' + it).toString() },
+                correct = dogru,
+                correctLabel = if (correct in 0..3) ('A' + correct).toString() else "?",
+                byAuto = waiting.autoTapped,
+                timedOut = timedOut
+            )
         )
     }
 
@@ -2023,5 +2105,26 @@ class CaptureAccessibilityService : AccessibilityService() {
         /** Teşhis ekranında gösterilen satır sayısı. */
         const val LOG_VISIBLE = 80
         val scanLog = MutableStateFlow<List<String>>(emptyList())
+
+        /** Hata listesinde tutulan en fazla satır sayısı. */
+        const val MISS_LIMIT = 300
+
+        /**
+         * Bu oturumun hataları, yenisi başta.
+         *
+         * Uygulama kapanınca sıfırlanıyor: bu bir arşiv değil, "az önce ne
+         * oldu" defteri. Sorunun kendisi ve doğru cevabı zaten arşivde;
+         * burada olup arşivde olmayan tek bilgi **bizim neye bastığımız.**
+         */
+        val misses = MutableStateFlow<List<Miss>>(emptyList())
+
+        fun clearMisses() { misses.value = emptyList() }
+
+        /** Liste anahtarı; zaman damgası aynı milisaniyede çakışabiliyor. */
+        private val missSeq = java.util.concurrent.atomic.AtomicLong(0)
+
+        private fun addMiss(m: Miss) {
+            misses.value = (listOf(m) + misses.value).take(MISS_LIMIT)
+        }
     }
 }
