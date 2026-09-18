@@ -262,6 +262,9 @@ class CaptureAccessibilityService : AccessibilityService() {
     @Volatile private var pendingAnswer: PendingAnswer? = null
     @Volatile private var burstJob: Job? = null
     private val workerRunning = AtomicBoolean(false)
+    private val pollRunning = AtomicBoolean(false)
+    /** [ProjectionService.restartCount]'un günlüğe düşmüş son değeri. */
+    @Volatile private var lastProjectionRestart = 0
     @Volatile private var totalSaved = 0
 
     override fun onServiceConnected() {
@@ -349,7 +352,15 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (s.autoPlay) POLL_MISS_LIMIT_AUTO else POLL_MISS_LIMIT
 
     private fun ensurePolling() {
-        if (pollJob?.isActive == true) return
+        // Kapı atomik olmak zorunda. `ensurePolling` hem ana iş parçacığından
+        // (erişilebilirlik olayı) hem de arka plandan (döngü ölünce kendini
+        // dirilten iş) çağrılıyor; "bak sonra ata" sırası ikisinin araya
+        // girmesine açıktı. O anda iki döngü birden başlıyor, `pollJob`
+        // yalnızca birini tutuyor ve öbürü sahipsiz kalıyor: kimse iptal
+        // edemiyor, her 200 ms'de bir ANA İŞ PARÇACIĞINDA pencere sorgusu
+        // yapmaya devam ediyor. Her ölüm-diriliş turunda bir tane daha
+        // birikebiliyordu.
+        if (!pollRunning.compareAndSet(false, true)) return
         pollJob = scope.launch {
             var misses = 0
             try {
@@ -410,6 +421,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 }
             } finally {
                 pollJob = null
+                pollRunning.set(false)
                 // Emniyet ağı. Yoklama duran bir servis, oyun ekranı hiç olay
                 // üretmediği için bir daha kendine gelemiyor: soruyu gören
                 // tek şey bu döngü. Beklenmedik bir sebeple (istisna, servis
@@ -469,6 +481,15 @@ class CaptureAccessibilityService : AccessibilityService() {
         // Karar açılmak üzereyken hızlı renk turu çalışıyor; ekran görüntüsü
         // hakkını onunla paylaşmayalım.
         if (burstJob?.isActive == true) return
+
+        // Hızlı yakalamanın kare akışı kendi kendine yenilendiyse haber ver.
+        // Bu satır olmadan, akış koptuğunda uygulamanın neden ağırlaştığı
+        // yalnızca logcat'ten görülebiliyordu.
+        val yenileme = ProjectionService.restartCount
+        if (yenileme != lastProjectionRestart) {
+            lastProjectionRestart = yenileme
+            log("hızlı yakalama: kare akışı yenilendi (#$yenileme)")
+        }
 
         val (screenW, screenH) = ProjectionService.screenSize(this)
 
@@ -1155,10 +1176,15 @@ class CaptureAccessibilityService : AccessibilityService() {
         neden: String,
         a: AnswerColorDetector.Analysis
     ) {
-        val satir = "karar atlandı #${waiting.id}: $neden · ${a.detail()}"
-        if (satir == waiting.lastSkip) return
-        waiting.lastSkip = satir
-        log(satir)
+        // Ayıklama anahtarı ölçümün KENDİSİNİ değil durumunu taşıyor.
+        // Eskiden satırın tamamı karşılaştırılıyordu; içindeki yüzdeler ve
+        // baskın renk her karede birkaç birim oynadığı için iki satır asla
+        // birebir aynı çıkmıyor, yani ayıklama hiç tutmuyordu: hızlı renk
+        // turu tek bir soruda altmışa yakın satır yazıyordu.
+        val key = "$neden · ${a.summary()}"
+        if (key == waiting.lastSkip) return
+        waiting.lastSkip = key
+        log("karar atlandı #${waiting.id}: $neden · ${a.detail()}")
     }
 
     /**
@@ -1467,10 +1493,30 @@ class CaptureAccessibilityService : AccessibilityService() {
         )
     }
 
+    /**
+     * Teşhis günlüğüne bir satır yazar.
+     *
+     * Burası göründüğünden çok daha sıcak bir yol: hızlı yakalama açıkken
+     * karar turu saniyede yirmi kare işliyor ve her karede satır düşebiliyor.
+     * Eski hâli her çağrıda (a) yeni bir `SimpleDateFormat` kuruyor,
+     * (b) `listOf(yeni) + eski` ile tüm listeyi kopyalıyor, (c) `take()` ile
+     * bir kez daha kopyalıyordu. Tampon dolduktan sonra — hızlı yakalamayla
+     * birkaç dakika, yani on soru civarı — her satır 4000 elemanlık iki
+     * kopya demekti; günlük büyüdükçe yazmak pahalılaşıyordu.
+     *
+     * Şimdi geçmiş bir halka tamponda duruyor (başa ekle, sondan at) ve
+     * akışa yalnızca ekranda görünen pencere veriliyor.
+     */
     private fun log(line: String) {
-        val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-            .format(java.util.Date())
-        scanLog.value = (listOf("$stamp  $line") + scanLog.value).take(LOG_LIMIT)
+        var toplam = 0
+        val visible = synchronized(logLock) {
+            logLines.addFirst(logStamp.format(java.util.Date()) + "  " + line)
+            while (logLines.size > LOG_LIMIT) logLines.removeLast()
+            toplam = logLines.size
+            logLines.take(LOG_VISIBLE)
+        }
+        scanLog.value = visible
+        scanLogTotal.value = toplam
     }
 
     private fun finishAnswer(id: Long) {
@@ -2104,6 +2150,21 @@ class CaptureAccessibilityService : AccessibilityService() {
         const val LOG_LIMIT = 4000
         /** Teşhis ekranında gösterilen satır sayısı. */
         const val LOG_VISIBLE = 80
+
+        private val logLock = Any()
+        /** Geçmişin tamamı, yenisi başta. Yazma [logLock] altında. */
+        private val logLines = ArrayDeque<String>()
+        /** Tek örnek; her satırda yenisini kurmak çağrının kendisinden pahalıydı. */
+        private val logStamp =
+            java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+
+        /**
+         * Arayüzün gördüğü pencere — yalnızca son [LOG_VISIBLE] satır.
+         *
+         * Geçmişin tamamı akışta taşınmıyor: her satırda binlerce elemanlık
+         * bir liste kopyalamak, günlük doldukça yazmayı gözle görülür biçimde
+         * yavaşlatıyordu. Dışa aktarma [logSnapshot] ile tamamını alıyor.
+         */
         val scanLog = MutableStateFlow<List<String>>(emptyList())
 
         /** Hata listesinde tutulan en fazla satır sayısı. */
@@ -2125,6 +2186,18 @@ class CaptureAccessibilityService : AccessibilityService() {
 
         private fun addMiss(m: Miss) {
             misses.value = (listOf(m) + misses.value).take(MISS_LIMIT)
+        }
+
+        /** Halka tamponda tutulan toplam satır sayısı (arayüz başlığı için). */
+        val scanLogTotal = MutableStateFlow(0)
+
+        /** Geçmişin tamamı — "Paylaş" düğmesi bunu dışarı veriyor. */
+        fun logSnapshot(): List<String> = synchronized(logLock) { logLines.toList() }
+
+        fun clearLog() {
+            synchronized(logLock) { logLines.clear() }
+            scanLog.value = emptyList()
+            scanLogTotal.value = 0
         }
     }
 }

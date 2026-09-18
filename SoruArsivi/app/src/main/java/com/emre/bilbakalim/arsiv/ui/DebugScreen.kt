@@ -31,6 +31,7 @@ import com.emre.bilbakalim.arsiv.capture.CaptureAccessibilityService
 fun DebugScreen(vm: ArsivViewModel, onBack: () -> Unit) {
     val s by vm.settings.collectAsState()
     val history by vm.scanLog.collectAsState()
+    val historyTotal by vm.scanLogTotal.collectAsState()
     val context = LocalContext.current
 
     Scaffold(topBar = { ArsivTopBar("Teşhis", onBack = onBack) }) { pad ->
@@ -40,8 +41,9 @@ fun DebugScreen(vm: ArsivViewModel, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                val visible = history.take(CaptureAccessibilityService.LOG_VISIBLE)
-                SectionCard("Tarama geçmişi (${visible.size} / ${history.size})") {
+                // Akış zaten yalnızca pencereyi taşıyor; toplam ayrı geliyor.
+                val visible = history
+                SectionCard("Tarama geçmişi (${visible.size} / $historyTotal)") {
                     Text(
                         "Her tarama tek satır. Burada son ${CaptureAccessibilityService.LOG_VISIBLE} " +
                             "satır görünüyor; arkada ${CaptureAccessibilityService.LOG_LIMIT} satıra " +
