@@ -33,7 +33,12 @@ object Chime {
         if (now - lastAt < MIN_GAP_MS) return
         lastAt = now
         runCatching {
-            if (ringtone?.isPlaying == true) return
+            val onceki = ringtone
+            if (onceki?.isPlaying == true) return
+            // Her Ringtone kendi MediaPlayer'ını tutuyor. Eskisi bırakılmadan
+            // üzerine yazılınca her uyarıda bir tane daha birikiyordu; uzun
+            // turlarda bu, ses yolunu tüketip uygulamayı ağırlaştırıyor.
+            runCatching { onceki?.stop() }
             val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
                 ?: return
             val r = RingtoneManager.getRingtone(context, uri) ?: return

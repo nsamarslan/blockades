@@ -56,11 +56,17 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     /** Son taramaların tek satırlık özeti (Teşhis ekranı). */
     val scanLog: StateFlow<List<String>> = CaptureAccessibilityService.scanLog
 
-    fun clearScanLog() { CaptureAccessibilityService.scanLog.value = emptyList() }
+    /** Arkada tutulan toplam satır sayısı — akış yalnızca pencereyi taşıyor. */
+    val scanLogTotal: StateFlow<Int> = CaptureAccessibilityService.scanLogTotal
+
+    fun clearScanLog() = CaptureAccessibilityService.clearLog()
 
     /** Tarama geçmişini düz metin olarak paylaşır — tanı için dışarı aktarmak kolay olsun. */
     fun shareScanLog(context: Context) {
-        val text = scanLog.value.joinToString("\n").ifBlank { "Kayıt yok." }
+        // Akışta yalnızca ekranda görünen pencere var; paylaşılan dosya
+        // geçmişin tamamını taşımalı.
+        val text = CaptureAccessibilityService.logSnapshot()
+            .joinToString("\n").ifBlank { "Kayıt yok." }
         runCatching {
             context.startActivity(
                 Intent.createChooser(
