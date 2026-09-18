@@ -90,6 +90,8 @@ class CaptureAccessibilityService : AccessibilityService() {
      * rakam şıkları ("2", "12") ancak yeterince büyütülünce tanınıyor.
      */
     @Volatile private var closeUpTries = 0
+    /** Son yakın plan denemesinin zamanı — bütçeyi tazelemek için. */
+    @Volatile private var closeUpAt = 0L
     /** Son tam ekran OCR sonucu — yakın plan okumasıyla birleştirmek için. */
     @Volatile private var lastOcrItems: List<TextItem> = emptyList()
     /** Ekrandan ölçülen şık kutusu sayısı; yalnızca değişince günlüğe düşer. */
@@ -654,6 +656,15 @@ class CaptureAccessibilityService : AccessibilityService() {
             val hepsiKisa = QuestionParser.lastPartial.let { p ->
                 p.isNotEmpty() && p.all { it.length <= NUMERIC_OPTION_MAX_LEN }
             }
+            // Aynı karede denemeler tükendiyse bir süre sonra baştan başla.
+            // Soru ekranda yetmiş saniye duruyor; üç denemede pes edip kalan
+            // sürede hiçbir şey yapmamak elde edilebilecek en kötü sonuç.
+            if (closeUpTries >= CLOSEUP_MAX_TRIES &&
+                SystemClock.uptimeMillis() - closeUpAt >= CLOSEUP_RETRY_MS
+            ) {
+                closeUpTries = 0
+                closeUpSig = null
+            }
             if (viaOcr == null && shot != null && eksikSik &&
                 (hepsiKisa || frameStatic &&
                     SystemClock.uptimeMillis() - lastFrameChangeAt >= CLOSEUP_AFTER_MS) &&
@@ -668,6 +679,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 closeUpSig = lastFrameSig
                 val scale = CLOSEUP_SCALE + closeUpTries
                 closeUpTries++
+                closeUpAt = SystemClock.uptimeMillis()
                 val onceki = ocrItems.size
                 val yakin = closeUpOptions(shot, s, scale)
                 if (yakin != null) {
@@ -870,7 +882,10 @@ class CaptureAccessibilityService : AccessibilityService() {
             val conf = (p.confidence * 100).toInt()
             // Numara günlüğe de yazılıyor: kilit mekanizmasının doğru sayıyı
             // okuyup okumadığı ancak cihazda görülebiliyor.
-            val noLabel = no?.let { " · soru $it" } ?: " · numarasız"
+            val noLabel = (no?.let { " · soru $it" } ?: " · numarasız") +
+                // Sayı şıkları tek bloğa yapışmışsa ayrıştırıcı onu
+                // satırlarına ayırmış demektir; görünür olsun.
+                (if (QuestionParser.lastSplit > 0) " · blok bölündü" else "")
             when {
                 result is Repo.SaveResult.Inserted -> {
                     Log.i(TAG, "Kaydedildi #$savedId")
@@ -1817,14 +1832,20 @@ class CaptureAccessibilityService : AccessibilityService() {
         crop.recycle()
         if (items.isEmpty()) return null
 
+        // Kutular büyütülmüş görüntüden geliyor; tam ekran ölçeğine geri
+        // çevriliyor. Blok satırlarının kutuları da aynı dönüşümden
+        // geçmeli: ayrıştırıcı yığılmış blokları satır aralığına bakarak
+        // ayırıyor, satırlar eski ölçekte kalırsa o ölçüm anlamsız olur.
+        fun geriCevir(r: Rect) = Rect(
+            r.left / scale,
+            r.top / scale + top,
+            r.right / scale,
+            r.bottom / scale + top
+        )
         val mapped = items.map { it ->
             it.copy(
-                bounds = Rect(
-                    it.bounds.left / scale,
-                    it.bounds.top / scale + top,
-                    it.bounds.right / scale,
-                    it.bounds.bottom / scale + top
-                )
+                bounds = geriCevir(it.bounds),
+                lines = it.lines.map { line -> line.copy(bounds = geriCevir(line.bounds)) }
             )
         }
         val disaridakiler = lastOcrItems.filter { it.centerY !in top..bottom }
@@ -2100,6 +2121,12 @@ class CaptureAccessibilityService : AccessibilityService() {
          * Daha fazlası hem belleği hem süreyi boşa harcıyor.
          */
         private const val CLOSEUP_MAX_TRIES = 3
+        /**
+         * Denemeler tükendikten sonra bütçenin tazelenmesi için geçmesi
+         * gereken süre. Aynı kareyi aynı ölçekle yeniden okumak boşuna,
+         * ama soru ekranda dururken temelli pes etmek daha kötü.
+         */
+        private const val CLOSEUP_RETRY_MS = 4000L
         /**
          * Şık metni bu kadar kısaysa sayı şıkkı sayılır. En uzun gerçek
          * örnekler "165", "1500", "23,5" — dördü de sığıyor.

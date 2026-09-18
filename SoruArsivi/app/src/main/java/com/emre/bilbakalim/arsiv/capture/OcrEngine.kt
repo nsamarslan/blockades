@@ -37,7 +37,18 @@ object OcrEngine {
                         for (block in text.textBlocks) {
                             val b: Rect = block.boundingBox ?: continue
                             val t = block.text.trim()
-                            if (t.isNotEmpty()) out.add(TextItem(t, Rect(b), clickable = false))
+                            if (t.isEmpty()) continue
+                            // Satırlar da taşınıyor: ML Kit alt alta duran
+                            // kısa şıkları tek bloğa toplayabiliyor ve o
+                            // bloğu ancak satırlarına ayırarak şıklara
+                            // geri çevirebiliyoruz.
+                            val lines = block.lines.mapNotNull { line ->
+                                val lb = line.boundingBox ?: return@mapNotNull null
+                                val lt = line.text.trim()
+                                if (lt.isEmpty()) null
+                                else TextItem(lt, Rect(lb), clickable = false)
+                            }
+                            out.add(TextItem(t, Rect(b), clickable = false, lines = lines))
                         }
                         if (cont.isActive) cont.resume(out)
                     }
