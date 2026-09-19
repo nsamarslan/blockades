@@ -35,6 +35,16 @@ import android.graphics.Bitmap
  */
 object OptionBoxFinder {
 
+    /**
+     * Kutu bulunamadıysa sebebi, teşhis günlüğü için.
+     *
+     * Bu alan olmadan günlükte yalnızca "kutu:0" yazıyordu ve bu, eski
+     * "rozetten başka şık yok" mesajı kadar sessizdi: ölçümün ekranı hiç mi
+     * göremediğini, kutuları bulup dizilimi mi beğenmediğini söylemiyordu.
+     */
+    @Volatile var lastReason: String? = null
+        private set
+
     /** Ekranda bulunmuş tek bir şık kutusu (ekran görüntüsü ölçeğinde). */
     data class Box(val left: Int, val top: Int, val right: Int, val bottom: Int) {
         val height: Int get() = bottom - top
@@ -92,16 +102,39 @@ object OptionBoxFinder {
     /** Şık kutusunun ekran genişliğine oranı. */
     private const val BOX_MIN_W = 0.40f
 
-    /** Yükseklikler ortancadan en fazla bu kadar sapabilir. */
-    private const val H_TOLERANCE = 0.22f
-    /** Şıklar arası boşluklar ortalamadan en fazla bu kadar sapabilir. */
-    private const val GAP_TOLERANCE = 0.30f
+    /**
+     * Genişlikler ortancadan en fazla bu kadar sapabilir.
+     *
+     * **Asıl ayırt edici ölçü bu.** Şık hapları her zaman aynı genişlikte
+     * çiziliyor; soru kartı ise belirgin biçimde daha geniş (ölçülen gerçek
+     * ekranda hap 738, kart 900 piksel — %22 fark). Yükseklik bu işi
+     * göremiyor, çünkü uzun bir şık kendi hapında iki satıra sarıyor ve o
+     * hap diğerlerinden yüksek oluyor.
+     */
+    private const val W_TOLERANCE = 0.12f
+    /**
+     * Yükseklik, ortancanın bu aralığında olmalı.
+     *
+     * Üst sınır bilerek geniş: iki satıra saran bir şık ("Uluslararası Uzay
+     * istasyonu") diğerlerinin iki katı yükseklikte olabiliyor. Eskiden
+     * sınır dardı ve böyle bir soruda dizi tutarsız sayılıp **hiç kutu
+     * bulunamıyordu** — günlükteki "kutu:0" satırları bundan.
+     */
+    private val H_RANGE = 0.70f..2.40f
+    /** Haplar arası boşluk ortalamadan en fazla bu kadar sapabilir. */
+    private const val GAP_TOLERANCE = 0.35f
 
-    /** Tarama, soru kartını bütünüyle görebilmek için şık bandının üstünden başlar. */
-    private const val SCAN_ABOVE = 0.25f
-    private const val SCAN_MIN_TOP = 0.15f
-    /** Alt sınırdan biraz aşağıya kadar taranır ki son hap kırpılmış görünmesin. */
-    private const val SCAN_BELOW = 0.05f
+    /**
+     * Taranan bant — ayarlardaki şık bölgesinden **bağımsız**.
+     *
+     * Sabit oranlara bağlamak bir arıza kaynağıydı: soru üç satır olunca
+     * şıklar aşağı kayıyor ve dördüncü hap `optionsBottom` (%90) sınırının
+     * altında kalıyordu. Geometri zaten kendi kendini doğruluyor — aynı
+     * genişlikte, eşit aralıklı dörtlü — o yüzden bant cömert tutuluyor ve
+     * kararı dizilim veriyor.
+     */
+    private const val SCAN_TOP = 0.28f
+    private const val SCAN_BOTTOM = 0.99f
 
     // ---------------------------------------------------------------------
 
@@ -110,14 +143,13 @@ object OptionBoxFinder {
      * (metin tabanlı) yola düşer — yani bu ölçüm hiçbir şeyi bozamaz, yalnızca
      * işe yaradığında devreye girer.
      */
-    fun find(bitmap: Bitmap, optionsTop: Float, optionsBottom: Float): List<Box> {
+    fun find(bitmap: Bitmap): List<Box> {
         val w = bitmap.width
         val h = bitmap.height
-        if (w < 16 || h < 16) return emptyList()
+        if (w < 16 || h < 16) { lastReason = "ekran görüntüsü çok küçük"; return emptyList() }
 
-        val from = ((optionsTop - SCAN_ABOVE).coerceAtLeast(SCAN_MIN_TOP) * h)
-            .toInt().coerceIn(0, h - 2)
-        val to = ((optionsBottom + SCAN_BELOW) * h).toInt().coerceIn(from + 2, h)
+        val from = (SCAN_TOP * h).toInt().coerceIn(0, h - 2)
+        val to = (SCAN_BOTTOM * h).toInt().coerceIn(from + 2, h)
         val step = (w / COL_SAMPLES).coerceAtLeast(1)
 
         val buf = IntArray(w)
@@ -125,17 +157,25 @@ object OptionBoxFinder {
         var y = from
         while (y < to) {
             runCatching { bitmap.getPixels(buf, 0, w, 0, y, w, 1) }
-                .onFailure { return emptyList() }
+                .onFailure { lastReason = "piksel okunamadı"; return emptyList() }
             rows.add(measure(y, buf, w, step))
             y += ROW_STEP
         }
 
-        val boxes = boxesOf(rows, w, h)
-            // Tarama penceresinin kenarına dayanan kutu kırpılmış demektir;
-            // yüksekliği güvenilmez olduğu için ölçüye alınmaz.
-            .filter { it.top > from && it.bottom < to }
-            .filter { it.centerY >= optionsTop * h && it.centerY <= optionsBottom * h }
-        return selectRun(boxes)
+        val hapSatiri = rows.count { isBoxRow(it, w) }
+        val hepsi = boxesOf(rows, w, h)
+        // Tarama penceresinin kenarına dayanan kutu kırpılmış demektir;
+        // yüksekliği güvenilmez olduğu için ölçüye alınmaz.
+        val boxes = hepsi.filter { it.top > from && it.bottom < to }
+        val secilen = selectRun(boxes)
+        lastReason = when {
+            secilen.isNotEmpty() -> null
+            hapSatiri == 0 -> "hap rengi satır yok (ekran koyu ya da kart henüz çizilmedi)"
+            boxes.isEmpty() -> "$hapSatiri hap satırı var ama hiçbiri kutu ölçüsünü tutmuyor"
+            else -> "${boxes.size} aday kutu var, eşit aralıklı dörtlü yok · " +
+                boxes.joinToString(" ") { "${it.width}x${it.height}@${it.top}" }
+        }
+        return secilen
     }
 
     /** Piksel hap rengi mi? (Zemin moru ve koyu geçiş kareleri elenir.) */
@@ -250,27 +290,47 @@ object OptionBoxFinder {
         return best ?: emptyList()
     }
 
-    /** Yükseklikleri ve aralıkları birbirini tutuyor mu? */
+    /** Genişlikleri ve aralıkları birbirini tutuyor mu? */
     internal fun consistent(boxes: List<Box>): Boolean = spread(boxes) != null
 
     /**
-     * Dizinin düzgünlüğü: yükseklik ve aralık sapmalarının en büyüğü.
+     * Dizinin düzgünlüğü: genişlik ve aralık sapmalarının en büyüğü.
      * Eşikleri aşan dizi için null döner. Küçük değer daha düzgün demektir.
+     *
+     * Ölçülen iki şey var ve ikisi de yükseklikten bağımsız:
+     *
+     *  • **Genişlik** — haplar aynı genişlikte çizilir; soru kartı daha
+     *    geniştir. Kartı eleyen ölçü bu.
+     *  • **Haplar arası boşluk** — iki hap arasındaki mor şerit her zaman
+     *    aynı. Bilerek üstten üste (top-to-top) değil, alttan üste
+     *    (bottom-to-top) ölçülüyor: iki satıra saran bir şık kendi hapını
+     *    büyütüyor ve üstten üste ölçüm o zaman bozuluyor, aradaki boşluk
+     *    ise bozulmuyor.
+     *
+     * Yükseklik yalnızca kaba bir akıl sağlığı sınırı olarak duruyor.
      */
     private fun spread(boxes: List<Box>): Float? {
         if (boxes.size < 3) return null
-        val heights = boxes.map { it.height }.sorted()
-        val median = heights[heights.size / 2].toFloat()
-        if (median <= 0f) return null
-        val hSapma = heights.maxOf { kotlin.math.abs(it - median) / median }
-        if (hSapma > H_TOLERANCE) return null
+        val sorted = boxes.sortedBy { it.top }
 
-        val gaps = boxes.map { it.top }.sorted().zipWithNext { a, b -> (b - a).toFloat() }
+        val widths = sorted.map { it.width }.sorted()
+        val wMedian = widths[widths.size / 2].toFloat()
+        if (wMedian <= 0f) return null
+        val wSapma = widths.maxOf { kotlin.math.abs(it - wMedian) / wMedian }
+        if (wSapma > W_TOLERANCE) return null
+
+        val heights = sorted.map { it.height }.sorted()
+        val hMedian = heights[heights.size / 2].toFloat()
+        if (hMedian <= 0f) return null
+        if (heights.any { it / hMedian !in H_RANGE }) return null
+
+        val gaps = sorted.zipWithNext { a, b -> (b.top - a.bottom).toFloat() }
         if (gaps.any { it <= 0f }) return null
         val avg = gaps.average().toFloat()
         if (avg <= 0f) return null
         val gSapma = gaps.maxOf { kotlin.math.abs(it - avg) / avg }
         if (gSapma > GAP_TOLERANCE) return null
-        return maxOf(hSapma, gSapma)
+
+        return maxOf(wSapma, gSapma)
     }
 }

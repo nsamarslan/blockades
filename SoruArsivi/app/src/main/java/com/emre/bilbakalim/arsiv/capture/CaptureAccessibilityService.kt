@@ -621,7 +621,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             // hiçbir şey değişmez, aşağıdaki eski yol devreye girer.
             var viaOcr: QuestionParser.Parsed? = null
             if (s.findOptionBoxes) {
-                kutular = OptionBoxFinder.find(shot, s.optionsTop, s.optionsBottom)
+                kutular = OptionBoxFinder.find(shot)
                 if (kutular.size >= 3) {
                     val kutuMetinleri = optionTextsFromBoxes(shot, kutular, ocrItems)
                     viaOcr = QuestionParser.parse(
@@ -721,7 +721,15 @@ class CaptureAccessibilityService : AccessibilityService() {
             // Kutu yolu denenip başarısız olduysa asıl sebep onunki; eski
             // yolun reddi ikinci sırada yazılıyor.
             val sebep = kutuRed ?: QuestionParser.lastReject ?: "?"
-            val ek = if (kutuRed != null) " · eski yol: ${QuestionParser.lastReject}" else ""
+            val ek = buildString {
+                if (kutuRed != null) append(" · eski yol: ${QuestionParser.lastReject}")
+                // Kutu ölçümü hiç kutu bulamadıysa sebebini de yazıyoruz:
+                // "kutu:0" tek başına, ölçümün ekranı hiç mi göremediğini
+                // yoksa dizilimi mi beğenmediğini söylemiyordu.
+                if (kutular.isEmpty() && s.findOptionBoxes) {
+                    OptionBoxFinder.lastReason?.let { append(" · kutu ölçümü: $it") }
+                }
+            }
             if (ocrItems.isNotEmpty() || nodes.size > 1) {
                 log("düğüm:${nodes.size} ocr:${ocrItems.size} kutu:${kutular.size} · RED: $sebep$ek")
             }
@@ -1236,7 +1244,10 @@ class CaptureAccessibilityService : AccessibilityService() {
             "OKUNAMADI: ekranda soru var ama şıklar çıkarılamıyor · " +
                 (QuestionParser.lastReject ?: "?")
         )
-        if (s.unknownChime) Chime.play(this)
+        // Çift ötüş: bu "cevabını bilmiyorum" değil, "soruyu okuyamıyorum".
+        // İkisi aynı sesi çaldığı için arşivde kayıtlı bir soruda bile
+        // "bilmiyorum" diyor sanılıyordu.
+        if (s.unknownChime) Chime.playTwice(this)
     }
 
     /** Aynı sebep beş saniyede bir; günlüğü boğmadan "ne bekliyor" görünsün. */

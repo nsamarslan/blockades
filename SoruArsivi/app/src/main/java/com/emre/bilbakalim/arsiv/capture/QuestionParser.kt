@@ -546,13 +546,21 @@ object QuestionParser {
      * uzunluğuna göre iki katına çıkabilir ("Simya" ile "Hermetik Felsefesi").
      * Bu yüzden eleme genişliğe değil, satır yüksekliğine bakarak yapılır —
      * yoksa uzun yazılmış doğru şık listeden düşer.
+     *
+     * Üst sınır bilerek geniş. Eskiden 1,70'ti ve şu arızayı üretiyordu:
+     * uzun bir şık ("Uluslararası Uzay istasyonu") kendi kutusunda **iki
+     * satıra sarıyor**, metin bloğu diğerlerinin iki katı yükseklikte
+     * oluyor ve tam da doğru cevap olan o şık listeden düşüyordu. Geriye
+     * üç şık kalınca soru hiç kaydedilmiyor, arşivde kayıtlı olduğu hâlde
+     * "okunamadı" uyarısı çalıyordu. 2,60 iki satırlık şıkkı içeride
+     * tutuyor; dört şıkkın yapıştığı bir blok (~4x) hâlâ dışarıda kalıyor.
      */
     private fun trimOutliers(items: List<TextItem>): List<TextItem> {
         if (items.size <= 3) return items
         val heights = items.map { it.bounds.height() }.sorted()
         val median = heights[heights.size / 2].toFloat()
         if (median <= 0f) return items
-        val kept = items.filter { it.bounds.height() / median in 0.60f..1.70f }
+        val kept = items.filter { it.bounds.height() / median in 0.50f..2.60f }
         return if (kept.size >= 3) kept else items
     }
 

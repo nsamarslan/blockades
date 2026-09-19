@@ -632,6 +632,66 @@ Doğru cevap yine kaydedilir, kaynak olarak `süre doldu` yazar, ama **deneme
 sayılmaz**. Soru 3 kez çıkıp birinde süreye takıldıysan başarı oranın diğer
 2 tur üzerinden hesaplanır: *3 kez çıktı · 2 denemede %50*.
 
+## "Arşivde olan soruya bilmiyorum diyor" — aslında okuyamıyordu
+
+Nadiren, arşivde kayıtlı bir soruda uyarı sesi çalıp bot hiçbir şıkka
+basmadan bekliyordu. Günlükteki iz:
+
+```
+OKUNAMADI: ekranda soru var ama şıklar çıkarılamıyor ·
+  şıklar henüz tamamlanmadı (3/4) ·
+  «Perseverance»@%64 «Curiosity»@%72 «Ingenuity»@%81
+düğüm:1 ocr:18 kutu:0 · RED: şıklar henüz tamamlanmadı (3/4)
+```
+
+Dördüncü şık **"Uluslararası Uzay istasyonu"** idi — ve doğru cevap da
+oydu. Sebep: o şık kendi hapında **iki satıra sarıyor.** İki ölçü de
+"bütün şıklar aynı yükseklikte" varsayıyordu:
+
+* `QuestionParser.trimOutliers` metin bloklarını yüksekliğe göre eliyordu
+  (ortancanın 0,60–1,70 katı). İki satırlık blok ~2 kat yüksek olduğu için
+  listeden düşüyor, geriye üç şık kalıyordu — günlükteki "3/4".
+* `OptionBoxFinder` hapları eşit **yükseklikte** arıyordu. Dördüncü hap
+  yüksek olunca dizi tutarsız sayılıyor ve hiç kutu bulunamıyordu —
+  günlükteki "kutu:0".
+
+Yani iki bağımsız yol, aynı yanlış varsayım yüzünden aynı anda
+tıkanıyordu. Yakın plan OCR'ın 2x ve 3x denemeleri de boşunaydı: metin
+zaten okunuyordu, **süzgeç atıyordu.**
+
+Düzeltme, hapın değişmeyen özelliklerine geçmek oldu:
+
+* **Genişlik** — haplar her zaman aynı genişlikte (ölçülen ekranda 738
+  piksel); soru kartı belirgin biçimde daha geniş (900). Kartı eleyen ölçü
+  artık bu.
+* **Haplar arası boşluk** — iki hap arasındaki mor şerit her zaman aynı
+  (57 piksel), hapın yüksekliğinden bağımsız. Aralık ölçümü bilerek
+  üstten üste değil, alttan üste yapılıyor.
+* Yükseklik yalnızca kaba bir akıl sağlığı sınırı; iki satırlık hap
+  içeride kalıyor.
+* `trimOutliers` üst sınırı 2,60'a çıktı: iki satırlık şık kalıyor, dört
+  şıkkın yapıştığı blok (~4 kat) hâlâ düşüyor.
+
+Ayrıca tarama bandı artık ayarlardaki şık bölgesine bağlı değil. Soru üç
+satır olunca şıklar aşağı kayıyor ve dördüncü hap `optionsBottom` (%90)
+sınırının altında kalabiliyordu; geometri zaten kendini doğruladığı için
+bant cömert tutuluyor.
+
+### Uyarı sesi artık ikisini ayırıyor
+
+"Cevabı bilmiyorum" ile "soruyu okuyamıyorum" aynı sesi çalıyordu; bu
+yüzden okuma arızası, arşiv eksiği gibi görünüyordu.
+
+* **Tek ötüş** — soru okundu, cevabı arşivde yok.
+* **Çift ötüş** — ekranda soru var ama şıklar okunamıyor. Soru arşivde
+  kayıtlı bile olabilir.
+
+Kutu ölçümü kutu bulamadığında sebebini de günlüğe yazıyor artık
+("hap rengi satır yok", "5 aday kutu var, eşit aralıklı dörtlü yok · …").
+"kutu:0" tek başına, eski "rozetten başka şık yok" mesajı kadar sessizdi.
+
+---
+
 ## Bu oturumun hataları
 
 Ana ekranda **Hatalar** bölümü, ondan açılan listede de bu oturumda

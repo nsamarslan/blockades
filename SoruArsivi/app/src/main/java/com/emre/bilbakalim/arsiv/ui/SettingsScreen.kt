@@ -181,9 +181,13 @@ fun SettingsScreen(
                     // bilgisini veriyor.
                     SettingSwitch(
                         "Cevabı bilinmeyen soruda uyarı sesi",
-                        "Sorunun cevabı arşivde yoksa ya da kayıttaki cevap " +
-                            "ekrandaki şıklara uymuyorsa telefonun bildirim sesi çalar. " +
-                            "Manuel modda da çalışır. Telefon sessizdeyse duyulmaz.",
+                        "Telefonun bildirim sesi çalar; manuel modda da çalışır, " +
+                            "telefon sessizdeyse duyulmaz. İki ayrı uyarı var:\n" +
+                            "• Tek ötüş — soru okundu ama cevabı arşivde yok " +
+                            "(ya da kayıttaki cevap ekrandaki şıklara uymuyor).\n" +
+                            "• Çift ötüş — ekranda soru var ama şıklar okunamıyor. " +
+                            "Bu durumda soru arşivde kayıtlı bile olabilir; sorun " +
+                            "arşivde değil okumada.",
                         s.unknownChime
                     ) { vm.setUnknownChime(it) }
                 }

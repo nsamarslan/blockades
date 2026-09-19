@@ -131,10 +131,8 @@ class OptionBoxFinderTest {
 
     @Test
     fun `soru kartinin alt dilimi dogru dortluyu bozmaz`() {
-        // Kartın yazısız alt dilimi (y993-1188, 195 piksel) hapa benzer bir
-        // kutu üretiyor. Yükseklik farkı tek başına sınırda kaldığı için
-        // seçim en düzgün dörtlüyü arıyor: kart penceresinde aralıklar da
-        // yükseklikler de sapıyor, gerçek dörtlüde ikisi de neredeyse sıfır.
+        // Kartın yazısız alt dilimi (y993-1188) hapa benzer bir kutu
+        // üretiyor. Ayıran ölçü genişlik: kart 900, hap 738 piksel.
         val kart = OptionBoxFinder.Box(90, 993, 990, 1188)
         val haplar = listOf(
             OptionBoxFinder.Box(171, 1263, 909, 1413),
@@ -153,6 +151,39 @@ class OptionBoxFinderTest {
             OptionBoxFinder.Box(171, 2000, 909, 2150)
         )
         assertTrue(OptionBoxFinder.selectRun(rasgele).isEmpty())
+    }
+
+    @Test
+    fun `iki satira saran sik dizilimi bozmaz`() {
+        // Gerçek arıza: "Uluslararası Uzay istasyonu" şıkkı kendi hapında
+        // iki satıra sarıyor, o hap diğerlerinin bir buçuk katı yükseklikte
+        // oluyordu. Yükseklik eşiği dar olduğu için dizi tutarsız sayılıyor
+        // ve HİÇ kutu bulunamıyordu ("kutu:0"); soru arşivde kayıtlı olduğu
+        // hâlde "okunamadı" uyarısı çalıyordu.
+        //
+        // Haplar arası boşluk (57 piksel) hapın yüksekliğinden bağımsız
+        // olarak sabit; ölçüm artık ona ve genişliğe bakıyor.
+        val haplar = listOf(
+            OptionBoxFinder.Box(171, 1263, 909, 1413),
+            OptionBoxFinder.Box(171, 1470, 909, 1620),
+            OptionBoxFinder.Box(171, 1677, 909, 1827),
+            OptionBoxFinder.Box(171, 1884, 909, 2114)
+        )
+        assertEquals(haplar, OptionBoxFinder.selectRun(haplar))
+        assertEquals(haplar, OptionBoxFinder.selectRun(
+            listOf(OptionBoxFinder.Box(90, 993, 990, 1188)) + haplar
+        ))
+    }
+
+    @Test
+    fun `farkli genislikteki kutular ayni dizi sayilmaz`() {
+        // Genişlik hapın değişmeyen özelliği; sapan kutu şık değildir.
+        val karisik = listOf(
+            OptionBoxFinder.Box(171, 1263, 909, 1413),
+            OptionBoxFinder.Box(171, 1470, 909, 1620),
+            OptionBoxFinder.Box(90, 1677, 990, 1827)
+        )
+        assertTrue(OptionBoxFinder.selectRun(karisik).isEmpty())
     }
 
     @Test
