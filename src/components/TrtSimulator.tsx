@@ -154,11 +154,13 @@ export const TrtSimulator: React.FC<TrtSimulatorProps> = ({
         type: 'success',
         message: `✅ Şık yeşil yandı! Doğru cevap: "${option}"`
       });
-      if (!isCurrentlyKnownInDB && currentQ.correctAnswer) {
+      // Veritabanında bu sorunun doğru cevabı yoksa VEYA yanlış kaydedilmişse güncelle
+      const shouldUpdate = !isCurrentlyKnownInDB || (dbMatch && dbMatch.correctAnswer !== currentQ.correctAnswer);
+      if (shouldUpdate && currentQ.correctAnswer) {
         onLearnQuestion(currentQ.id, currentQ.correctAnswer);
         onAddLog({
           type: 'learn',
-          message: `🧠 [VERİTABANI GÜNCELLENDİ]: Soru ve doğru cevabı arşive kaydedildi!`
+          message: `🧠 [VERİTABANI GÜNCELLENDİ]: ${!isCurrentlyKnownInDB ? 'Soru ve doğru cevabı arşive kaydedildi!' : 'Veritabanındaki yanlış cevap düzeltildi!'}`
         });
       }
     } else {
@@ -166,11 +168,13 @@ export const TrtSimulator: React.FC<TrtSimulatorProps> = ({
         type: 'warning',
         message: `❌ Tıklanan şık kırmızı yandı ("${option}"). Ekrandaki YEŞİL şık ("${currentQ.correctAnswer}") otomatik tespit edildi!`
       });
-      if (currentQ.correctAnswer) {
+      // ÖNEMLİ: Yanlış cevap durumunda, veritabanında bu soru yoksa VEYA yanlış kaydedilmişse VE currentQ.correctAnswer mevcutsa kaydet
+      const shouldUpdate = !isCurrentlyKnownInDB || (dbMatch && dbMatch.correctAnswer !== currentQ.correctAnswer);
+      if (shouldUpdate && currentQ.correctAnswer && currentQ.correctAnswer !== option) {
         onLearnQuestion(currentQ.id, currentQ.correctAnswer);
         onAddLog({
           type: 'learn',
-          message: `🧠 [RENK ALGISI İLE ÖĞRENİLDİ]: Yanlış yapılmasına rağmen doğru cevap tespit edilip veritabanına işlendi!`
+          message: `🧠 [RENK ALGISI İLE ÖĞRENİLDİ]: ${!isCurrentlyKnownInDB ? 'Yanlış yapılmasına rağmen doğru cevap tespit edilip veritabanına işlendi!' : 'Veritabanındaki yanlış cevap, ekrandaki yeşil şık ile düzeltildi!'}`
         });
       }
     }
