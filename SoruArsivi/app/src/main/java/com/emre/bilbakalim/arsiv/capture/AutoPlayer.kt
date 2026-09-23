@@ -114,11 +114,28 @@ class AutoPlayer(
     suspend fun pressContinue(
         items: List<TextItem>,
         screenH: Int,
-        allowDismiss: Boolean
+        allowDismiss: Boolean,
+        refillLives: Boolean
     ): Continue {
-        // Önce düğmeyi arıyoruz: "bulunamadı" ile "bekliyoruz" ayrımı ancak
-        // böyle doğru kurulur.
-        val target = findButton(items, screenH, allowDismiss) ?: return Continue.NotFound
+        val adaylar = buttonCandidates(items)
+        // "Can Kalmadı" penceresi: arkasındaki "Tekrar Oyna" soluk da olsa
+        // okunuyor ve bot ona basıyordu; oysa pencere kapanmadan hiçbir şey
+        // olmuyor. Ya "Doldur"a basılıyor ya da beklenip hiçbir şeye
+        // dokunulmuyor.
+        val target = if (adaylar.any { TurkishText.normalizeKey(it.text).contains(CAN_KALMADI) }) {
+            if (!refillLives) {
+                logOnce("otomatik: can kalmadı, doldurma kapalı (ayar) · bekliyorum")
+                return Continue.Waiting
+            }
+            findRefill(adaylar, screenH) ?: run {
+                logOnce("otomatik: can kalmadı ama \"Doldur\" okunamadı · bekliyorum")
+                return Continue.Waiting
+            }
+        } else {
+            // Önce düğmeyi arıyoruz: "bulunamadı" ile "bekliyoruz" ayrımı ancak
+            // böyle doğru kurulur.
+            findButton(adaylar, screenH, allowDismiss) ?: return Continue.NotFound
+        }
 
         val now = SystemClock.uptimeMillis()
         if (now < blockedUntil || now - lastButtonAt < BUTTON_GAP_MS) return Continue.Waiting
@@ -147,6 +164,28 @@ class AutoPlayer(
 
     // -----------------------------------------------------------------------
 
+    @Volatile private var sonUyari: String? = null
+    @Volatile private var sonUyariAt = 0L
+
+    /** Aynı uyarıyı 30 saniyede bir yazar. */
+    private fun logOnce(satir: String) {
+        val now = SystemClock.uptimeMillis()
+        if (satir == sonUyari && now - sonUyariAt < BUTTON_COOLDOWN_MS) return
+        sonUyari = satir
+        sonUyariAt = now
+        log(satir)
+    }
+
+    /** "Can Kalmadı" penceresindeki "Doldur" düğmesi. */
+    private fun findRefill(adaylar: List<TextItem>, screenH: Int): TextItem? =
+        adaylar.filter { ekranda(it, screenH) }
+            .filter { TurkishText.normalizeKey(it.text) == DOLDUR }
+            .maxByOrNull { it.centerY }
+
+    private fun ekranda(item: TextItem, screenH: Int): Boolean =
+        item.bounds.bottom >= screenH * 0.05f && item.bounds.top <= screenH * 0.98f &&
+            item.bounds.width() > 0 && item.bounds.height() > 0
+
     /**
      * Ekrandaki metinler arasından basılacak düğmeyi seçer.
      *
@@ -167,9 +206,7 @@ class AutoPlayer(
         val minScore = if (allowDismiss) 2 else 3
         for (item in items) {
             // Durum çubuğu ve gezinme çubuğu bölgesine hiç dokunma.
-            if (item.bounds.bottom < screenH * 0.05f) continue
-            if (item.bounds.top > screenH * 0.98f) continue
-            if (item.bounds.width() <= 0 || item.bounds.height() <= 0) continue
+            if (!ekranda(item, screenH)) continue
 
             val score = buttonScore(item.text)
             if (score < minScore) continue
@@ -235,6 +272,58 @@ class AutoPlayer(
         private const val TAG = "SoruArsivi/Auto"
 
         /**
+         * Düğme adayları: OCR bloğu, satırları ve kısa satırların ardışık
+         * kelime dizileri.
+         *
+         * Neden kelimeler: tur sonu ekranında alttaki düğme yazıları aynı
+         * hizada durduğu için OCR "Ana Menü" ile "Tekrar Oyna"yı tek satıra
+         * birleştiriyor. Bot o satırı "Tekrar Oyna" sanıp satırın **ortasına**,
+         * yani iki düğmenin arasına basıyordu. Kelime dizisi "Tekrar Oyna"
+         * birebir eşleştiği için satırın kendisinden yüksek puan alıyor ve
+         * dokunuş doğru düğmenin yazısına gidiyor.
+         *
+         * Kelime dizileri yalnızca kısa satırlardan çıkarılıyor: uzun bir
+         * cümlenin içindeki "devam et" gibi bir parça düğme sanılmasın.
+         */
+        internal fun buttonCandidates(items: List<TextItem>): List<TextItem> {
+            val out = ArrayList<TextItem>(items.size * 3)
+            for (item in items) {
+                out.add(item)
+                for (line in item.lines) {
+                    if (line.text != item.text) out.add(line)
+                    val words = line.lines
+                    if (line.text.length > RUN_LINE_MAX_LEN || words.size < 2) continue
+                    for (i in words.indices) {
+                        for (j in i until minOf(words.size, i + RUN_MAX_WORDS)) {
+                            if (i == 0 && j == words.lastIndex) continue // satırın kendisi
+                            val run = words.subList(i, j + 1)
+                            out.add(
+                                TextItem(
+                                    run.joinToString(" ") { it.text },
+                                    Rect(
+                                        run.minOf { it.bounds.left },
+                                        run.minOf { it.bounds.top },
+                                        run.maxOf { it.bounds.right },
+                                        run.maxOf { it.bounds.bottom }
+                                    )
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+            return out
+        }
+
+        /** Kelime dizisi çıkarılacak satırın en fazla uzunluğu (düğme yazısı gibi kısa). */
+        private const val RUN_LINE_MAX_LEN = 28
+        /** Bir kelime dizisindeki en fazla kelime. */
+        private const val RUN_MAX_WORDS = 4
+        /** "Can Kalmadı" (son harfi okunmasa da). */
+        private const val CAN_KALMADI = "cankalmad"
+        private const val DOLDUR = "doldur"
+
+        /**
          * Bir yazının "tur başlat / pencereyi kapat" düğmesi olma puanı.
          * Companion'da duruyor ki servis örneği olmadan test edilebilsin.
          */
@@ -242,6 +331,11 @@ class AutoPlayer(
             val k = TurkishText.normalizeKey(text)
             if (k.length < 2 || k.length > 28) return 0
             if (PLAY_AGAIN.any { it == k }) return 4
+            // Tek harflik OCR hatası: "Tekrar Oyna" bir dakika boyunca
+            // "Tekrar Oynd" okundu ve tur sonu ekranında hiçbir şeye
+            // basılmadı. Yalnızca uzun yazılarda: kısa yazılarda tek harf
+            // başka bir kelime demek.
+            if (PLAY_AGAIN.any { it.length >= FUZZY_MIN_LEN && TurkishText.sameOptionKey(k, it) }) return 3
             // Parça eşleşmesi yalnızca baş ya da sonda: "En Çok Oynananlar"
             // normalize edilince "encokoynananlar" oluyor ve içinde "oyna"
             // geçtiği için bot lobide o listeye basıp turu geciktiriyordu.
@@ -253,6 +347,9 @@ class AutoPlayer(
             if (DISMISS.any { it == k }) return 2
             return 0
         }
+
+        /** Tek harflik hatanın hoş görüldüğü en kısa düğme yazısı. */
+        private const val FUZZY_MIN_LEN = 8
 
         /** Dokunuşun ekranda kaldığı süre. */
         private const val TAP_DURATION_MS = 80L

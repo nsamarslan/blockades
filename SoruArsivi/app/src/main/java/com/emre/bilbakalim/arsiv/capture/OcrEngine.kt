@@ -45,8 +45,17 @@ object OcrEngine {
                             val lines = block.lines.mapNotNull { line ->
                                 val lb = line.boundingBox ?: return@mapNotNull null
                                 val lt = line.text.trim()
-                                if (lt.isEmpty()) null
-                                else TextItem(lt, Rect(lb), clickable = false)
+                                if (lt.isEmpty()) return@mapNotNull null
+                                // Satırın kelimeleri de taşınıyor: tur sonu
+                                // ekranında alttaki düğme yazıları ("Ana Menü",
+                                // "Tekrar Oyna") tek satıra birleşiyor ve
+                                // düğmenin yeri ancak kelimelerden bulunuyor.
+                                val kelimeler = line.elements.mapNotNull { el ->
+                                    val eb = el.boundingBox ?: return@mapNotNull null
+                                    val et = el.text.trim()
+                                    if (et.isEmpty()) null else TextItem(et, Rect(eb))
+                                }
+                                TextItem(lt, Rect(lb), clickable = false, lines = kelimeler)
                             }
                             out.add(TextItem(t, Rect(b), clickable = false, lines = lines))
                         }

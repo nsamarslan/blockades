@@ -22,6 +22,12 @@ object QuestionParser {
     /** Soru metninin üstünde en fazla bu kadar uzakta olabilir. */
     private const val NO_MAX_GAP = 0.22f
 
+    /** Okunamayan şıkkın yerine yazılan metin (bkz. `parse(tekOkunamayanaIzin)`). */
+    const val OKUNAMAYAN_SIK = "(okunamadı)"
+
+    /** "Tek şık okunamadı" reddinin ayırt edici parçası; yakalama tarafı bunu arıyor. */
+    const val TEK_OKUNAMAYAN = ", 1 tanesinin metni okunamadı"
+
     /** Teşhis ekranı için: son ayrıştırmanın neden başarısız olduğu. */
     @Volatile var lastReject: String? = null
         private set
@@ -132,7 +138,13 @@ object QuestionParser {
         screenH: Int,
         s: Prefs.Settings,
         fromAccessibility: Boolean,
-        knownOptions: List<TextItem>? = null
+        knownOptions: List<TextItem>? = null,
+        /**
+         * Dört kutudan tam biri okunamıyorsa o şık [OKUNAMAYAN_SIK] ile
+         * doldurulsun mu? Yakalama tarafı bunu ancak aynı sonuç üst üste
+         * geldiğinde açıyor (ML Kit'in tanımadığı bir simge).
+         */
+        tekOkunamayanaIzin: Boolean = false
     ): Parsed? {
         if (screenW <= 0 || screenH <= 0) return reject("ekranda metin yok")
         if (raw.isEmpty() && knownOptions.isNullOrEmpty()) return reject("ekranda metin yok")
@@ -162,7 +174,7 @@ object QuestionParser {
 
         // --- 1. Şık adayları ---------------------------------------------------
         val options =
-            if (knownOptions != null) fromBoxes(knownOptions)
+            if (knownOptions != null) fromBoxes(knownOptions, tekOkunamayanaIzin)
             else fromText(cleaned, optTop, optBottom, screenH, fromAccessibility)
         if (options == null) return null
         val optionTexts = options.map { it.second }
@@ -247,10 +259,16 @@ object QuestionParser {
      * üç şık var" bambaşka iki durum ve ikincisi sanıldığında eksik şıkla
      * kayıt açılıyordu.
      */
-    private fun fromBoxes(boxes: List<TextItem>): List<Pair<TextItem, String>>? {
+    private fun fromBoxes(
+        boxes: List<TextItem>,
+        tekOkunamayanaIzin: Boolean
+    ): List<Pair<TextItem, String>>? {
         val sorted = boxes.sortedBy { it.bounds.top }
         val named = sorted.map { it to TurkishText.stripOptionPrefix(TurkishText.cleanOcr(it.text)) }
         val okunamayan = named.count { it.second.isBlank() }
+        if (okunamayan == 1 && tekOkunamayanaIzin && sorted.size >= 4) {
+            return named.map { (item, text) -> item to text.ifBlank { OKUNAMAYAN_SIK } }
+        }
         if (okunamayan > 0) {
             val yerler = named.joinToString(" ") { (item, text) ->
                 if (text.isBlank()) "«?»@${item.bounds.top}" else "«${text.take(16)}»"

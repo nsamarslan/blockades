@@ -86,6 +86,11 @@ class Prefs private constructor(context: Context) {
         /** Tur bitince "Tekrar Oyna" benzeri düğmeye bas. */
         val autoRestart: Boolean = true,
         /**
+         * Can bitince "Can Kalmadı" penceresinde "Doldur"a bas (4000 altın).
+         * Açık değilse bot o pencerede bekler; arkadaki düğmelere basmaz.
+         */
+        val autoRefillLives: Boolean = true,
+        /**
          * Cevabı arşivde olan sorularda rastgele değil doğru şıkka bas.
          * Kapatılırsa seçim her zaman rastgele olur.
          */
@@ -132,6 +137,7 @@ class Prefs private constructor(context: Context) {
         autoPlay = sp.getBoolean(K_AUTO_PLAY, false),
         autoAnswerDelayMs = sp.getLong(K_AUTO_DELAY, 900L),
         autoRestart = sp.getBoolean(K_AUTO_RESTART, true),
+        autoRefillLives = sp.getBoolean(K_AUTO_REFILL, true),
         autoUseKnownAnswer = sp.getBoolean(K_AUTO_KNOWN, true),
         autoRandomWhenUnknown = sp.getBoolean(K_AUTO_RANDOM_UNKNOWN, true),
         unknownChime = sp.getBoolean(K_UNKNOWN_CHIME, false),
@@ -159,6 +165,7 @@ class Prefs private constructor(context: Context) {
     fun setAutoPlay(v: Boolean) = commit { putBoolean(K_AUTO_PLAY, v) }
     fun setAutoAnswerDelay(ms: Long) = commit { putLong(K_AUTO_DELAY, ms.coerceIn(200L, 5000L)) }
     fun setAutoRestart(v: Boolean) = commit { putBoolean(K_AUTO_RESTART, v) }
+    fun setAutoRefillLives(v: Boolean) = commit { putBoolean(K_AUTO_REFILL, v) }
     fun setAutoUseKnownAnswer(v: Boolean) = commit { putBoolean(K_AUTO_KNOWN, v) }
     fun setAutoRandomWhenUnknown(v: Boolean) = commit { putBoolean(K_AUTO_RANDOM_UNKNOWN, v) }
     fun setUnknownChime(v: Boolean) = commit { putBoolean(K_UNKNOWN_CHIME, v) }
@@ -192,6 +199,7 @@ class Prefs private constructor(context: Context) {
         private const val K_AUTO_PLAY = "otomatik_mod"
         private const val K_AUTO_DELAY = "otomatik_gecikme"
         private const val K_AUTO_RESTART = "otomatik_yeniden_basla"
+        private const val K_AUTO_REFILL = "otomatik_can_doldur"
         private const val K_AUTO_KNOWN = "otomatik_bilinen_cevap"
         private const val K_AUTO_RANDOM_UNKNOWN = "otomatik_bilinmeyende_rastgele"
         private const val K_UNKNOWN_CHIME = "bilinmeyen_uyari_sesi"

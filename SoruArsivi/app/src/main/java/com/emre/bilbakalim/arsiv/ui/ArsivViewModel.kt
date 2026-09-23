@@ -152,6 +152,7 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setAutoPlay(v: Boolean) = prefs.setAutoPlay(v)
     fun setAutoAnswerDelay(ms: Long) = prefs.setAutoAnswerDelay(ms)
     fun setAutoRestart(v: Boolean) = prefs.setAutoRestart(v)
+    fun setAutoRefillLives(v: Boolean) = prefs.setAutoRefillLives(v)
     fun setAutoUseKnownAnswer(v: Boolean) = prefs.setAutoUseKnownAnswer(v)
     fun setAutoRandomWhenUnknown(v: Boolean) = prefs.setAutoRandomWhenUnknown(v)
     fun setUnknownChime(v: Boolean) = prefs.setUnknownChime(v)

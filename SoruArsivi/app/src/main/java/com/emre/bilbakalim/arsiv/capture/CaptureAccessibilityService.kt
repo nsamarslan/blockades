@@ -145,6 +145,22 @@ class CaptureAccessibilityService : AccessibilityService() {
     /** Kapıdan kıpırdamayan ekran sayesinde geçen son okuma — satır bir kez düşsün. */
     @Volatile private var renderForcedKey: String? = null
     /**
+     * Kapıda (kart ya da teyit) geri çevrilen son okuma ve alındığı kare.
+     *
+     * Sonraki kare buna tıpatıp benziyorsa soru yeniden OCR'dan geçirilmiyor,
+     * bu okuma kullanılıyor. Bu telefonda tek OCR ~1 saniye; teyit için ikinci
+     * bir OCR beklemek, bilinmeyen her sorunun kaydını ve uyarı sesini bir
+     * saniye geciktiriyordu. Kapının koruduğu şey hareket eden kare; kare
+     * kıpırdamadıysa ikinci OCR aynı sonucu verirdi.
+     */
+    @Volatile private var bekleyenOkuma: QuestionParser.Parsed? = null
+    @Volatile private var bekleyenOkumaImza: IntArray? = null
+    @Volatile private var bekleyenOkumaAt = 0L
+    @Volatile private var bekleyenOkumaKutu = false
+    /** Aynı "bir şık okunamadı" sonucu üst üste kaç kez geldi. */
+    @Volatile private var okunamayanImza: String? = null
+    @Volatile private var okunamayanSayi = 0
+    /**
      * Bu oturumda yapılan bir hata.
      *
      * Amaç tek bir soruyu cevaplamak: **neye bastık, doğrusu neydi.**
@@ -698,6 +714,8 @@ class CaptureAccessibilityService : AccessibilityService() {
         var frameStatic = false
         // Bu taramadaki karenin imzası; soru okunursa bekleyen soruya yazılıyor.
         var buKareImza: IntArray? = null
+        // Kapıda bekleyen okuma bu karede yeniden kullanılacaksa (OCR'sız).
+        var tekrarOkuma: QuestionParser.Parsed? = null
         if (shot != null) {
             val sig = frameSignature(shot)
             buKareImza = sig
@@ -705,6 +723,18 @@ class CaptureAccessibilityService : AccessibilityService() {
             val now = SystemClock.uptimeMillis()
             if (sig != null && prev != null && sameFrame(sig, prev)) {
                 frameStatic = true
+                // Bekleyen soru, okunduğu karedeki hâliyle duruyorsa yeniden
+                // okumanın bir anlamı yok: "hâlâ ekranda" bilgisi kareden
+                // geliyor. Eskiden bu hâlde her 1,5 saniyede bir OCR yapılıyordu
+                // (bu telefonda her biri ~1 sn); sen düşünürken işlemci boşa
+                // dönüyordu.
+                val soruAyni = waiting != null &&
+                    waiting.seenSig?.let { sameFrame(sig, it) } == true
+                if (soruAyni) waiting!!.seenAt = now
+                tekrarOkuma = bekleyenOkuma?.takeIf {
+                    now - bekleyenOkumaAt < ACIL_OKUMA_MS &&
+                        bekleyenOkumaImza?.let { i -> sameFrame(sig, i) } == true
+                }
                 // Bekleyen soru varken kartın oturduğunu HENÜZ ölçmediysek
                 // kareyi atlamak yasak. Oturmuş bir kart zaten kıpırdamayan
                 // karedir: tam ölçmemiz gereken an burasıdır. Atlayınca
@@ -729,8 +759,8 @@ class CaptureAccessibilityService : AccessibilityService() {
                 val kapiBekliyor =
                     confirmKey != null && now - confirmAt < ACIL_OKUMA_MS ||
                         renderWaitKey != null && now - renderWaitSince < ACIL_OKUMA_MS
-                val force = kartOlculmeli || kapiBekliyor ||
-                    now - lastForcedScanAt >= STATIC_RESCAN_MS
+                val force = kartOlculmeli || kapiBekliyor || tekrarOkuma != null ||
+                    !soruAyni && now - lastForcedScanAt >= STATIC_RESCAN_MS
                 if (!autoIdle && !force) {
                     shot.recycle()
                     return iz.cik("durgun", "kare_yasi=${ProjectionService.kareYasiMs()}")
@@ -750,10 +780,42 @@ class CaptureAccessibilityService : AccessibilityService() {
         // renk kontrolü ise her karede yapılmaya devam ediyor.
         // Tur sonu ekranı kıpırdamadığı için orada metin tanımayı daha da
         // seyrekleştiriyoruz; düğmeyi bir saniye geç bulmanın zararı yok.
-        val ocrGap = if (autoIdle && !needOcr) AUTO_IDLE_OCR_GAP_MS else MIN_OCR_GAP_MS
+        //
+        // OCR kapısı. Bu telefonda tek bir tam ekran OCR ~1 saniye sürüyor ve
+        // eskiden neredeyse her taramada yapılıyordu: cevabı açılmış eski
+        // kart, sorular arası geçiş kareleri, bekleme sırasında kıpırdamayan
+        // ekran. Bir çekirdek sürekli metin tanımayla meşguldü (kasma), yeni
+        // soru da ancak o boşa giden OCR bittikten sonra okunabiliyordu —
+        // önceki karardan yeni sorunun ilk okunmasına 3,5-7,7 saniye.
+        //
+        // Şık kutusu ölçümü ise ~26 ms. Artık önce o yapılıyor: dört hap
+        // çizili ve hiçbiri seçilmemişse (okunacak yeni bir soru) OCR hemen,
+        // ve yalnızca soru ile şıkların bölgesinde yapılıyor. Hap yoksa OCR
+        // seyrek (tur sonu ekranı, kutusu ölçülemeyen soru eski yoldan yine
+        // okunabilsin diye).
+        var kutular: List<OptionBoxFinder.Box> = emptyList()
+        var haplarHazir = false
+        if (shot != null && s.findOptionBoxes && tekrarOkuma == null) {
+            iz.adim("kutu")
+            kutular = OptionBoxFinder.find(shot)
+            haplarHazir = kutular.size >= 4 && !AnswerColorDetector.analyze(
+                shot, kutular.map { Rect(it.left, it.top, it.right, it.bottom) },
+                shot.width, shot.height
+            ).anyTouched()
+            if (kutular.size >= 3 && sonKutuSayisi != kutular.size) {
+                // Ölçüm her karede aynı sonucu verdiği sürece sessiz;
+                // yalnızca kutu sayısı değiştiğinde günlüğe düşüyor.
+                sonKutuSayisi = kutular.size
+                log("şık kutusu ekrandan ölçüldü: ${kutular.size} hap")
+            }
+        }
+        val ocrGap = when {
+            !s.findOptionBoxes || haplarHazir -> MIN_OCR_GAP_MS
+            autoIdle -> AUTO_IDLE_OCR_GAP_MS
+            else -> OCR_HAPSIZ_MS
+        }
         val ocrDue = SystemClock.uptimeMillis() - lastOcrAt >= ocrGap
         var ocrItems: List<TextItem> = emptyList()
-        var kutular: List<OptionBoxFinder.Box> = emptyList()
         // Kutu yolunun kendi reddi: eski yol arkasından çalıştığı için
         // QuestionParser.lastReject'i eziyor, ama teşhis için asıl anlamlı
         // olan bu ("dört kutu gördüm, birinin metnini okuyamadım").
@@ -761,36 +823,67 @@ class CaptureAccessibilityService : AccessibilityService() {
         // Soru hangi yoldan okundu: şık kutuları ekrandan mı ölçüldü, yoksa
         // eski metin yolu mu? Bu sorudaki arıza tam da bu ayrımdaydı.
         var yolKutu = false
-        if ((needOcr || autoIdle) && shot != null && ocrDue) {
+        if (tekrarOkuma != null) {
+            // Kapıda bekleyen okuma, tıpatıp aynı karede: OCR yok.
+            iz.adim("tekrar_okuma")
+            parsed = tekrarOkuma
+            yolKutu = bekleyenOkumaKutu
+            source = if (nodes.isNotEmpty()) CaptureSource.HYBRID else CaptureSource.OCR
+        } else if ((needOcr || autoIdle) && shot != null && ocrDue) {
             lastOcrAt = SystemClock.uptimeMillis()
             iz.adim("ocr")
-            ocrItems = OcrEngine.recognize(shot)
+            // Haplar hazırsa yalnızca soru kartı ile şıkların bölgesi okunuyor:
+            // üstteki altın/yıldız/ilerleme şeridi ve alttaki jokerler hem
+            // süreyi uzatıyor hem ayrıştırıcıya gürültü taşıyordu.
+            ocrItems = if (haplarHazir) {
+                val ust = (kutular.first().top - OCR_SORU_PAYI * shot.height).toInt()
+                val alt = kutular.last().bottom + (0.01f * shot.height).toInt()
+                ocrBolgesi(shot, ust, alt)
+            } else OcrEngine.recognize(shot)
             lastOcrItems = ocrItems
 
             // Önce kutu yolu: şıkların yeri ve sayısı ekrandan piksel olarak
             // ölçülür, metin sonra doldurulur. Ölçüm tutmazsa (boş liste)
             // hiçbir şey değişmez, aşağıdaki eski yol devreye girer.
             var viaOcr: QuestionParser.Parsed? = null
-            if (s.findOptionBoxes) {
-                iz.adim("kutu")
-                kutular = OptionBoxFinder.find(shot)
-                if (kutular.size >= 3) {
-                    iz.adim("kutu_metin")
-                    val kutuMetinleri = optionTextsFromBoxes(shot, kutular, ocrItems)
-                    iz.adim("ayr")
-                    viaOcr = QuestionParser.parse(
-                        ocrItems, shot.width, shot.height, s,
-                        fromAccessibility = false, knownOptions = kutuMetinleri
-                    )
-                    yolKutu = viaOcr != null
-                    if (viaOcr == null) kutuRed = QuestionParser.lastReject
-                    // Ölçüm her karede aynı sonucu verdiği sürece sessiz;
-                    // yalnızca kutu sayısı değiştiğinde günlüğe düşüyor.
-                    if (sonKutuSayisi != kutular.size) {
-                        sonKutuSayisi = kutular.size
-                        log("şık kutusu ekrandan ölçüldü: ${kutular.size} hap")
+            if (s.findOptionBoxes && kutular.size >= 3) {
+                iz.adim("kutu_metin")
+                val kutuMetinleri = optionTextsFromBoxes(shot, kutular, ocrItems)
+                iz.adim("ayr")
+                viaOcr = QuestionParser.parse(
+                    ocrItems, shot.width, shot.height, s,
+                    fromAccessibility = false, knownOptions = kutuMetinleri
+                )
+                if (viaOcr == null) {
+                    kutuRed = QuestionParser.lastReject
+                    // Tek bir şık üst üste aynı biçimde okunamıyorsa (ML Kit'in
+                    // tanımadığı bir simge: ∧, ∨, →) beklemenin anlamı yok:
+                    // bot bir dakika boyunca aynı kareyi okuyup sorunun
+                    // süresini dolduruyordu. İkinci kez aynı sonuç gelince o şık
+                    // yer tutucuyla dolduruluyor; soru kaydediliyor, renk
+                    // okuması kutudan çalıştığı için cevap da okunuyor.
+                    val red = kutuRed
+                    if (red != null && red.contains(QuestionParser.TEK_OKUNAMAYAN)) {
+                        okunamayanSayi = if (red == okunamayanImza) okunamayanSayi + 1 else 1
+                        okunamayanImza = red
+                        if (okunamayanSayi >= OKUNAMAYAN_KABUL) {
+                            viaOcr = QuestionParser.parse(
+                                ocrItems, shot.width, shot.height, s,
+                                fromAccessibility = false, knownOptions = kutuMetinleri,
+                                tekOkunamayanaIzin = true
+                            )
+                            if (viaOcr != null) {
+                                kutuRed = null
+                                log("OKUNAMAYAN ŞIK: bir şık ${okunamayanSayi} kez okunamadı, " +
+                                    "«${QuestionParser.OKUNAMAYAN_SIK}» ile devam · $red")
+                            }
+                        }
+                    } else {
+                        okunamayanImza = null
+                        okunamayanSayi = 0
                     }
                 }
+                yolKutu = viaOcr != null
             }
             iz.adim("ayr")
             if (viaOcr == null) viaOcr = QuestionParser.parse(
@@ -906,6 +999,9 @@ class CaptureAccessibilityService : AccessibilityService() {
                     when {
                         shot == null -> "kare_yok"
                         !(needOcr || autoIdle) -> "ocr_gerekmedi"
+                        // OCR kapısı: okunmaya hazır dört hap yok (geçiş,
+                        // cevabı açılmış kart, tur sonu).
+                        !ocrDue && !haplarHazir && s.findOptionBoxes -> "hap_bekleniyor"
                         !ocrDue -> "ocr_erken"
                         else -> "ocr_bos"
                     }
@@ -913,14 +1009,16 @@ class CaptureAccessibilityService : AccessibilityService() {
             }
             // Şık bölgesiyle ilgili bir redse kareyi diske yaz: sebebi
             // günlükten geriye doğru tahmin etmek yerine bakabilelim.
-            if (s.saveFailedFrames && shot != null && sebep.startsWith("şık")) {
+            // Yalnızca hap görülmüş karelerde: geçiş karelerinin "0 metin"
+            // redleri gürültüydü ve her biri taramaya ~300 ms ekliyordu.
+            if (s.saveFailedFrames && shot != null && sebep.startsWith("şık") && kutular.size >= 3) {
                 iz.adim("teshis_kare")
                 teshisKaydet(shot, ocrItems, kutular, sebep + ek)
             }
             noteUnreadable(s)
             // Ekranda soru yok ve bir süredir de yoktu: tur bitmiş olabilir.
             iz.adim("devam")
-            if (autoIdle) tryContinue(nodes, ocrItems, shot, screenW, screenH)
+            if (autoIdle) tryContinue(nodes, ocrItems, shot, screenW, screenH, s.autoRefillLives)
             shot?.let { if (!it.isRecycled) it.recycle() }
             return
         }
@@ -1026,6 +1124,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 noteRenderWait(p, shot, screenW, screenH)
                 confirmKey = null
                 okumaKapi++
+                okumayiBeklet(p, buKareImza, yolKutu)
                 shot.let { if (!it.isRecycled) it.recycle() }
                 return iz.cik("kart_kapisi", "yol=$yol")
             }
@@ -1057,6 +1156,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             confirmKey = p.key
             confirmAt = SystemClock.uptimeMillis()
             okumaTeyit++
+            okumayiBeklet(p, buKareImza, yolKutu)
             shot?.let { if (!it.isRecycled) it.recycle() }
             return iz.cik("teyit", "yol=$yol")
         }
@@ -1064,6 +1164,9 @@ class CaptureAccessibilityService : AccessibilityService() {
         // Teyit geçildi; aynı okuma artık lastKey'den tanınıyor. Temizlenmezse
         // kıpırdamayan kare üç saniye boyunca boşuna yeniden okunuyordu.
         confirmKey = null
+        bekleyenOkuma = null
+        okunamayanImza = null
+        okunamayanSayi = 0
 
         // Kullanıcı Ana ekrandan bir kategori seçtiyse o kazanır; yoksa ekrandan tanınan kullanılır.
         val category = s.activeCategory.takeIf { it.isNotBlank() } ?: p.category
@@ -1449,18 +1552,23 @@ class CaptureAccessibilityService : AccessibilityService() {
         ocr: List<TextItem>,
         shot: Bitmap?,
         screenW: Int,
-        screenH: Int
+        screenH: Int,
+        refillLives: Boolean
     ) {
         if (nodes.isEmpty() && ocr.isEmpty()) return
         val shotW = shot?.takeIf { !it.isRecycled }?.width ?: screenW
         val shotH = shot?.takeIf { !it.isRecycled }?.height ?: screenH
-        val items = nodes + ocr.map {
-            it.copy(bounds = scaleRect(it.bounds, shotW, shotH, screenW, screenH))
-        }
+        // Satır ve kelime kutuları da ölçekleniyor: düğmenin yeri artık
+        // kelimelerden bulunabiliyor (bkz. AutoPlayer.buttonCandidates).
+        fun olcekle(t: TextItem): TextItem = t.copy(
+            bounds = scaleRect(t.bounds, shotW, shotH, screenW, screenH),
+            lines = t.lines.map { olcekle(it) }
+        )
+        val items = nodes + ocr.map { olcekle(it) }
         // "Atla"/"Devam" gibi yazılara ancak ekran iyice uzun süredir
         // kımıldamıyorsa dokunuruz; "Tekrar Oyna" için o kadar beklemeye gerek yok.
         val allowDismiss = SystemClock.uptimeMillis() - lastQuestionAt > AUTO_DISMISS_IDLE_MS
-        when (val sonuc = auto.pressContinue(items, screenH, allowDismiss)) {
+        when (val sonuc = auto.pressContinue(items, screenH, allowDismiss, refillLives)) {
             // Az önce basıldı, sonucu bekleniyor. Ekranı raporlamaya gerek yok.
             AutoPlayer.Continue.Waiting -> return
             // Basılacak bir şey yok: ekranda ne yazdığını bir kez günlüğe
@@ -1471,7 +1579,11 @@ class CaptureAccessibilityService : AccessibilityService() {
                 return
             }
             is AutoPlayer.Continue.Pressed -> {
-                log("OTOMATİK: \"${sonuc.label}\" → yeni tur (${auto.restartCount}. kez)")
+                if (TurkishText.normalizeKey(sonuc.label) == "doldur") {
+                    log("OTOMATİK: can kalmadı → \"${sonuc.label}\" (4000 altın)")
+                } else {
+                    log("OTOMATİK: \"${sonuc.label}\" → yeni tur (${auto.restartCount}. kez)")
+                }
                 // Yeni tur birinci sorudan başlıyor; eski numara kilidi kalkmalı.
                 lockedNumber = null
             }
@@ -1575,6 +1687,32 @@ class CaptureAccessibilityService : AccessibilityService() {
         // İkisi aynı sesi çaldığı için arşivde kayıtlı bir soruda bile
         // "bilmiyorum" diyor sanılıyordu.
         if (s.unknownChime) Chime.playTwice(this)
+    }
+
+    /** Kapıda geri çevrilen okumayı, aynı karede OCR'sız yeniden kullanılmak üzere saklar. */
+    private fun okumayiBeklet(p: QuestionParser.Parsed, imza: IntArray?, kutu: Boolean) {
+        if (imza == null) return
+        bekleyenOkuma = p
+        bekleyenOkumaImza = imza
+        bekleyenOkumaAt = SystemClock.uptimeMillis()
+        bekleyenOkumaKutu = kutu
+    }
+
+    /**
+     * Ekranın yalnızca [ust]..[alt] bandını okur; kutular tam ekran
+     * koordinatlarına geri kaydırılır.
+     */
+    private suspend fun ocrBolgesi(shot: Bitmap, ust: Int, alt: Int): List<TextItem> {
+        val u = ust.coerceIn(0, shot.height - 2)
+        val a = alt.coerceIn(u + 2, shot.height)
+        if (u == 0 && a == shot.height) return OcrEngine.recognize(shot)
+        val kirp = runCatching { Bitmap.createBitmap(shot, 0, u, shot.width, a - u) }.getOrNull()
+            ?: return OcrEngine.recognize(shot)
+        return try {
+            OcrEngine.recognize(kirp).map { it.kaydir(u) }
+        } finally {
+            if (kirp !== shot) kirp.recycle()
+        }
     }
 
     /** Oyunun kabul ettiği şık görüldü: kimin bastığını ayırt eder (bkz. [PendingAnswer.secimGoruldu]). */
@@ -2687,6 +2825,19 @@ class CaptureAccessibilityService : AccessibilityService() {
          * bu süre boyunca her turda yeniden okunuyor (bkz. STATIC_RESCAN_MS).
          */
         private const val ACIL_OKUMA_MS = 3000L
+        /**
+         * Okunmaya hazır hap görünmüyorken OCR aralığı. Tur sonu ekranı ve şık
+         * kutusu ölçülemeyen sorular bu aralıkla okunmaya devam ediyor.
+         */
+        private const val OCR_HAPSIZ_MS = 1500L
+        /**
+         * Haplar hazırken okunacak bölgenin ilk hapın üstüne taşan kısmı
+         * (ekran yüksekliğine oran): soru kartı ve sol üstteki soru numarası.
+         * Ölçülen ekranlarda numara ilk hapın 0,25-0,30 kadar üstünde.
+         */
+        private const val OCR_SORU_PAYI = 0.36f
+        /** Aynı "bir şık okunamadı" sonucu bu kadar gelince yer tutucuyla devam. */
+        private const val OKUNAMAYAN_KABUL = 2
         /**
          * Yakın plan OCR'dan önce ekranın en az bu kadar kıpırdamamış olması
          * gerekiyor: şıklar teker teker belirirken 3/4 normaldir, o anda

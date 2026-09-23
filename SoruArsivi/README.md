@@ -111,6 +111,7 @@ Böylece başında beklemeden, oyunun soru havuzu tükenene kadar arşiv dolar.
 |---|---|
 | **Otomatik oyna** | Modu açar/kapatır. Kapalıyken ekrana hiç dokunulmaz. |
 | **Tur bitince yeniden başlat** | Kapalıysa soruları cevaplar ama tur bitince bekler. |
+| **Can bitince doldur** | Varsayılan **açık**. "Can Kalmadı" penceresi çıkınca "Doldur"a basar (4000 altın). Kapalıysa pencerede bekler; arkadaki düğmelere basmaz. |
 | **Bilinen cevabı kullan** | Varsayılan **açık**. Arşivde cevabı olan bir soru yeniden çıkarsa doğru şık seçilir; oyunda daha uzun kalırsın, tur başına daha çok **yeni** soru görürsün. Kapatırsan seçim her zaman rastgele olur. |
 | **Dokunmadan önce bekleme** | 300–3000 ms. Çok kısa tutarsan soru dört şık tamamlanmadan cevaplanır; çok uzun tutarsan süre dolar. |
 
@@ -410,7 +411,8 @@ sebebi, her taramada sessizce geri çeviren bir kapı, ancak ekran görüntüsü
 | `HATA tarama/iş/yoklama: … @ Dosya.kt:123` | Eskiden yalnızca logcat'e düşen hatalar |
 
 Tarama çıkışları: `burst` (karar turu sürüyor), `onplan` (oyun önde değil),
-`durgun` (kare değişmedi, atlandı), `veri_yok` (kare ya da OCR sırası yok),
+`durgun` (kare değişmedi, atlandı), `veri_yok` (kare ya da OCR sırası yok;
+`ek=hap_bekleniyor`: okunmaya hazır dört hap yok, OCR yapılmadı),
 `red` (ayrıştırılamadı), `guven`, `ayni_soru` (bekleyen sorunun yeniden
 okunması), `kart_kapisi` (kart çizilmedi sayıldı), `teyit` (ikinci okuma
 bekleniyor), `yeni` / `tekrar` / `yeniden` (kayıt). Eğik çizgiden sonrası
@@ -872,6 +874,68 @@ Artık:
   günlükte doğrusu 45 olan bir soru için "A yeşil, C kırmızı" okunmuştu.
   Süre dolunca gelen karartma bu ölçüye girmiyor; "süre doldu" kararı
   etkilenmiyor.
+
+## Tur sonu: "Tekrar Oyna" ve "Can Kalmadı"
+
+* **İki düğmenin arasına basıyordu.** Tur sonu ekranında alttaki düğme
+  yazıları aynı hizada olduğu için OCR "Ana Menü" ile "Tekrar Oyna"yı tek
+  satıra birleştiriyor. Bot o satırı "Tekrar Oyna" sanıp satırın ortasına,
+  yani iki düğmenin arasına basıyordu (`OTOMATİK: "Ana Menü Tekrar Oyna"`
+  art arda dört kez). Artık OCR kelimeleri de ayrı kutularıyla veriyor;
+  kısa satırların kelime dizileri de düğme adayı. "Tekrar Oyna" dizisi
+  birebir eşleştiği için satırın kendisinden yüksek puan alıyor ve dokunuş
+  o yazıya gidiyor.
+* **Tek harflik okuma hatası.** "Tekrar Oyna" bir dakika boyunca "Tekrar
+  Oynd" okundu ve hiçbir şeye basılmadı. Sekiz harften uzun düğme yazılarında
+  tek harf farkı hoş görülüyor. Kısa yazılarda bu tolerans yok, çünkü tek
+  harf başka bir kelime demek.
+* **Can Kalmadı.** Pencere görünürse (ayar açıksa) "Doldur"a basılıyor,
+  4000 altın. Günlükte `OTOMATİK: can kalmadı → "Doldur"`. Ayar kapalıysa
+  bot pencerede bekliyor; pencerenin arkasında soluk görünen "Tekrar
+  Oyna"ya artık basmıyor. Altın yetmezse aynı düğmeye dört kez basılıp 30
+  saniye ara veriliyor.
+
+## Hız: OCR kapısı
+
+Teşhis izi bu telefonda asıl darboğazı gösterdi: **tek bir tam ekran OCR
+~1 saniye** (4109 ölçümde ortanca 992 ms). OCR neredeyse her taramada
+yapılıyordu: cevabı açılmış eski kart, sorular arası geçiş kareleri,
+bekleme sırasında kıpırdamayan ekran. Bir çekirdek sürekli metin tanımayla
+meşguldü ("kasma"). Yeni soru da ancak o boşa giden OCR bittikten sonra
+okunabiliyordu. `İZ SORU` satırlarına göre önceki kararla yeni sorunun ilk
+okunması arasında 3,5-7,7 saniye geçiyordu.
+
+Şık kutusu ölçümü ise ~26 ms. Artık önce o yapılıyor:
+
+* **OCR yalnızca okunacak soru varken.** Dört hap çizili ve hiçbiri seçilmemişse
+  OCR hemen yapılıyor. Hap yoksa ya da renkliyse (geçiş, açılmış karar)
+  OCR 1,5 saniyede bir yapılıyor. Böylece tur sonu ekranı ve şık kutusu
+  ölçülemeyen sorular eski yoldan okunmaya devam ediyor.
+* **Yalnızca soru bölgesi.** Haplar hazırken OCR yalnızca soru kartı ile
+  şıkların bandını okuyor. Üstteki altın, yıldız ve ilerleme şeridi ile
+  alttaki jokerler hem süreyi uzatıyor hem ayrıştırıcıya gürültü taşıyordu.
+* **Beklerken okuma yok.** Bekleyen soru, okunduğu karedeki hâliyle
+  duruyorsa ekran yeniden okunmuyor ("hâlâ ekranda" bilgisi kareden geliyor).
+  Eskiden sen düşünürken her 1,5 saniyede bir OCR yapılıyordu.
+* **Teyit için ikinci OCR yok.** Yeni soru iki kez aynı okunmadan
+  kaydedilmiyor. İkinci okuma, ilk okumanın alındığı kareyle tıpatıp aynı
+  karede OCR'sız yapılıyor. Kapının koruduğu şey hareket eden kare; kare
+  kıpırdamadıysa ikinci OCR aynı sonucu verirdi. Bilinmeyen her soru böylece
+  bir saniye erken kaydediliyor ve uyarı sesi erken çalıyor.
+* Teşhis karesi (başarısız karenin diske yazılması, ~300 ms) yalnızca hap
+  görülmüş karelerde yazılıyor. Geçiş karelerinin "0 metin" redleri
+  gürültüydü.
+
+### Okunamayan tek şık
+
+Bir mantık sorusunda şıklardan biri ML Kit'in tanımadığı bir simgeydi
+(∧, ∨, → gibi). Bot bir dakika boyunca aynı kareyi dört saniyede bir
+okudu (`şık kutusu 4 bulundu, 1 tanesinin metni okunamadı`) ve sorunun
+süresi doldu. Artık aynı sonuç iki kez üst üste gelince o şık
+**«(okunamadı)»** yer tutucusuyla dolduruluyor ve soru kaydediliyor. Renk
+okuması kutudan çalıştığı için cevap yine okunuyor. Arşivde cevap okunabilen
+şıklardan biriyse bot ona basıyor, değilse bilinmeyen soru gibi
+davranıyor. Günlükte `OKUNAMAYAN ŞIK: …`.
 
 ## Kasma ve bilinmeyen soruda geç gelen ses
 

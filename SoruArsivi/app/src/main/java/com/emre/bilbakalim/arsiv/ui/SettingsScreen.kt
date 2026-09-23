@@ -128,6 +128,13 @@ fun SettingsScreen(
                         ) { vm.setAutoRestart(it) }
 
                         SettingSwitch(
+                            "Can bitince doldur",
+                            "\"Can Kalmadı\" penceresi çıkınca \"Doldur\"a basar " +
+                                "(4000 altın). Kapalıysa pencerede bekler.",
+                            s.autoRefillLives
+                        ) { vm.setAutoRefillLives(it) }
+
+                        SettingSwitch(
                             "Bilinen cevabı kullan",
                             "Soru arşivde varsa ve cevabı biliniyorsa doğru şıkka basılır; " +
                                 "bilinmiyorsa rastgele seçilir. Şıklar her turda karıştığı " +

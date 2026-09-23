@@ -45,4 +45,27 @@ class ButtonScoreTest {
         assertEquals(0, AutoPlayer.buttonScore("Hayır"))
         assertEquals(0, AutoPlayer.buttonScore("Vazgeç"))
     }
+
+    @Test
+    fun `tek harfi yanlis okunan uzun dugme yazisi taninir`() {
+        // Gerçek günlük: tur sonu ekranında "Tekrar Oyna" bir dakika boyunca
+        // "Tekrar Oynd" okundu ve hiçbir şeye basılmadı.
+        assertTrue(AutoPlayer.buttonScore("Tekrar Oynd") >= 3)
+        assertTrue(AutoPlayer.buttonScore("Tekrar 0yna") >= 3)
+    }
+
+    @Test
+    fun `kisa yazilarda harf hatasi hos gorulmez`() {
+        // Kısa yazıda tek harf başka bir kelime demek.
+        assertEquals(0, AutoPlayer.buttonScore("Oyma"))
+        assertEquals(0, AutoPlayer.buttonScore("Başka"))
+    }
+
+    @Test
+    fun `can doldurma dugmesi tur baslatma sayilmaz`() {
+        // "Doldur" yalnızca "Can Kalmadı" penceresinde, ayar açıksa basılıyor;
+        // sıradan bir düğme gibi puan almamalı.
+        assertEquals(0, AutoPlayer.buttonScore("Doldur"))
+        assertEquals(0, AutoPlayer.buttonScore("+1 Can"))
+    }
 }

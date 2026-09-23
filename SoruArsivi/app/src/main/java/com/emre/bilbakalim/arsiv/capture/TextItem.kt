@@ -21,10 +21,18 @@ data class TextItem(
      * sayılar olan sorularda aynı davranış tersine dönüyor — dördü tek
      * bloğa giriyor. Ayrıştırıcı böyle bir bloğu satırlarına ayırabilsin
      * diye satırlar burada saklanıyor. Erişilebilirlik yolunda boş.
+     *
+     * Satırların kendi `lines` alanında da o satırın kelimeleri duruyor.
      */
     val lines: List<TextItem> = emptyList()
 ) {
     val centerY: Int get() = bounds.centerY()
     val centerX: Int get() = bounds.centerX()
     val area: Int get() = maxOf(0, bounds.width()) * maxOf(0, bounds.height())
+
+    /** Kutuyu (satırları ve kelimeleriyle) [dy] kadar aşağı kaydırır. */
+    fun kaydir(dy: Int): TextItem = copy(
+        bounds = Rect(bounds.left, bounds.top + dy, bounds.right, bounds.bottom + dy),
+        lines = lines.map { it.kaydir(dy) }
+    )
 }
