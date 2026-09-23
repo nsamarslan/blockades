@@ -55,7 +55,13 @@ object AnswerColorDetector {
         val pending: Float,
         val wrong: Float,
         /** Kutunun baskın rengi (metin pikselleri elenmiş hâlde). */
-        val color: IntArray?
+        val color: IntArray?,
+        /**
+         * Örneklerin ne kadarı parlak (en güçlü kanalı [BRIGHT_MIN_CHANNEL]
+         * ve üstü). "Kart çizildi mi" kararının ikinci ayağı; bkz.
+         * [RENDERED_MIN_BRIGHT_SHARE].
+         */
+        val bright: Float = 0f
     ) {
         fun detail(i: Int): String = buildString {
             append('A' + i).append(' ')
@@ -83,7 +89,9 @@ object AnswerColorDetector {
         /** Şıkların baskın renkleri — teşhis günlüğü için. */
         val colors: List<IntArray> = emptyList(),
         /** Şık başına ham ölçüm — günlükte "neden böyle sınıflandı" için. */
-        val reads: List<Read> = emptyList()
+        val reads: List<Read> = emptyList(),
+        /** Şık başına parlak örnek oranı ([Read.bright]), [colors] ile aynı sırada. */
+        val brights: List<Float> = emptyList()
     ) {
         /**
          * Şık kutuları ekrana oturmuş mu?
@@ -93,10 +101,23 @@ object AnswerColorDetector {
          * istediğimiz şey zaten geçiş karesinin yanlışlıkla renkli
          * sayılmasıydı. Kontrol kendi kendini iptal ediyordu. Artık ölçüm
          * doğrudan parlaklığa bakıyor.
+         *
+         * Baskın renk koyu çıksa bile örneklerin yeterince büyük bir kısmı
+         * parlaksa kart çizilmiştir: kutu metnin sınırlarıysa (şık kutusu
+         * ekrandan ölçülemediğinde) iri ve sık bir yazıda lacivert harfler
+         * beyaz zemini sayıca geçebiliyor. Bkz. [optionsRendered].
          */
         fun cardRendered(minChannel: Int): Boolean =
             colors.size == tints.size && colors.isNotEmpty() &&
-                colors.all { maxOf(it[0], it[1], it[2]) >= minChannel }
+                colors.indices.all { i ->
+                    val c = colors[i]
+                    maxOf(c[0], c[1], c[2]) >= minChannel ||
+                        (brights.getOrNull(i) ?: 0f) >= RENDERED_MIN_BRIGHT_SHARE
+                }
+
+        /** Şık başına parlak örnek oranı — "kart oturmadı" günlük satırı için. */
+        fun brightSummary(): String =
+            brights.joinToString(" ") { "%" + (it * 100).toInt() }
 
         /** Ölçümün tamamı — bir karar yazılırken ya da atlanırken basılır. */
         fun detail(): String = reads.mapIndexed { i, r -> r.detail(i) }.joinToString(" | ")
@@ -148,6 +169,20 @@ object AnswerColorDetector {
      */
     private const val RENDERED_MIN_BRIGHTNESS = 0.85f
 
+    /** "Parlak örnek" sayılmak için en güçlü kanalın en düşük değeri (0.85). */
+    private const val BRIGHT_MIN_CHANNEL = 217
+
+    /**
+     * Baskın renk koyu çıktığında kartın yine de çizilmiş sayılması için
+     * parlak örneklerin en düşük oranı.
+     *
+     * Gerçek ekran görüntüsünden ölçüldü: hapın tamamında %86; en sık
+     * yazılmış şıkkın ("Demokratikleşme") metin kutusunda %38-52; geçiş
+     * karelerinde hap koyu mor olduğu için ~%0. Eşik ikisinin arasında,
+     * metin kutusuna geniş pay bırakarak.
+     */
+    private const val RENDERED_MIN_BRIGHT_SHARE = 0.25f
+
     fun analyze(
         bitmap: Bitmap,
         optionRects: List<Rect>,
@@ -172,12 +207,13 @@ object AnswerColorDetector {
         val reads = scaled.map { readOf(bitmap, it) }
         val tints = reads.map { it.tint }
         val colors = reads.mapNotNull { it.color }
+        val brights = reads.filter { it.color != null }.map { it.bright }
 
         // Karartılmış ekran kuralı yalnızca hiçbir şık renkli değilken.
         val dimmed = if (tints.all { it == Tint.NEUTRAL } && colors.size == scaled.size) {
             dimmedOutlier(colors)
         } else null
-        return Analysis(tints, dimmed, colors, reads)
+        return Analysis(tints, dimmed, colors, reads, brights)
     }
 
     /**
@@ -188,8 +224,14 @@ object AnswerColorDetector {
      * "yildza"). Bozuk okunan soru arşive ayrı bir kayıt olarak düşüyor.
      * Kutular oturduğunda bembeyaz oluyor; geçiş kareleri koyu mor.
      *
-     * Renkli bir şık varsa (dokunulmuş ya da karar açılmış) kart zaten
-     * hazırdır.
+     * Karar tek başına baskın renge bırakılmıyor. Şık kutuları ekrandan
+     * ölçülemediğinde elimizdeki kutu OCR metninin sınırları oluyor ve iri,
+     * sık yazılmış bir şıkta ("Demokratikleşme") lacivert harfler beyaz
+     * zemini sayıca geçebiliyor: gerçek ekranda 128 örnekten 43 beyaz, 42
+     * lacivert. OCR kutusu birkaç piksel oynayınca baskın renk lacivert
+     * çıkıyor, kart "çizilmedi" sayılıyor ve soru hiç kaydedilmeden — tek
+     * satır günlük bile düşmeden — ekranda bekliyordu. Bu yüzden
+     * örneklerin yeterli bir kısmı parlaksa da kart çizilmiş sayılıyor.
      */
     fun optionsRendered(
         bitmap: Bitmap,
@@ -205,8 +247,9 @@ object AnswerColorDetector {
                 (r.left * sx).toInt(), (r.top * sy).toInt(),
                 (r.right * sx).toInt(), (r.bottom * sy).toInt()
             )
-            val c = dominantColor(bitmap, scaled) ?: return@all true
-            brightness(c) >= RENDERED_MIN_BRIGHTNESS
+            val read = readOf(bitmap, scaled)
+            val c = read.color ?: return@all true
+            brightness(c) >= RENDERED_MIN_BRIGHTNESS || read.bright >= RENDERED_MIN_BRIGHT_SHARE
         }
     }
 
@@ -225,6 +268,7 @@ object AnswerColorDetector {
         var correct = 0
         var pending = 0
         var wrong = 0
+        var bright = 0
         var total = 0
         val hsv = FloatArray(3)
 
@@ -241,6 +285,8 @@ object AnswerColorDetector {
                 )
                 Color.colorToHSV(px, hsv)
                 total++
+                val maxKanal = maxOf((px shr 16) and 0xFF, (px shr 8) and 0xFF, px and 0xFF)
+                if (maxKanal >= BRIGHT_MIN_CHANNEL) bright++
                 val h = hsv[0]
                 val s = hsv[1]
                 val v = hsv[2]
@@ -267,7 +313,7 @@ object AnswerColorDetector {
             best == p -> Tint.PENDING
             else -> Tint.WRONG
         }
-        return Read(tint, c, p, w, dominantColor(bitmap, rect))
+        return Read(tint, c, p, w, dominantColor(bitmap, rect), bright.toFloat() / total)
     }
 
     // --- Süre dolduğunda kararan ekran -------------------------------------

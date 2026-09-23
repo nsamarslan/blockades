@@ -194,4 +194,121 @@ class OptionBoxFinderTest {
         )
         assertTrue(OptionBoxFinder.selectRun(iki).isEmpty())
     }
+    // --- Hapın içindeki yazı satırları ---------------------------------------
+    //
+    // Aşağıdaki değerler "Hangisi Orta Çağ felsefesinin temel konularından
+    // değildir?" sorusunun gerçek ekran görüntüsünden (1080x2400) ölçüldü.
+    // Şıklar kelime: "İnsanın amacı", "Yaratılışın anlamı", "İnsanın doğası",
+    // "Demokratikleşme". Haplar y1263-1413, 1470-1620, 1677-1827, 1884-2031;
+    // yazının geçtiği satırlarda doluluk %45-57'ye, aralığın içindeki oran
+    // %64-80'e iniyor (hap satırı eşiği %82), kenarlar ise hapın kenarında
+    // (162..918) kalıyor.
+
+    /** Ortasından yazı geçen hapları ve soru kartını satır satır kurar. */
+    private fun yaziliBant(
+        haplar: List<IntRange>,
+        yazilar: List<IntRange>,
+        kart: IntRange? = null,
+        kartYazilari: List<IntRange> = emptyList()
+    ): List<OptionBoxFinder.Row> {
+        val rows = ArrayList<OptionBoxFinder.Row>()
+        var y = 0
+        while (y < 2400) {
+            rows.add(
+                when {
+                    yazilar.any { y in it } -> row(y, 0.50f, 162, 918)
+                    haplar.any { y in it } -> row(y, 0.70f, 162, 918)
+                    kartYazilari.any { y in it } -> row(y, 0.55f, 90, 990)
+                    kart != null && y in kart -> row(y, 0.83f, 90, 990)
+                    else -> row(y, 0f, -1, -1)
+                }
+            )
+            y += OptionBoxFinder.ROW_STEP
+        }
+        return rows
+    }
+
+    private val haplar = listOf(1263..1412, 1470..1619, 1677..1826, 1884..2030)
+    private val yazilar = listOf(1326..1350, 1533..1557, 1740..1764, 1935..1968)
+
+    @Test
+    fun `yazinin gectigi satir tek basina hap satiri degildir`() {
+        // Arızanın kendisi: "Demokratikleşme"nin ortasından geçen satır.
+        assertFalse(OptionBoxFinder.isBoxRow(row(1950, 0.45f, 162, 918), 1080))
+        assertFalse(OptionBoxFinder.isBoxRow(row(1329, 0.47f, 162, 918), 1080))
+    }
+
+    @Test
+    fun `kelime siklarinda yazi hapi ikiye bolmez`() {
+        // Eskiden her hap yazının iki yanında 63 piksellik iki yarıma
+        // bölünüyor, ikisi de kutu alt sınırının (84) altında kaldığı için
+        // hiç kutu bulunamıyordu ("kutu:0"). Bot o zaman metin kutularıyla
+        // çalışıyor ve "Demokratikleşme"de takılıyordu.
+        val boxes = OptionBoxFinder.boxesOf(yaziliBant(haplar, yazilar), 1080, 2400)
+        assertEquals(4, boxes.size)
+        assertTrue("kutu hapın tamamını kapsamalı", boxes.all { it.height in 140..160 })
+        assertEquals(4, OptionBoxFinder.selectRun(boxes).size)
+    }
+
+    @Test
+    fun `yazili soru karti tek parca olur ve yuksekliginden elenir`() {
+        // Kartın yazı satırları da köprüleniyor; kart o zaman tek parça ve
+        // haptan çok yüksek (480 piksel) — dizilime hiç karışmıyor.
+        val rows = yaziliBant(
+            haplar, yazilar,
+            kart = 708..1187, kartYazilari = listOf(894..960, 978..1044)
+        )
+        val boxes = OptionBoxFinder.boxesOf(rows, 1080, 2400)
+        assertEquals(4, boxes.size)
+        assertTrue(boxes.all { it.top >= 1263 })
+    }
+
+    @Test
+    fun `haplar arasindaki mor serit kopru kurmaz`() {
+        // İki hap arasında hap pikseli yok; yazı kuralı onları birleştiremez.
+        val rows = yaziliBant(listOf(1263..1412, 1470..1619), listOf(1326..1350))
+        val boxes = OptionBoxFinder.boxesOf(rows, 1080, 2400)
+        assertEquals(2, boxes.size)
+    }
+
+    @Test
+    fun `kenarlari tutmayan satir kopru kurmaz`() {
+        // Hapın ortasına kenarları başka yerde olan bir satır (joker şeridi
+        // gibi) girerse yazı sayılmaz: iki yarım da kutu olamayacak kadar kısa.
+        val rows = ArrayList<OptionBoxFinder.Row>()
+        var y = 1200
+        while (y < 1500) {
+            rows.add(
+                when (y) {
+                    in 1263..1322 -> row(y, 0.70f, 162, 918)
+                    in 1323..1352 -> row(y, 0.36f, 234, 837)
+                    in 1353..1412 -> row(y, 0.70f, 162, 918)
+                    else -> row(y, 0f, -1, -1)
+                }
+            )
+            y += OptionBoxFinder.ROW_STEP
+        }
+        assertTrue(OptionBoxFinder.boxesOf(rows, 1080, 2400).isEmpty())
+    }
+
+    @Test
+    fun `yaziyla biten kutu son hap satirinda kapanir`() {
+        // Arkasından hap satırı gelmeyen yazı satırları kutuya katılmıyor;
+        // kutunun sınırları yalnızca hap satırlarından geliyor.
+        val rows = ArrayList<OptionBoxFinder.Row>()
+        var y = 1200
+        while (y < 1500) {
+            rows.add(
+                when (y) {
+                    in 1263..1382 -> row(y, 0.70f, 162, 918)
+                    in 1383..1412 -> row(y, 0.50f, 162, 918)
+                    else -> row(y, 0f, -1, -1)
+                }
+            )
+            y += OptionBoxFinder.ROW_STEP
+        }
+        val boxes = OptionBoxFinder.boxesOf(rows, 1080, 2400)
+        assertEquals(1, boxes.size)
+        assertTrue(boxes[0].bottom <= 1386)
+    }
 }

@@ -1,12 +1,15 @@
 package com.emre.bilbakalim.arsiv.ui
 
 import android.app.Application
+import android.content.ClipData
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.provider.Settings
+import android.widget.Toast
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.emre.bilbakalim.arsiv.capture.CaptureAccessibilityService
@@ -18,6 +21,9 @@ import com.emre.bilbakalim.arsiv.data.QuestionEntity
 import com.emre.bilbakalim.arsiv.data.Repo
 import com.emre.bilbakalim.arsiv.util.Exporters
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -67,23 +73,50 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearMisses() = CaptureAccessibilityService.clearMisses()
 
-    /** Tarama geçmişini düz metin olarak paylaşır — tanı için dışarı aktarmak kolay olsun. */
+    /**
+     * Tarama geçmişini **dosya olarak** paylaşır.
+     *
+     * Eskiden metin, paylaşım niyetinin içine (EXTRA_TEXT) konuyordu. Niyet
+     * süreçler arasında ~1 MB'lık bir tampondan geçiyor ve metin orada
+     * karakter başına iki bayt tutuyor: günlük birkaç bin satıra ulaşınca
+     * startActivity TransactionTooLargeException fırlatıyor, runCatching onu
+     * yutuyor ve düğme hiçbir şey yapmıyormuş gibi görünüyordu. "Temizle"den
+     * sonra yeniden çalışmasının sebebi günlüğün küçülmesiydi. Dosya
+     * niyetin içinden geçmiyor; yalnızca adresi geçiyor.
+     */
     fun shareScanLog(context: Context) {
-        // Akışta yalnızca ekranda görünen pencere var; paylaşılan dosya
-        // geçmişin tamamını taşımalı.
-        val text = CaptureAccessibilityService.logSnapshot()
-            .joinToString("\n").ifBlank { "Kayıt yok." }
-        runCatching {
-            context.startActivity(
-                Intent.createChooser(
-                    Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_SUBJECT, "Soru Arşivi — tarama geçmişi")
-                        putExtra(Intent.EXTRA_TEXT, text)
-                    },
-                    "Tarama geçmişini paylaş"
-                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
+        viewModelScope.launch {
+            val file = withContext(Dispatchers.IO) {
+                runCatching {
+                    val text = CaptureAccessibilityService.logSnapshot()
+                        .joinToString("\n").ifBlank { "Kayıt yok." }
+                    val dir = File(context.cacheDir, "teshis").apply { mkdirs() }
+                    // Önceki paylaşımların dosyaları birikmesin.
+                    dir.listFiles()?.forEach { it.delete() }
+                    val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                    File(dir, "tarama_gecmisi_$stamp.txt").apply { writeText(text, Charsets.UTF_8) }
+                }.getOrNull()
+            }
+            val ok = file != null && runCatching {
+                val uri = FileProvider.getUriForFile(
+                    context, "${context.packageName}.fileprovider", file
+                )
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "Soru Arşivi — tarama geçmişi")
+                    // Okuma izni seçici ekranından hedef uygulamaya ancak
+                    // ClipData üzerinden geçiyor.
+                    clipData = ClipData.newRawUri(file.name, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(
+                    Intent.createChooser(send, "Tarama geçmişini paylaş")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }.isSuccess
+            // Artık sessizce yutulmuyor: paylaşım açılmadıysa bunu gör.
+            if (!ok) Toast.makeText(context, "Tarama geçmişi paylaşılamadı", Toast.LENGTH_LONG).show()
         }
     }
 

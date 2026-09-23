@@ -62,6 +62,26 @@ class Repo private constructor(context: Context) {
         val old = hit?.let { dao.byId(it.id) }
         if (old != null) {
             if (!old.edited) {
+                // Eski şık işareti kuralı sıra sayılarını siliyordu ("1. Dönem"
+                // → "Dönem"); o kayıtlar kendiliğinden düzelmiyordu, çünkü
+                // şıklar yalnızca liste kısaysa tamamlanıyor. Ekrandaki okuma
+                // bozulmanın tam karşılığıysa şıklar ondan yeniden yazılıyor.
+                siraSayisiOnarimi(old.options, old.correctText, opts)?.let { onarim ->
+                    val onarilmis = old.copy(
+                        optionA = opts.getOrNull(0),
+                        optionB = opts.getOrNull(1),
+                        optionC = opts.getOrNull(2),
+                        optionD = opts.getOrNull(3),
+                        correctIndex = onarim.dogru,
+                        answerSource = if (onarim.dogru == null) null else old.answerSource,
+                        fingerprint = fp
+                    )
+                    if (runCatching { dao.update(onarilmis) }.isFailure) {
+                        runCatching { dao.update(onarilmis.copy(fingerprint = old.fingerprint)) }
+                    }
+                    Log.i(TAG, "#${old.id} şıkları sıra sayılarıyla onarıldı")
+                    return SaveResult.Duplicate(old.id)
+                }
                 // Hangi metin daha temiz? Arayüz uyarısı içermeyen kazanır;
                 // ikisi de temizse daha uzun olanı alırız.
                 val oldDirty = TurkishText.hasChromePhrase(old.questionText)
@@ -398,6 +418,12 @@ class Repo private constructor(context: Context) {
 
 
 
+    /**
+     * [siraSayisiOnarimi] sonucu: kayıt onarılacak. [dogru] doğru cevabın
+     * ekrandaki yeni sırası; bilinmiyorsa ya da belirsizse null.
+     */
+    internal data class Onarim(val dogru: Int?)
+
     /** [knownAnswerOnScreen] sonucu. */
     sealed interface KnownAnswer {
         /** Arşivdeki doğru cevap ekranda bu sırada duruyor. */
@@ -487,6 +513,44 @@ class Repo private constructor(context: Context) {
             storedSource: String?,
             incoming: AnswerEvidence
         ): Boolean = storedIndex != null && incoming.strength < strengthOf(storedSource)
+
+        /**
+         * Eski şık işareti kuralının bozduğu bir kaydı tanır.
+         *
+         * O kural "1. Dönem"deki "1."i şık işareti sanıp siliyordu; arşivde
+         * dört şıkkı da "Dönem" olan sorular bundan. Böyle bir kayıt yeniden
+         * okunduğunda bulanık eşleşme onu buluyor ama şıklar yalnızca liste
+         * kısaysa tamamlandığı için bozuk hâli kalıcıydı: şıklar ayırt
+         * edilemediğinden doğru cevap da hiçbir zaman yazılamıyordu.
+         *
+         * Onarım dar tutuldu: kayıttaki şıklar, ekrandaki şıkların eski
+         * kuraldan geçmiş hâliyle **birebir** aynı olmalı (sırası önemsiz)
+         * ve ekrandaki şıklar birbirinden ayırt edilebilmeli.
+         *
+         * @return onarım gerekmiyorsa null.
+         */
+        internal fun siraSayisiOnarimi(
+            stored: List<String>,
+            storedCorrect: String?,
+            fresh: List<String>
+        ): Onarim? {
+            if (stored.size != fresh.size || fresh.size < 2) return null
+            val yeni = fresh.map { TurkishText.normalizeKey(it) }
+            if (yeni.toSet().size != yeni.size) return null
+            val eski = stored.map { TurkishText.normalizeKey(it) }.sorted()
+            if (eski == yeni.sorted()) return null
+            val eskiKuralla = fresh.map {
+                TurkishText.normalizeKey(TurkishText.stripOptionPrefixLegacy(it))
+            }
+            if (eski != eskiKuralla.sorted()) return null
+
+            // Kayıttaki cevabın metni eski kuraldan geçmiş hâliyle aranıyor;
+            // "Dönem" dört şıkta birden geçtiği için orada cevap belirsiz
+            // kalır ve boşaltılır — bir sonraki renk okuması yeniden öğretir.
+            val dogru = storedCorrect?.let { TurkishText.normalizeKey(it) }
+                ?: return Onarim(null)
+            return Onarim(eskiKuralla.indices.filter { eskiKuralla[it] == dogru }.singleOrNull())
+        }
 
         private fun strengthOf(source: String?): Int = when (source) {
             AnswerEvidence.CERTAIN.label -> AnswerEvidence.CERTAIN.strength

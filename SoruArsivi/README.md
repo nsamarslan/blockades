@@ -206,9 +206,14 @@ boşluğa gitmiyor.
   **7 saniyedir** hiç soru görülmediyse dokunur.
 * Aynı düğmeye üst üste 4 kez basıp hiçbir şey değişmezse 30 saniye ara verir —
   sonsuz döngüye girmez.
-* Hedef oyun önplandan çıkarsa hiçbir şeye dokunmaz.
+* Hedef oyun önplandan çıkarsa hiçbir şeye dokunmaz. Pencere adı her zaman
+  okunamadığı için (bu cihazda geçici olarak boş dönüyor) dokunmadan hemen
+  önce karenin kendisine de bakılır: dokunulacak yerlerde şık hapları
+  görünmüyorsa dokunulmaz.
 * Aynı soruya iki kez basmaz; dokunuş üç kez başarısız olursa o soruyu geçer
   (süre dolunca oyun doğru cevabı zaten açıyor, uygulama da onu okuyor).
+  Yeniden deneme ancak soru dokunuştan sonra ekranda **yeniden okunduysa**
+  yapılır; yoksa ekranda hâlâ o soru olduğunu bilmiyoruz demektir.
 
 Dokunuş için erişilebilirlik servisinin **jest izni** kullanılır
 (`canPerformGestures`). Servisi bu sürümden önce açtıysan bir kez kapatıp
@@ -366,8 +371,16 @@ Otomatik modda kendi dokunuşları da aynı listeye düşer:
 15:16:05  OTOMATİK: "TEKRAR OYNA" → yeni tur (3. kez)
 ```
 
-*Paylaş* düğmesi bu listeyi düz metin olarak dışarı verir. *Temizle* ile
-sıfırlayıp temiz bir tur kaydedebilirsin.
+*Paylaş* düğmesi bu listeyi bir `.txt` dosyası olarak dışarı verir. *Temizle*
+ile sıfırlayıp temiz bir tur kaydedebilirsin.
+
+Paylaş eskiden metni paylaşım niyetinin içine koyuyordu. Niyet süreçler
+arasında ~1 MB'lık bir tampondan geçiyor ve metin orada karakter başına iki
+bayt tutuyor: günlük birkaç bin satıra ulaşınca Android paylaşımı reddediyor,
+hata da sessizce yutulduğu için düğme hiçbir şey yapmıyormuş gibi
+görünüyordu. *Temizle*'den sonra yeniden çalışmasının sebebi günlüğün
+küçülmesiydi. Artık günlük dosyaya yazılıyor ve yalnızca dosyanın adresi
+paylaşılıyor; paylaşım yine de açılamazsa ekranda uyarı çıkıyor.
 
 **Son tarama** — en son karede ekranda tam olarak hangi metinlerin, hangi
 dikey konumlarda görüldüğü. Bölge ayarlarını buna bakarak düzeltebilirsin.
@@ -689,6 +702,104 @@ yüzden okuma arızası, arşiv eksiği gibi görünüyordu.
 Kutu ölçümü kutu bulamadığında sebebini de günlüğe yazıyor artık
 ("hap rengi satır yok", "5 aday kutu var, eşit aralıklı dörtlü yok · …").
 "kutu:0" tek başına, eski "rozetten başka şık yok" mesajı kadar sessizdi.
+
+## Soru ekranda duruyor, bot hiç dokunmuyor — ve günlükte tek satır yok
+
+"Hangisi Orta Çağ felsefesinin temel konularından değildir?" sorusunda bot
+çoğu zaman 20-30 saniye bekliyor, sonra birden doğru şıkka basıyordu.
+"Felsefe nerede ortaya çıkmıştır?" sorusunda da aynısı (aynı belirtiyi
+veren "Aydınlanma döneminin diğer adı nedir?" bu günlükte yok). Günlükte
+o aralıkta hiçbir satır yoktu:
+
+```
+14:57:35  düğüm:1 ocr:15 kutu:0 · RED: şıklar henüz tamamlanmadı (3/4) · …
+                                                  ← 20 saniye boşluk
+14:57:55  4 şık %100 · tekrar #1934 · soru 41
+14:57:55  OTOMATİK #1934 → D «Antik Yunan» · bilinen cevap · 510 ms
+```
+
+Sebep, ekran görüntüsünde ölçülünce ortaya çıktı ve üç katmanlıydı.
+
+**1. Kelime şıklarında şık kutusu hiç bulunamıyordu.** `OptionBoxFinder`
+hapları satır satır tarıyor; bir satırın hap sayılması için içinin %82'si
+hap renginde olmalı. Yazının geçtiği satırlarda lacivert harfler hap rengi
+sayılmıyor ve bu oran %64-80'e iniyor. Böylece **her hap yazının iki
+yanında ikiye bölünüyordu**; iki yarım da (63 piksel) kutu alt sınırının
+(84) altında kaldığı için kelime şıklarında hiç kutu çıkmıyordu (günlükteki
+`kutu:0`). Rakam şıklarında bu olmuyordu, çünkü tek bir rakam satırın ancak
+küçük bir kısmını kaplıyor; kutu ölçümü bu yüzden yalnızca onlarda doğrulanmıştı.
+
+Artık hapın ortasından geçen yazı satırı hapı bölmüyor. Ayırt edici işaret
+kenarlar: hapın iki ucu beyaz kaldığı için yazı satırının en sol ve en sağ
+hap pikseli, üstteki hap satırınınkiyle aynı yerde. Haplar arasındaki mor
+şeritte hap pikseli hiç yok, joker düğmeleri de hapa bitişik değil; yani bu
+kural iki ayrı şeyi birleştiremiyor. Gerçek ekran görüntüsünde sonuç:
+dört hap, 738x150 piksel, eşit aralıklı.
+
+**2. Kutu bulunamayınca "kart çizildi mi" ölçüsü metne bakıyordu.** Eski
+metin yolunda şık kutusu OCR metninin sınırları oluyor. Kart kontrolü o
+kutunun **baskın rengine** bakıyordu. "Demokratikleşme" iri ve sık yazılmış
+bir kelime: kutusundaki 128 örnekten 43'ü beyaz, 42'si lacivert. OCR kutusu
+birkaç piksel oynayınca baskın renk lacivert çıkıyor, kart "çizilmedi"
+sayılıyor ve soru geri çevriliyordu. Ekran kıpırdamadığı sürece her okuma
+aynı sonucu verdiği için takılma kalıcıydı. Ekran görüntüsü alınınca botun
+birden basması da büyük ihtimalle bundan: kare değişince OCR kutusu birkaç
+piksel oynuyor ve kapı açılıyor.
+"Felsefe nerede…" sorusunda aynı rol «Konstantiniyye»nin.
+
+Artık baskın renk koyu çıksa bile örneklerin en az dörtte biri parlaksa
+kart çizilmiş sayılıyor. Ölçülen değerler: hapın tamamında %86, en sık
+yazılmış şıkkın metin kutusunda %38-52, geçiş karelerinde ~%0.
+
+**3. Bu kapı sessizdi.** Soru her taramada okunduğu için "bekleyen soru yok"
+satırı da düşmüyordu; takılma günlükte tamamen görünmezdi. Şimdi:
+
+* Aynı okuma bir saniyeden uzun kapıda kalırsa bir kez yazılıyor:
+  `kart oturmadı sayılıyor, dokunulmuyor · «…» · renk (…) · parlak %86 %86 %86 %38`
+* Ekran bir saniyedir hiç kıpırdamıyorsa kart, ölçü ne derse desin oturmuş
+  sayılıyor. Kapının koruduğu şey solarak gelen karttı; kıpırdamayan bir
+  kare solma animasyonunun ortası olamaz. Bu da günlüğe düşüyor:
+  `kart ölçüsü tutmadı ama ekran … ms'dir kıpırdamıyor, oturmuş sayıldı`
+
+### Okumadığı soruya "yeniden deneme" diye basmak
+
+Aynı günlüğün başında şu da vardı:
+
+```
+14:54:00  OTOMATİK #2595 → C «Aşinalık» · bilinen cevap · 936 ms
+14:54:07  OTOMATİK #2595 → C «Aşinalık» · bilinen cevap · 2. deneme · 7415 ms
+14:54:12  OTOMATİK #2595 → C «Aşinalık» · bilinen cevap · 3. deneme · 13065 ms
+```
+
+Karar yalnızca bir karede görünüp kaçtığı için 5. soru "bekliyor" hâlde
+kaldı. Ekrana gelen 6. soru geçiş sırasında okunamadı. Bekleyen soru varken
+kıpırdamayan kare hiç yeniden okunmadığından 6. soru bir daha okunmadı.
+Bot da "dokunuş yutuldu" sanıp 5. sorunun konumlarına bastı; yani okumadığı
+6. ve 7. soruları rastgele cevapladı. İki düzeltme:
+
+* Kıpırdamayan ekran, bekleyen soru varken de 1,5 saniyede bir yeniden
+  okunuyor. Yeni soru böylece bulunuyor.
+* Yeniden deneme ancak soru dokunuştan sonra yeniden okunduysa yapılıyor.
+  Okunamadıysa günlüğe `yeniden denenmiyor: soru dokunuştan sonra okunmadı`
+  düşüyor.
+
+## "1. Dönem" şıkları arşive "Dönem" diye yazılıyordu
+
+"Frankfurt Okulu'nun … hangi döneme denk gelmektedir?" sorusunun şıkları
+*1. Dönem / 4. Dönem / 2. Dönem / 3. Dönem*. Arşive dört kez **Dönem** diye
+yazılmıştı. Şık işaretlerini ("A)", "B.", "1)") soyan kural rakamdan sonraki
+noktayı da işaret sayıyordu. Oysa Türkçede sıra sayısı böyle yazılır
+(*1. Dönem*, *2. Mahmut*, *3. Selim*). Dört şık birbirinden ayırt
+edilemediği için bot bu soruda hep rastgele basıyor, doğru cevap da hiçbir
+zaman kaydedilemiyordu.
+
+Artık rakam yalnızca ")" ya da "]" ile kapanıyorsa işaret sayılıyor.
+
+Böyle bozulmuş kayıtlar kendiliğinden düzeliyor. Soru bir dahaki çıkışında
+okunduğunda, kayıttaki şıklar ekrandakilerin eski kuraldan geçmiş hâliyle
+birebir aynıysa şıklar ekrandan yeniden yazılıyor. Kayıttaki cevap yeni
+listede tek bir şıkka denk geliyorsa korunuyor. *Dönem* gibi belirsizse
+boşaltılıyor ve bir sonraki renk okuması onu yeniden öğretiyor.
 
 ---
 

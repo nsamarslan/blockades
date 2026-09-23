@@ -69,4 +69,21 @@ class TurkishTextTest {
             assertEquals(i, TurkishText.matchIndex(stored, stored[i]))
         }
     }
+    @Test
+    fun `sira sayisi sik isareti sayilmaz`() {
+        // Gerçek arıza: "1. Dönem / 4. Dönem / 2. Dönem / 3. Dönem" şıkları
+        // arşive dört kez "Dönem" diye yazılmıştı. Türkçede sıra sayısı
+        // rakam ve noktayla yazılır; bu bir şık işareti değil.
+        assertEquals("1. Dönem", TurkishText.stripOptionPrefix("1. Dönem"))
+        assertEquals("4. Dönem", TurkishText.stripOptionPrefix("4. Dönem"))
+        assertEquals("2. Mahmut", TurkishText.stripOptionPrefix("2. Mahmut"))
+    }
+
+    @Test
+    fun `gercek sik isaretleri yine soyulur`() {
+        assertEquals("Platon", TurkishText.stripOptionPrefix("A) Platon"))
+        assertEquals("Platon", TurkishText.stripOptionPrefix("b. Platon"))
+        assertEquals("Platon", TurkishText.stripOptionPrefix("1) Platon"))
+        assertEquals("Platon", TurkishText.stripOptionPrefix("(2) Platon"))
+    }
 }

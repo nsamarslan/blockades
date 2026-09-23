@@ -312,9 +312,32 @@ object TurkishText {
     /** Şık eşleşmesi için en düşük benzerlik. */
     private const val OPTION_MATCH_MIN = 0.85f
 
-    /** "A) Platon", "1. Platon", "- Platon" gibi baştaki şık işaretlerini atar. */
-    fun stripOptionPrefix(s: String): String =
-        s.replace(Regex("^\\s*[(\\[]?\\s*([A-Da-dEeĞğ]|[1-5])\\s*[).\\]:\\-–]\\s+"), "").trim()
+    /**
+     * "A) Platon", "B. Platon", "1) Platon" gibi baştaki şık işaretlerini atar.
+     *
+     * Rakamdan sonra gelen **nokta** bilerek işaret sayılmıyor: Türkçede
+     * sıra sayısı böyle yazılır ("1. Dönem", "2. Mahmut", "3. Selim").
+     * Eskiden sayılıyordu ve "1. Dönem / 4. Dönem / 2. Dönem / 3. Dönem"
+     * şıkları arşive dört kez "Dönem" diye yazılmıştı: şıklar birbirinden
+     * ayırt edilemiyor, doğru cevap hiçbir zaman kaydedilemiyordu. Rakam
+     * yalnızca ")" ya da "]" ile kapanıyorsa işarettir.
+     */
+    fun stripOptionPrefix(s: String): String = s.replace(OPTION_PREFIX, "").trim()
+
+    private val OPTION_PREFIX =
+        Regex("^\\s*[(\\[]?\\s*(?:[A-Da-dEeĞğ]\\s*[).\\]:\\-–]|[1-5]\\s*[)\\]])\\s+")
+
+    /**
+     * Eski kural: rakamdan sonraki noktayı da işaret sayıyordu.
+     *
+     * Yalnızca o kuralın bozduğu kayıtları tanıyıp onarmak için duruyor
+     * (bkz. `Repo.siraSayisiOnarimi`); yeni hiçbir okumada kullanılmıyor.
+     */
+    internal fun stripOptionPrefixLegacy(s: String): String =
+        s.replace(LEGACY_OPTION_PREFIX, "").trim()
+
+    private val LEGACY_OPTION_PREFIX =
+        Regex("^\\s*[(\\[]?\\s*([A-Da-dEeĞğ]|[1-5])\\s*[).\\]:\\-–]\\s+")
 
     /**
      * Metnin gerçekten bir soru cümlesi olup olmadığına karar verir.

@@ -128,6 +128,12 @@ class CaptureAccessibilityService : AccessibilityService() {
     @Volatile private var lockedQuestion: String = ""
     /** Bir kez görülmüş ama henüz doğrulanmamış okuma (kararlılık kapısı). */
     @Volatile private var confirmKey: String? = null
+    /** "Kart çizilmedi" kapısında bekleyen okuma: ne zamandan beri, yazıldı mı. */
+    @Volatile private var renderWaitKey: String? = null
+    @Volatile private var renderWaitSince = 0L
+    @Volatile private var renderWaitLogged = false
+    /** Kapıdan kıpırdamayan ekran sayesinde geçen son okuma — satır bir kez düşsün. */
+    @Volatile private var renderForcedKey: String? = null
     /**
      * Bu oturumda yapılan bir hata.
      *
@@ -235,6 +241,16 @@ class CaptureAccessibilityService : AccessibilityService() {
         /** Otomatik modda bu soruya kaç kez dokunuldu ve en son ne zaman. */
         var taps: Int = 0,
         var lastTapAt: Long = 0L,
+        /**
+         * Bu soru ekranda en son ne zaman okundu.
+         *
+         * Yeniden dokunuş buna bağlı: son dokunuştan sonra soru yeniden
+         * okunmadıysa ekranda hâlâ o soru olduğunu bilmiyoruz. Karar tek
+         * karede görünüp kaçtığında soru bekler hâlde kalıyor ve bot
+         * "dokunuş yutuldu" sanıp eski konumlara basıyordu — o sırada
+         * ekranda okumadığı yeni bir soru duruyordu.
+         */
+        var seenAt: Long = SystemClock.uptimeMillis(),
         /** Seçilen şık — yeniden denemelerde aynısına basılır. */
         var chosenIndex: Int? = null,
         /**
@@ -581,14 +597,22 @@ class CaptureAccessibilityService : AccessibilityService() {
                 // 4 saniyelik emniyet süresini bekliyordu — ayarlardaki
                 // "dokunmadan önce bekleme" değeri bu yüzden hiçbir işe
                 // yaramıyordu.
+                //
+                // Yeniden okuma bekleyen soru varken de yapılıyor. Eskiden
+                // yalnızca "bekleyen soru yok"ken yapılıyordu; ama bekleyen
+                // soru bayatlayabiliyor: karar tek karede görünüp kaçınca soru
+                // bekler hâlde kalıyor, ekrana gelen YENİ soru geçiş sırasında
+                // okunamadıysa kıpırdamayan karesi de hiç okunmuyordu. Bot o
+                // arada eski sorunun konumlarına "yeniden deneme" diye basıp
+                // okumadığı yeni soruları cevaplıyordu (günlüğün başındaki
+                // "2. deneme · 7415 ms", "3. deneme · 13065 ms").
                 val kartOlculmeli = waiting != null && waiting.brightSince == 0L
-                val force = kartOlculmeli ||
-                    (waiting == null && now - lastForcedScanAt >= STATIC_RESCAN_MS)
+                val force = kartOlculmeli || now - lastForcedScanAt >= STATIC_RESCAN_MS
                 if (!autoIdle && !force) {
                     shot.recycle()
                     return
                 }
-                if (force && waiting == null) lastForcedScanAt = now
+                if (force) lastForcedScanAt = now
             } else {
                 lastFrameChangeAt = now
                 closeUpSig = null
@@ -776,6 +800,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             // o yanlış cevaba basmaya devam ediyordu — hata kendini besliyordu.
             pendingAnswer?.let { waiting ->
                 if (waiting.id == currentEncounterId) {
+                    waiting.seenAt = SystemClock.uptimeMillis()
                     if (sameOrder(waiting.options, p.options)) {
                         // Sıra aynı: kutular animasyonla biraz kaymış olabilir.
                         waiting.rects = p.optionRects
@@ -818,12 +843,30 @@ class CaptureAccessibilityService : AccessibilityService() {
         // ("yıldıza" yerine "yildza") ve bozuk metin arşive ayrı bir kayıt
         // olarak düşüyor. Yarım saniye beklemek, sonradan elle temizlenmesi
         // gereken çift kayıttan ucuz.
+        //
+        // Bu kapı eskiden sessizdi ve bir soruda takılınca hiç açılmıyordu:
+        // "Demokratikleşme" gibi iri yazılmış bir şıkta ölçüm hep "çizilmedi"
+        // diyor, soru her taramada okunup burada geri çevriliyordu. Soru
+        // okunduğu için "bekleyen soru yok" satırı da düşmüyordu; günlükte
+        // 20 saniyelik boşluklar bundan. İki önlem: takılma günlüğe yazılıyor,
+        // ve ekran bir süredir hiç kıpırdamıyorsa kart oturmuş sayılıyor —
+        // bu kapının koruduğu şey solarak gelen kart, kıpırdamayan bir kare
+        // solma animasyonunun ortası olamaz.
         if (shot != null &&
             !AnswerColorDetector.optionsRendered(shot, p.optionRects, screenW, screenH)
         ) {
-            confirmKey = null
-            shot.let { if (!it.isRecycled) it.recycle() }
-            return
+            val durgun = SystemClock.uptimeMillis() - lastFrameChangeAt
+            if (!frameStatic || durgun < CARD_STATIC_MS) {
+                noteRenderWait(p, shot, screenW, screenH)
+                confirmKey = null
+                shot.let { if (!it.isRecycled) it.recycle() }
+                return
+            }
+            if (p.key != renderForcedKey) {
+                renderForcedKey = p.key
+                log("kart ölçüsü tutmadı ama ekran $durgun ms'dir kıpırdamıyor, oturmuş sayıldı · " +
+                    renderReport(p, shot, screenW, screenH))
+            }
         }
 
         // Aynı okumayı iki kez üst üste görmeden yeni kayıt açmıyoruz.
@@ -935,6 +978,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             val answeredJustNow = savedId == lastAnsweredId &&
                 SystemClock.uptimeMillis() - lastAnsweredAt < ANSWER_COOLDOWN_MS
             val current = pendingAnswer
+            if (current != null && current.id == savedId) current.seenAt = SystemClock.uptimeMillis()
             if (!answeredJustNow && (current == null || current.id != savedId)) {
                 // Kartın oturduğu bu noktada ZATEN ölçülmüş durumda: birkaç
                 // satır yukarıdaki optionsRendered() kapısını geçemeseydik
@@ -1000,6 +1044,12 @@ class CaptureAccessibilityService : AccessibilityService() {
         val due = if (waiting.taps == 0) cardAt + s.autoAnswerDelayMs
                   else waiting.lastTapAt + AUTO_RETAP_MS
         if (now < due) return
+        // Yeniden deneme ancak soru dokunuştan sonra yeniden okunduysa: yoksa
+        // ekranda hâlâ o soru var mı bilmiyoruz demektir (bkz. [PendingAnswer.seenAt]).
+        if (waiting.taps > 0 && waiting.seenAt <= waiting.lastTapAt) {
+            noteAutoIdle("#${waiting.id} yeniden denenmiyor: soru dokunuştan sonra okunmadı")
+            return
+        }
 
         autoJob = scope.launch {
             val cur = prefs.state.value
@@ -1069,6 +1119,20 @@ class CaptureAccessibilityService : AccessibilityService() {
                 )
             }
 
+            // Dokunmadan hemen önce şıklar gerçekten ekranda mı? Tarama
+            // "önplanda kim var" sorusu null döndüğünde oyunu 30 saniye daha
+            // önplanda sayıyor (bu cihazda geçici null'lar var); o arada
+            // uygulama değiştirilirse dokunuş başka bir ekrana gidiyordu —
+            // günlükte "15465 ms" gecikmeyle atılıp son kullanılanlar
+            // ekranına düşen dokunuş bundan. Pencere adına güvenemediğimiz
+            // için karenin kendisine bakıyoruz: dokunacağımız yerlerde şık
+            // hapları yoksa dokunmuyoruz. Soru arada değiştiyse de bu kontrol
+            // eski konuma basmayı engelliyor.
+            if (!sikalarEkranda(waiting, screenW, screenH)) {
+                noteAutoIdle("#${waiting.id}: şıklar ekranda görünmüyor, dokunulmadı")
+                return@launch
+            }
+
             // Sayaçlar dokunuştan önce artıyor: jest başarısız olsa bile bu
             // bir denemedir, yoksa saniyede birkaç kez yeniden denenirdi.
             waiting.taps++
@@ -1107,6 +1171,23 @@ class CaptureAccessibilityService : AccessibilityService() {
             // Dokunduk; karar bir iki saniyede açılıp geçecek. Renk turunu
             // hemen başlatıyoruz ki cevabı kaçırmayalım.
             if (cur.detectAnswer) startVerdictBurst(waiting, screenW, screenH)
+        }
+    }
+
+    /**
+     * Şık hapları şu anki karede, bildiğimiz yerlerinde çizili mi?
+     *
+     * Yalnızca hızlı yakalama açıkken bakılıyor: yavaş yolda ekran görüntüsü
+     * saniyede bir alınabildiği için bu kontrol dokunuşu bir saniye
+     * geciktirirdi; o yolda eski davranış sürüyor.
+     */
+    private suspend fun sikalarEkranda(waiting: PendingAnswer, screenW: Int, screenH: Int): Boolean {
+        if (!fastCapture) return true
+        val kare = ProjectionService.grab() ?: return true
+        return try {
+            AnswerColorDetector.optionsRendered(kare, waiting.rects, screenW, screenH)
+        } finally {
+            kare.recycle()
         }
     }
 
@@ -1248,6 +1329,42 @@ class CaptureAccessibilityService : AccessibilityService() {
         // İkisi aynı sesi çaldığı için arşivde kayıtlı bir soruda bile
         // "bilmiyorum" diyor sanılıyordu.
         if (s.unknownChime) Chime.playTwice(this)
+    }
+
+    /**
+     * Okunan bir soru "kart henüz çizilmedi" diye geri çevrildi.
+     *
+     * Solarak gelen kartta bu birkaç kare sürer ve normaldir; bu yüzden
+     * yalnızca aynı okuma [RENDER_WAIT_LOG_MS] boyunca takılı kalırsa ve soru
+     * başına bir kez yazılıyor.
+     */
+    private fun noteRenderWait(
+        p: QuestionParser.Parsed,
+        shot: Bitmap,
+        screenW: Int,
+        screenH: Int
+    ) {
+        val now = SystemClock.uptimeMillis()
+        if (p.key != renderWaitKey) {
+            renderWaitKey = p.key
+            renderWaitSince = now
+            renderWaitLogged = false
+            return
+        }
+        if (renderWaitLogged || now - renderWaitSince < RENDER_WAIT_LOG_MS) return
+        renderWaitLogged = true
+        log("kart oturmadı sayılıyor, dokunulmuyor · " + renderReport(p, shot, screenW, screenH))
+    }
+
+    /** Kart ölçüsünün neden tutmadığı: şık başına baskın renk ve parlak örnek oranı. */
+    private fun renderReport(
+        p: QuestionParser.Parsed,
+        shot: Bitmap,
+        screenW: Int,
+        screenH: Int
+    ): String {
+        val a = AnswerColorDetector.analyze(shot, p.optionRects, screenW, screenH)
+        return "«${p.question.take(40)}» · renk ${a.colorSummary()} · parlak ${a.brightSummary()}"
     }
 
     /** Aynı sebep beş saniyede bir; günlüğü boğmadan "ne bekliyor" görünsün. */
@@ -2119,6 +2236,13 @@ class CaptureAccessibilityService : AccessibilityService() {
          * giriyor, ve günlük en azından "hâlâ neden bekliyoruz"u gösteriyor.
          */
         private const val STATIC_RESCAN_MS = 1500L
+        /**
+         * Ekran bu kadar süredir kıpırdamıyorsa kart oturmuş sayılır, renk
+         * ölçüsü ne derse desin. Solma animasyonu bundan çok daha kısa.
+         */
+        private const val CARD_STATIC_MS = 1000L
+        /** "Kart oturmadı" kapısında bu kadar takılan okuma günlüğe yazılır. */
+        private const val RENDER_WAIT_LOG_MS = 1000L
         /**
          * Yakın plan OCR'dan önce ekranın en az bu kadar kıpırdamamış olması
          * gerekiyor: şıklar teker teker belirirken 3/4 normaldir, o anda

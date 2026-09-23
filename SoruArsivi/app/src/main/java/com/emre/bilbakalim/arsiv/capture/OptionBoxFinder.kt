@@ -125,6 +125,21 @@ object OptionBoxFinder {
     private const val GAP_TOLERANCE = 0.35f
 
     /**
+     * Yazı satırının kenarları üstteki hap satırından en fazla bu kadar
+     * sapabilir (ekran genişliğine oran). Örnekleme adımı genişliğin
+     * 1/120'si; bu iki adım kadar pay.
+     */
+    private const val TEXT_EDGE_TOLERANCE = 0.02f
+
+    /**
+     * Bir hapın içinde üst üste gelebilecek yazı satırlarının en fazla
+     * yüksekliği (ekran yüksekliğine oran). Tek satırlık şıkta yazı ~50
+     * piksel (%2); iki satıra saranın satırları arasında yine hap satırı
+     * olduğu için sayaç sıfırlanıyor.
+     */
+    private const val TEXT_MAX_H = 0.06f
+
+    /**
      * Taranan bant — ayarlardaki şık bölgesinden **bağımsız**.
      *
      * Sabit oranlara bağlamak bir arıza kaynağıydı: soru üç satır olunca
@@ -233,10 +248,40 @@ object OptionBoxFinder {
         return row.fill / span >= ROW_MIN_DENSITY
     }
 
+    /**
+     * Hapın ortasından geçen yazı satırı mı?
+     *
+     * Yazının geçtiği satırlarda lacivert harfler hap pikseli sayılmadığı
+     * için doluluk düşüyor: "Demokratikleşme" gibi iri ve sık yazılmış bir
+     * şıkta %64'e, "İnsanın amacı"nda bile %68'e iniyor — hap satırı eşiği
+     * (%82) altında. Satır o zaman hap satırı sayılmıyor ve **her hap ikiye
+     * bölünüyordu**: iki yarım da (63 piksel) kutu alt sınırının (84)
+     * altında kaldığı için kelime şıklarında hiç kutu bulunamıyor, eski
+     * metin yoluna düşülüyordu ("kutu:0"). Rakam şıklarında bu olmuyordu,
+     * çünkü tek bir rakam satırın ancak küçük bir kısmını kaplıyor.
+     *
+     * Yazı satırının ayırt edici işareti kenarları: hapın iki ucu beyaz
+     * kaldığı için satırın en sol ve en sağ hap pikseli, hemen üstteki hap
+     * satırınınkiyle aynı yerde. Haplar arasındaki mor şeritte hap pikseli
+     * hiç yok; joker düğmeleri ise hapa hiç bitişik değil. Yani bu kural
+     * iki ayrı hapı birbirine bağlayamıyor.
+     */
+    internal fun isTextRow(row: Row, above: Row, screenW: Int): Boolean {
+        if (row.left < 0 || above.left < 0 || screenW <= 0) return false
+        val tol = TEXT_EDGE_TOLERANCE * screenW
+        return kotlin.math.abs(row.left - above.left) <= tol &&
+            kotlin.math.abs(row.right - above.right) <= tol
+    }
+
     /** Ardışık hap satırlarını kutulara dönüştürür. */
     internal fun boxesOf(rows: List<Row>, screenW: Int, screenH: Int): List<Box> {
         val out = ArrayList<Box>()
         var run = ArrayList<Row>()
+        // Hapın içindeki yazı satırları. Kutuya ancak arkasından yeniden bir
+        // hap satırı gelirse katılıyorlar; gelmezse kutu son hap satırında
+        // kapanıyor, yani kutunun sınırları yine yalnızca hap satırlarından.
+        var yazi = 0
+        val yaziSiniri = (TEXT_MAX_H * screenH / ROW_STEP).toInt().coerceAtLeast(1)
 
         fun kapat() {
             if (run.isNotEmpty()) {
@@ -257,7 +302,18 @@ object OptionBoxFinder {
         }
 
         for (row in rows) {
-            if (isBoxRow(row, screenW)) run.add(row) else kapat()
+            when {
+                isBoxRow(row, screenW) -> {
+                    yazi = 0
+                    run.add(row)
+                }
+                run.isNotEmpty() && yazi < yaziSiniri && isTextRow(row, run.last(), screenW) ->
+                    yazi++
+                else -> {
+                    yazi = 0
+                    kapat()
+                }
+            }
         }
         kapat()
         return out
