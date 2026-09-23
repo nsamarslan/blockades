@@ -126,9 +126,15 @@ eşleştiriyor:
 * **Kaydederken** — ekranda yeşile dönen şıkkın metni alınıp kayıttaki listede
   aranır; bulunan sıra yazılır.
 
-Eşleştirme Türkçe'ye duyarlıdır (büyük/küçük harf, ı/ğ/ş/ö/ç/ü, noktalama ve
-"A)" gibi şık işaretleri yok sayılır) ve OCR'ın bir iki harfi yanlış okumasına
-dayanıklıdır. Hiçbir şık yeterince benzemiyorsa eşleştirme başarısız sayılır:
+Eşleştirme Türkçe'ye duyarlıdır (büyük/küçük harf, noktalama ve "A)" gibi
+şık işaretleri yok sayılır) ve OCR'ın bir iki harfi yanlış okumasına
+dayanıklıdır. ı/ğ/ş/ö/ç/ü **önce korunur**, ancak birebir eşleşme
+bulunamazsa yok sayılır: "Öz / Toz / Oz / Töz" sorusunda cevap "Töz" iken
+eşleştirme harfleri baştan katladığı (ö→o) ve ilk eşleşeni aldığı için bot
+"Toz"a basıyor, arşive de "Toz" yazılıyordu. Artık harfleri koruyan
+anahtarla aranıyor; iki şık yine de ayırt edilemiyorsa tahmin yapılmıyor.
+Arşive böyle yanlış yazılmış bir cevap, bot ona basıp oyun kırmızı
+gösterdiğinde kendiliğinden düzelir. Hiçbir şık yeterince benzemiyorsa eşleştirme başarısız sayılır:
 dokunurken rastgele seçime düşülür, kaydederken satır olduğu gibi bırakılır.
 Yanlış şıkka basmak ya da arşive yanlış cevap yazmaktansa bilmediğini söylemek
 yeğdir.
@@ -409,7 +415,12 @@ Tarama çıkışları: `burst` (karar turu sürüyor), `onplan` (oyun önde değ
 okunması), `kart_kapisi` (kart çizilmedi sayıldı), `teyit` (ikinci okuma
 bekleniyor), `yeni` / `tekrar` / `yeniden` (kayıt). Eğik çizgiden sonrası
 otomatik modun kararı: `yok`, `gecikme`, `kart_bekle`, `basiliyor`,
-`tekrar_bekle`, `tekrar_engel`, `is_suruyor`, `dokunus_bitti`.
+`tekrar_bekle`, `tekrar_engel`, `is_suruyor`, `dokunus_bitti`, `elle`
+(soruyu sen cevapladın).
+
+Olay satırları arasında ayrıca `ELLE #…` (şıkkı bot değil sen seçtin ya da
+oyun botunkinden başka bir şıkkı aldı) ve `SORU KAPANDI #…` (bekleyen soru
+kararı görülmeden ekrandan gitti) var.
 
 **Son tarama** — en son karede ekranda tam olarak hangi metinlerin, hangi
 dikey konumlarda görüldüğü. Bölge ayarlarını buna bakarak düzeltebilirsin.
@@ -635,7 +646,10 @@ süzebilirsin.
 * **Sadece turkuaz:** karar bekleniyor, kaydedilmez. 900 ms boyunca yeşile de
   kırmızıya da dönmezse ölçüm dışı bir durum sayılıp doğru kabul edilir.
 
-Kontrol, hızlı yakalama açıkken **50 ms'de bir** yapılır.
+Kontrol, hızlı yakalama açıkken **100 ms'de bir** (saniyede 10 kare) yapılır.
+Eskiden 50 ms'deydi. Karar yeşili ~1 saniye ekranda kalıyor ve onay
+süreleri kare sayısıyla değil zamanla ölçülüyor; 10 kare kararı kaçırmadan
+bu turun işlemci yükünü yarıya indiriyor.
 
 ### Süre dolduğunda
 
@@ -830,6 +844,57 @@ birebir aynıysa şıklar ekrandan yeniden yazılıyor. Kayıttaki cevap yeni
 listede tek bir şıkka denk geliyorsa korunuyor. *Dönem* gibi belirsizse
 boşaltılıyor ve bir sonraki renk okuması onu yeniden öğretiyor.
 
+## Otomatik modda sen de basarsan
+
+Otomatik mod açıkken bir soruyu kendin cevaplayabilirsin (cevabı
+bilinmeyen soruda "rastgele seç" ya da "kararı bana bırak" fark etmez).
+Bu durumda iki şey ters gidiyordu:
+
+* **Bot senin cevabını kendi şıkkı sanıyordu.** Sen A'ya erken bastığında
+  bot yine de kendi seçtiği C'ye basıyor, oyun C'yi yok sayıyor, ama
+  Hatalar'a "bastığımız C" yazılıyordu.
+* **Bot önceki sorunun şıkkına yeni soruda basıyordu.** Sen erken
+  cevaplayınca oyun sonraki soruya geçiyor. Bot, önceki soru için seçtiği
+  şıkka yeni soruda basıyordu; yeni sorunun hapları aynı yerde durduğu için
+  "şıklar ekranda mı" kontrolü bunu göremiyordu.
+
+Artık:
+
+* Bot dokunmadan önce karede bir şıkkın zaten seçilmiş olup olmadığına
+  bakıyor (turkuaz, yeşil, kırmızı ya da basılı sarı). Seçilmişse o soru
+  senin; bot dokunmuyor. Günlükte `ELLE #…` satırı çıkıyor.
+* Bot dokunmadan önce ekranın, soruyu en son okuduğu andaki hâline hâlâ
+  benzeyip benzemediğine bakıyor. Ekran değiştiyse soru yeniden okunmadan
+  dokunmuyor (`ekran soru okunduğundan beri değişti`).
+* Dört şık da sorular arası geçişin koyu morunu aldığında bekleyen soru
+  bırakılıyor (`SORU KAPANDI #…`). Eskiden kararı kaçırılan soru bekler
+  hâlde kalıyor ve **sonraki sorunun renkleri onun kararı sanılıyordu**:
+  günlükte doğrusu 45 olan bir soru için "A yeşil, C kırmızı" okunmuştu.
+  Süre dolunca gelen karartma bu ölçüye girmiyor; "süre doldu" kararı
+  etkilenmiyor.
+
+## Kasma ve bilinmeyen soruda geç gelen ses
+
+* **Tekrar denetimi önbellekte.** Arşivde parmak izi olmayan her okuma
+  arşivin tamamıyla karşılaştırılıyor. Eskiden bunun için her seferinde 4000
+  satır veritabanından okunuyor, her satırın metni yeniden sadeleştiriliyor
+  ve kelimelerine ayrılıyordu. Bu iş masaüstünde bile soru başına 150-550 ms
+  sürüyordu; telefonda birkaç katı. Cevabı bilinmeyen sorudaki uyarı sesi de
+  bu yüzden geç geliyordu. Artık satırlar bir kez hesaplanıp bellekte
+  tutuluyor. Uzunluğu çok farklı satırlar benzerlik hesabına hiç girmiyor.
+  Karar kuralları aynı kaldı.
+* **Düzenli ifadeler bir kez derleniyor.** Metin sadeleştirme her çağrıda
+  aynı düzenli ifadeyi yeniden derliyordu.
+* **Teşhis dökümü diske yazılmıyor.** "Son tarama" dökümü her taramada
+  ayarlara yazılıyordu: diske bir yazım, üstüne bütün ayar dinleyicilerinin
+  (arayüz, servis) yeniden tetiklenmesi. Artık bellekte.
+* **Teyit beklenirken ekran bekletilmiyor.** Yeni bir soru kaydedilmeden
+  önce iki kez aynı okunmalı. Ekran kıpırdamıyorsa ikinci okuma 1,5 saniye
+  bekliyordu; artık hemen yapılıyor.
+* **Yeni kayıtta ses hemen.** Yeni açılan kaydın cevabı olamayacağı için
+  uyarı sesi veritabanı sorgusunu beklemiyor.
+* **Karar turu saniyede 10 kare** (yukarıya bak).
+
 ---
 
 ## Bu oturumun hataları
@@ -843,6 +908,10 @@ ikisi yan yana görülmeden anlaşılmıyor.
 Her satırda dokunuşu kimin yaptığı (otomatik / elle / süre doldu), soru
 metni, bastığımız şık ve doğrusu var; satıra dokununca sorunun arşivdeki
 kaydı açılıyor.
+
+"Bastığımız" şık, **oyunun kabul ettiği** şık: kırmızıya ya da karar öncesi
+turkuaza dönen. Eskiden botun niyeti yazılıyordu; sen A'ya erken basıp doğru
+bilsen bile bot C'ye bastığı için satıra "bastığımız C" düşüyordu.
 
 Liste **bellekte** duruyor ve uygulama kapanınca gidiyor: bu bir arşiv
 değil, "az önce ne oldu" defteri. Kalıcı olması istenen şey zaten arşivin

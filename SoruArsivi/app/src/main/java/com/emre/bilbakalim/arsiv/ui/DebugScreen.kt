@@ -32,6 +32,7 @@ fun DebugScreen(vm: ArsivViewModel, onBack: () -> Unit) {
     val s by vm.settings.collectAsState()
     val history by vm.scanLog.collectAsState()
     val historyTotal by vm.scanLogTotal.collectAsState()
+    val sonTarama by vm.sonTarama.collectAsState()
     val context = LocalContext.current
 
     Scaffold(topBar = { ArsivTopBar("Teşhis", onBack = onBack) }) { pad ->
@@ -100,7 +101,7 @@ fun DebugScreen(vm: ArsivViewModel, onBack: () -> Unit) {
             }
             item {
                 SectionCard("Son tarama") {
-                    val dump = s.lastDebugDump.ifBlank { "Henüz tarama yapılmadı." }
+                    val dump = sonTarama.ifBlank { "Henüz tarama yapılmadı." }
                     Text(
                         dump,
                         fontFamily = FontFamily.Monospace,

@@ -115,6 +115,32 @@ object AnswerColorDetector {
                         (brights.getOrNull(i) ?: 0f) >= RENDERED_MIN_BRIGHT_SHARE
                 }
 
+        /**
+         * Şıklardan biri dokunulmuş görünüyor mu?
+         *
+         * Turkuaz, yeşil, kırmızı ya da dokunulduğu an beliren basılı sarı
+         * (248,216,88). Sarı hiçbir renk bandına girmediği için baskın renkten
+         * bakılıyor: doygun ve parlak. Lacivert yazı (koyu) ve beyaz hap
+         * (doygunluk yok) bu ölçüye girmiyor.
+         */
+        fun anyTouched(): Boolean =
+            tints.any { it != Tint.NEUTRAL } ||
+                colors.any { c -> satVal(c).let { (sat, v) -> sat >= 0.30f && v >= 0.70f } }
+
+        /**
+         * Sorular arası geçiş karesi mi: dört şık da koyu, doygun mor.
+         *
+         * Günlüklerden: (56,24,152) (72,40,168) (72,40,184) (88,56,200).
+         * Süre dolunca gelen karartma bundan ayrı tutuluyor: orada
+         * dokunulmamış şıklar (80,80,140), doygunluk 0.43 — bu ölçüye girmiyor,
+         * yani "süre doldu" kararı engellenmiyor.
+         */
+        fun gecisKaresi(): Boolean =
+            colors.size == tints.size && colors.size >= 3 && colors.all { c ->
+                val (sat, v) = satVal(c)
+                sat >= 0.60f && v <= 0.85f && ton(c) in 230f..290f
+            }
+
         /** Şık başına parlak örnek oranı — "kart oturmadı" günlük satırı için. */
         fun brightSummary(): String =
             brights.joinToString(" ") { "%" + (it * 100).toInt() }
@@ -368,6 +394,20 @@ object AnswerColorDetector {
 
     private fun isNearWhite(c: IntArray): Boolean =
         c[0] > 215 && c[1] > 215 && c[2] > 215
+
+    /** 0..360 arası ton; android.graphics.Color testlerde boş taklit olduğu için elle. */
+    private fun ton(c: IntArray): Float {
+        val max = maxOf(c[0], c[1], c[2])
+        val min = minOf(c[0], c[1], c[2])
+        val d = (max - min).toFloat()
+        if (d == 0f) return 0f
+        val h = when (max) {
+            c[0] -> 60f * (((c[1] - c[2]) / d) % 6f)
+            c[1] -> 60f * ((c[2] - c[0]) / d + 2f)
+            else -> 60f * ((c[0] - c[1]) / d + 4f)
+        }
+        return if (h < 0f) h + 360f else h
+    }
 
     /** 0..1 arası parlaklık — HSV'nin V bileşeni. */
     private fun brightness(c: IntArray): Float = satVal(c).second

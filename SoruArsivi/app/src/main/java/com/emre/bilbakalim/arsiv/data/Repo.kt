@@ -57,8 +57,8 @@ class Repo private constructor(context: Context) {
         // açılıyor ve cevap ona yazılıyor. Eski satır sonsuza kadar "cevabı
         // eksik" olarak duruyordu. Artık o satır bulunup doldurulacak.
         //
-        val probe = Probe(q, opts)
-        val hit = dao.dedupCandidates(DEDUP_POOL).firstOrNull { probe.matches(it) }
+        val sorgu = TekrarSorgusu(q, opts)
+        val hit = tekrarAdaylari().firstOrNull { sorgu.matches(it) }
         val old = hit?.let { dao.byId(it.id) }
         if (old != null) {
             if (!old.edited) {
@@ -79,6 +79,7 @@ class Repo private constructor(context: Context) {
                     if (runCatching { dao.update(onarilmis) }.isFailure) {
                         runCatching { dao.update(onarilmis.copy(fingerprint = old.fingerprint)) }
                     }
+                    adaylariUnut()
                     Log.i(TAG, "#${old.id} şıkları sıra sayılarıyla onarıldı")
                     return SaveResult.Duplicate(old.id)
                 }
@@ -91,7 +92,10 @@ class Repo private constructor(context: Context) {
                     !oldDirty && newDirty -> false
                     else -> q.length > old.questionText.length
                 }
-                if (takeNew && q != old.questionText) dao.replaceText(old.id, q)
+                if (takeNew && q != old.questionText) {
+                    dao.replaceText(old.id, q)
+                    adaylariUnut()
+                }
                 if (old.options.size < opts.size) {
                     // Eksik şıklar tamamlanıyor — ama yeni liste o anki
                     // ekranın sırasıyla geliyor. Kayıtta zaten bir doğru
@@ -121,6 +125,7 @@ class Repo private constructor(context: Context) {
                             answerSource = if (remapped == null) null else merged.answerSource
                         )
                     )
+                    adaylariUnut()
                 }
             }
             return SaveResult.Duplicate(old.id)
@@ -140,6 +145,8 @@ class Repo private constructor(context: Context) {
         )
         val id = dao.insertIgnore(entity)
         return if (id > 0) {
+            // En yeni kayıt önde: veritabanı sorgusunun sırası da bu.
+            adaylar?.let { adaylar = listOf(TekrarAdayi(id, q, opts)) + it }
             Log.i(TAG, "Yeni soru kaydedildi #$id: ${q.take(50)}")
             SaveResult.Inserted(id)
         } else {
@@ -149,101 +156,23 @@ class Repo private constructor(context: Context) {
 
 
     /**
-     * "Bu soru zaten arşivde mi?" kararını veren kurallar.
+     * Tekrar denetiminin karşılaştırdığı arşiv, önceden hesaplanmış hâliyle.
      *
-     * Tek yerde duruyor çünkü iki ayrı yol aynı kararı vermek zorunda:
-     * ekrandan yakalama ([save]) ve yedekten içe aktarma ([importJson]).
-     * Aranan metin için gereken hesaplar bir kez yapılıp saklanıyor —
-     * karşılaştırma yüzlerce kayıt üzerinde dönüyor.
+     * Her yeni okuma arşivin tamamıyla karşılaştırılıyor; eskiden bunun için
+     * her seferinde tüm satırlar veritabanından okunup metinleri yeniden
+     * işleniyordu (bkz. [TekrarAdayi]). Liste ilk ihtiyaçta kuruluyor, yeni
+     * kayıt başına ekleniyor; metni ya da şıkları değiştiren her yazımda
+     * atılıyor ve bir sonraki ihtiyaçta yeniden kuruluyor. Sıra
+     * veritabanındakiyle aynı: en yeni kayıt önde.
      */
-    private class Probe(private val question: String, private val options: List<String>) {
-        private val key = TurkishText.normalizeKey(question)
-        private val optKey =
-            options.map { TurkishText.normalizeKey(it) }.sorted().joinToString("|")
-        private val negation = TurkishText.negationSignature(question)
+    @Volatile private var adaylar: List<TekrarAdayi>? = null
 
-        fun matches(row: DedupRow): Boolean = matches(row.questionText, row.options)
+    private suspend fun tekrarAdaylari(): List<TekrarAdayi> =
+        adaylar ?: dao.dedupCandidates(DEDUP_POOL).map { TekrarAdayi(it) }.also { adaylar = it }
 
-        fun matches(oldQuestion: String, oldOptions: List<String>): Boolean {
-            val oldKey = TurkishText.normalizeKey(oldQuestion)
-            // Şıklar birebir aynı olmak zorunda değil: OCR bir şıkkın
-            // sonundaki harfi düşürünce ("Fransa" / "Frans") birebir eşitlik
-            // tutmuyor ve kırpılmış okuma yakalanamıyordu. Sayı şıklarında
-            // yine birebir eşitlik aranıyor.
-            val optionsMatchStrict = TurkishText.optionsNearlyMatch(oldOptions, options)
-
-            // Sorunun sonu okunamamış olabilir: OCR son kelimeyi düşürdüğünde
-            // "…kullanım amaçlarından biri" ile "…kullanım amaçlarından biri
-            // değildir?" iki ayrı kayıt oluyordu. Üstelik düşen kelime tam da
-            // olumsuzluk kelimesi olduğu için aşağıdaki olumsuzluk kontrolü
-            // ikisini birleştirmeyi kesin olarak reddediyordu.
-            //
-            // Bu yüzden kırpılmış okuma kontrolü olumsuzluk kontrolünden ÖNCE
-            // geliyor. Ölçüt dar tutuldu: dört şık birebir aynı olacak ve kısa
-            // metin uzun metnin başlangıcıyla örtüşecek. "Hangisi X'tir?" ile
-            // "Hangisi X değildir?" birbirinin başlangıcı olmadığı için bu
-            // kapıdan geçemez.
-            if (optionsMatchStrict && truncatedHead(oldQuestion, question)) return true
-
-            // Olumsuzluk farkı varsa hiçbir benzerlik ölçüsü bunları
-            // birleştiremez — zıt anlamlı iki ayrı sorudur.
-            if (TurkishText.negationSignature(oldQuestion) != negation) return false
-
-            val sim = TurkishText.similarity(oldQuestion, question)
-
-            val optionsMatch = options.size >= 3 && oldOptions.size == options.size &&
-                oldOptions.map { TurkishText.normalizeKey(it) }.sorted()
-                    .joinToString("|") == optKey
-
-            // Yarım yakalanmış okuma ("…kaç" ile "…kaç adettir?"). Bir sorunun
-            // metninin başka bir soruda geçmesi onu aynı soru yapmaz; bu yüzden
-            // hem uzunluklar birbirine çok yakın olmalı hem de ya şıklar birebir
-            // aynı olmalı ya da fark çok küçük olmalı.
-            val lengthRatio = minOf(oldKey.length, key.length).toFloat() /
-                maxOf(oldKey.length, key.length).coerceAtLeast(1)
-            val contained = oldKey.length >= 12 && key.length >= 12 &&
-                (key.contains(oldKey) || oldKey.contains(key)) &&
-                (optionsMatch && lengthRatio >= 0.60f || lengthRatio >= 0.85f)
-
-            // Dört şıkkın tamamı birebir aynıysa neredeyse kesinlikle aynı
-            // sorudur. Metnin başına "17. Süre Bitti" gibi bir fazlalık
-            // yapışıp üstüne bir de OCR harf hatası olunca ne kapsama ne
-            // benzerlik tutuyordu; şıklar bu ikisini de kurtarıyor.
-            // Dört şık birebir aynı olsa bile metinler birbirinden çok
-            // farklıysa ayrı sorulardır ("Hangisi X'tir?" / "Hangisi X
-            // değildir?" aynı şıkları paylaşabiliyor). Bu yüzden eşik yüksek.
-            val sameOptions = optionsMatch && sim >= 0.80f
-
-            return contained || sameOptions || sim >= 0.92f
-        }
-
-        /**
-         * Biri diğerinin, sonundan bir iki kelime düşmüş hâli mi?
-         *
-         * Karşılaştırma KELİME bazında. Karakter dizisi üzerinden bakmak
-         * tehlikeliydi: "…ölçütlerindendir?" ile "…ölçütlerinden değildir?"
-         * harf harf neredeyse aynı görünüyor ve kural bu iki ayrı soruyu
-         * birleştiriyordu — birim test bunu yakaladı. Kelimelere bölününce
-         * son kelimelerin farkı ("olcutlerindendir" ≠ "olcutlerinden")
-         * ortaya çıkıyor.
-         *
-         * Kelimeler birebir değil benzerlikle karşılaştırılıyor, çünkü OCR
-         * aynı karede ortadaki bir harfi de kaçırabiliyor ("uydularin" /
-         * "uydulariin").
-         */
-        private fun truncatedHead(a: String, b: String): Boolean {
-            val wa = TurkishText.words(a)
-            val wb = TurkishText.words(b)
-            val kisa = if (wa.size <= wb.size) wa else wb
-            val uzun = if (wa.size <= wb.size) wb else wa
-            val fazla = uzun.size - kisa.size
-            if (fazla !in 1..MAX_MISSING_WORDS) return false
-            if (kisa.size < MIN_HEAD_WORDS) return false
-            return kisa.indices.all { i ->
-                kisa[i] == uzun[i] ||
-                    TurkishText.similarity(kisa[i], uzun[i]) >= WORD_MIN_SIMILARITY
-            }
-        }
+    /** Metni ya da şıkları değişen bir yazımdan sonra: önbellek yeniden kurulsun. */
+    private fun adaylariUnut() {
+        adaylar = null
     }
 
     // --- İçe aktarma ---------------------------------------------------------
@@ -282,9 +211,11 @@ class Repo private constructor(context: Context) {
 
         for (row in rows) {
             val incoming = Importers.toEntity(row)
+            // İçe aktarma her satırda arşivi değiştirebildiği için önbelleği
+            // kullanmıyor; her satır güncel arşivle karşılaştırılıyor.
             val existing = dao.byFingerprint(incoming.fingerprint)
-                ?: Probe(row.question, row.options).let { probe ->
-                    dao.dedupCandidates(DEDUP_POOL).firstOrNull { probe.matches(it) }
+                ?: TekrarSorgusu(row.question, row.options).let { sorgu ->
+                    dao.dedupCandidates(DEDUP_POOL).firstOrNull { sorgu.matches(TekrarAdayi(it)) }
                         ?.let { dao.byId(it.id) }
                 }
 
@@ -309,6 +240,7 @@ class Repo private constructor(context: Context) {
             merged++
         }
 
+        adaylariUnut()
         Log.i(TAG, "İçe aktarma: $added yeni, $merged birleşti, $skipped değişmedi")
         return ImportResult.Ok(rows.size, added, merged, skipped)
     }
@@ -472,31 +404,23 @@ class Repo private constructor(context: Context) {
      */
     suspend fun isKnownFingerprint(fp: String): Boolean = dao.byFingerprint(fp) != null
 
-    suspend fun updateManual(q: QuestionEntity) = dao.update(q.copy(edited = true))
-    suspend fun delete(id: Long) = dao.delete(id)
-    suspend fun deleteAll() = dao.deleteAll()
+    suspend fun updateManual(q: QuestionEntity) {
+        dao.update(q.copy(edited = true))
+        adaylariUnut()
+    }
+    suspend fun delete(id: Long) {
+        dao.delete(id)
+        adaylariUnut()
+    }
+    suspend fun deleteAll() {
+        dao.deleteAll()
+        adaylariUnut()
+    }
     suspend fun byId(id: Long) = dao.byId(id)
     suspend fun allForExport() = dao.allForExport()
 
     companion object {
         private const val TAG = "SoruArsivi/Repo"
-
-        /**
-         * Kırpılmış okumada en fazla bu kadar kelime düşmüş olabilir.
-         *
-         * Temizlenmiş arşivdeki 732 sorunun tüm çiftleri tarandı: bu kural
-         * 1..5 aralığının tamamında yalnızca tek bir çifti birleştiriyor ve
-         * o çift gerçekten aynı sorunun kırpılmış hâli ("Aşağıdaki ülkelerden
-         * hangisi Uluslararası Uzay İstasyonu" / "…İstasyonu misyonu
-         * içerisinde değildir?" — üç kelime düşmüş). Yani gözlenen tek gerçek
-         * vaka iki kelimeyle yakalanamıyordu; üç, yanlış birleşme üretmeden
-         * onu da kapsıyor.
-         */
-        private const val MAX_MISSING_WORDS = 3
-        /** Kısa metin en az bu kadar kelime taşımalı. */
-        private const val MIN_HEAD_WORDS = 4
-        /** Aynı sıradaki kelimeler bu kadar benzemeli. */
-        private const val WORD_MIN_SIMILARITY = 0.85f
 
         /**
          * Kayıttaki cevap korunsun mu, yoksa yeni gözlem üstüne yazsın mı?

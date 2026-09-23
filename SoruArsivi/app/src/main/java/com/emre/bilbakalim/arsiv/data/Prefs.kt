@@ -13,6 +13,11 @@ class Prefs private constructor(context: Context) {
 
     private val sp: SharedPreferences =
         context.applicationContext.getSharedPreferences("ayarlar", Context.MODE_PRIVATE)
+            .also {
+                // Teşhis dökümü eskiden burada tutuluyordu ve her taramada
+                // yazılıyordu; artık bellekte. Diskte kalan son döküm siliniyor.
+                if (it.contains(K_DEBUG)) it.edit().remove(K_DEBUG).apply()
+            }
 
     private val _state = MutableStateFlow(read())
     val state: StateFlow<Settings> = _state
@@ -102,8 +107,6 @@ class Prefs private constructor(context: Context) {
          * bilgisini almanın tek yolu.
          */
         val unknownChime: Boolean = false,
-        /** Teşhis ekranı için son ham yakalama dökümü. */
-        val lastDebugDump: String = "",
         /** Bilgilendirme ekranı gösterildi mi. */
         val onboarded: Boolean = false
     )
@@ -132,7 +135,6 @@ class Prefs private constructor(context: Context) {
         autoUseKnownAnswer = sp.getBoolean(K_AUTO_KNOWN, true),
         autoRandomWhenUnknown = sp.getBoolean(K_AUTO_RANDOM_UNKNOWN, true),
         unknownChime = sp.getBoolean(K_UNKNOWN_CHIME, false),
-        lastDebugDump = sp.getString(K_DEBUG, "") ?: "",
         onboarded = sp.getBoolean(K_ONBOARDED, false)
     )
 
@@ -161,7 +163,6 @@ class Prefs private constructor(context: Context) {
     fun setAutoRandomWhenUnknown(v: Boolean) = commit { putBoolean(K_AUTO_RANDOM_UNKNOWN, v) }
     fun setUnknownChime(v: Boolean) = commit { putBoolean(K_UNKNOWN_CHIME, v) }
     fun setOnboarded(v: Boolean) = commit { putBoolean(K_ONBOARDED, v) }
-    fun setDebugDump(v: String) = commit { putString(K_DEBUG, v) }
 
     fun setRegions(qTop: Float, qBottom: Float, oTop: Float, oBottom: Float) = commit {
         putFloat(K_Q_TOP, qTop); putFloat(K_Q_BOTTOM, qBottom)

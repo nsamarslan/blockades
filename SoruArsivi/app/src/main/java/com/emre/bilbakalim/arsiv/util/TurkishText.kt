@@ -65,8 +65,13 @@ object TurkishText {
     }
 
     /** Karşılaştırma için sadeleştirilmiş anahtar: sadece harf ve rakam. */
-    fun normalizeKey(s: String): String =
-        fold(lower(s)).replace(Regex("[^a-z0-9]"), "")
+    fun normalizeKey(s: String): String = fold(lower(s)).replace(HARF_RAKAM_DISI, "")
+
+    // Düzenli ifadeler bir kez derleniyor. Eskiden her çağrıda yeniden
+    // derleniyordu; tekrar denetimi bu iki fonksiyonu arşivin her satırı
+    // için çağırdığından, bilinmeyen her soruda binlerce derleme demekti.
+    private val HARF_RAKAM_DISI = Regex("[^a-z0-9]")
+    private val KELIME_AYRACI = Regex("[^a-z0-9]+")
 
     /**
      * Metni normalleştirilmiş kelimelere ayırır.
@@ -77,7 +82,7 @@ object TurkishText {
      * son kelimeler açıkça farklı.
      */
     fun words(s: String): List<String> =
-        fold(lower(s)).split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+        fold(lower(s)).split(KELIME_AYRACI).filter { it.isNotEmpty() }
 
     /** Soru metninden kararlı bir parmak izi üretir. */
     fun fingerprint(question: String, options: List<String>): String {
@@ -106,9 +111,10 @@ object TurkishText {
      * 0.0 - 1.0 arası benzerlik. OCR bir iki harfi yanlış okuduğunda
      * parmak izi tutmaz; bu yüzden ikinci bir güvenlik ağı olarak kullanılır.
      */
-    fun similarity(a: String, b: String): Float {
-        val x = normalizeKey(a)
-        val y = normalizeKey(b)
+    fun similarity(a: String, b: String): Float = similarityOfKeys(normalizeKey(a), normalizeKey(b))
+
+    /** [similarity]'nin zaten [normalizeKey]'den geçmiş anahtarlar için olanı. */
+    fun similarityOfKeys(x: String, y: String): Float {
         if (x.isEmpty() && y.isEmpty()) return 1f
         if (x.isEmpty() || y.isEmpty()) return 0f
         if (x == y) return 1f
@@ -220,9 +226,11 @@ object TurkishText {
      * Sayı şıklarında ise tek harf farkı gerçek bir fark: "82" ile "92" ayrı
      * cevaplar. Orada birebir eşitlik aranıyor.
      */
-    fun sameOptionText(a: String, b: String): Boolean {
-        val x = normalizeKey(a)
-        val y = normalizeKey(b)
+    fun sameOptionText(a: String, b: String): Boolean =
+        sameOptionKey(normalizeKey(a), normalizeKey(b))
+
+    /** [sameOptionText]'in zaten [normalizeKey]'den geçmiş anahtarlar için olanı. */
+    fun sameOptionKey(x: String, y: String): Boolean {
         if (x == y) return x.isNotEmpty()
         if (DIGITS_ONLY.matches(x) || DIGITS_ONLY.matches(y)) return false
         if (minOf(x.length, y.length) < 4) return false
@@ -237,11 +245,15 @@ object TurkishText {
      * şıkkın sağda kendine ait bir karşılığı olmalı, aynı karşılık iki kez
      * kullanılamaz.
      */
-    fun optionsNearlyMatch(a: List<String>, b: List<String>): Boolean {
+    fun optionsNearlyMatch(a: List<String>, b: List<String>): Boolean =
+        optionKeysNearlyMatch(a.map { normalizeKey(it) }, b.map { normalizeKey(it) })
+
+    /** [optionsNearlyMatch]'in [normalizeKey]'den geçmiş anahtarlar için olanı. */
+    fun optionKeysNearlyMatch(a: List<String>, b: List<String>): Boolean {
         if (a.size < 4 || a.size != b.size) return false
         val kalan = b.toMutableList()
         for (o in a) {
-            val i = kalan.indexOfFirst { sameOptionText(o, it) }
+            val i = kalan.indexOfFirst { sameOptionKey(o, it) }
             if (i < 0) return false
             kalan.removeAt(i)
         }
@@ -270,26 +282,32 @@ object TurkishText {
     fun matchIndex(options: List<String>, text: String?): Int? {
         if (text.isNullOrBlank() || options.isEmpty()) return null
 
-        // 1. Simgeleri koruyan birebir eşleşme. normalizeKey '<' ve '>'
-        //    işaretlerini sildiği için "Satış fiyatı > Maliyet" ile
-        //    "Satış fiyatı < Maliyet" aynı anahtara düşüyor ve ilk bulunan
-        //    kazanıyordu — hem bot yanlış şıkka basıyor hem de arşive
-        //    yanlış cevap yazılıyordu.
-        val soft = softKey(text)
-        if (soft.isNotEmpty()) {
-            options.forEachIndexed { i, o -> if (softKey(o) == soft) return i }
+        // Birebir eşleşme, sıkıdan gevşeğe dört anahtarla. Bir kademede tek
+        // şık tutuyorsa o; birden çok şık tutuyorsa şıklar o kademede ayırt
+        // edilemiyor demektir — daha gevşek kademe de ayıramaz: null.
+        //
+        //  1. Türkçe harfleri ve simgeleri koruyan anahtar. "Töz" ile "Toz",
+        //     "Öz" ile "Oz" ancak burada ayrılıyor. Eskiden ilk kademe
+        //     harfleri katlıyordu (ö→o) ve İLK eşleşeni döndürüyordu: "Öz /
+        //     Toz / Oz / Töz" sorusunda cevap "Töz" iken bot "Toz"a basıyor,
+        //     arşive de "Toz" yazılıyordu. Kırmızı görülüp düzeltilmeye
+        //     çalışıldığında aynı eşleştirme yine "Toz"u buluyordu.
+        //  2. Türkçe harfleri koruyan ama noktalama ve boşluğu atan anahtar
+        //     ("Töz." ile "Töz").
+        //  3. Harfleri katlanmış, simgeli anahtar. "Satış fiyatı > Maliyet"
+        //     ile "Satış fiyatı < Maliyet"i ayırıyor (normalizeKey simgeleri
+        //     siliyor).
+        //  4. normalizeKey: yalnızca harf-rakam, katlanmış.
+        for (anahtar in ESLESME_KADEMELERI) {
+            val k = anahtar(text)
+            if (k.isEmpty()) continue
+            val tutan = options.indices.filter { anahtar(options[it]) == k }
+            if (tutan.size == 1) return tutan[0]
+            if (tutan.size > 1) return null
         }
+        if (normalizeKey(text).isEmpty()) return null
 
-        val key = normalizeKey(text)
-        if (key.isEmpty()) return null
-
-        // 2. Yalnızca harf-rakam üzerinden birebir. Aynı anahtara düşen
-        //    birden çok şık varsa hangisi olduğu bilinemez: null.
-        val exact = options.indices.filter { normalizeKey(options[it]) == key }
-        if (exact.size == 1) return exact[0]
-        if (exact.size > 1) return null
-
-        // 3. Bulanık benzerlik (OCR harf hataları için).
+        // 5. Bulanık benzerlik (OCR harf hataları için).
         var best = -1
         var bestSim = 0f
         options.forEachIndexed { i, o ->
@@ -305,9 +323,27 @@ object TurkishText {
         return if (options.count { normalizeKey(it) == bestKey } > 1) null else best
     }
 
+    /**
+     * Türkçe harfleri koruyan, yalnızca harf-rakamdan oluşan anahtar.
+     *
+     * [normalizeKey] "ö"yü "o"ya indirdiği için "Töz" ile "Toz"u aynı sayıyor;
+     * tekrar denetimi için doğru (OCR noktaları düşürebiliyor), ama iki şık
+     * yalnızca bu harflerle ayrılıyorsa hangisine basılacağına bununla
+     * karar verilmeli.
+     */
+    fun distinctKey(s: String): String = lower(s).filter { it.isLetterOrDigit() }
+
     /** Boşluk ve büyük-küçük dışında her şeyi koruyan yumuşak anahtar. */
     private fun softKey(s: String): String =
-        fold(lower(s)).trim().replace(Regex("\\s+"), " ")
+        fold(lower(s)).trim().replace(BOSLUKLAR, " ")
+
+    /** [softKey]'in Türkçe harfleri katlamayan hâli. */
+    private fun strictKey(s: String): String = lower(s).trim().replace(BOSLUKLAR, " ")
+
+    private val BOSLUKLAR = Regex("\\s+")
+
+    private val ESLESME_KADEMELERI: List<(String) -> String> =
+        listOf(::strictKey, ::distinctKey, ::softKey, ::normalizeKey)
 
     /** Şık eşleşmesi için en düşük benzerlik. */
     private const val OPTION_MATCH_MIN = 0.85f

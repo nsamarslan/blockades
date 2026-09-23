@@ -122,4 +122,67 @@ class CardRenderedTest {
         )
         assertFalse(a.cardRendered(ESIK))
     }
+
+    // --- Dokunulmuş şık ve sorular arası geçiş -------------------------------
+
+    private fun renkler(vararg c: IntArray) =
+        AnswerColorDetector.Analysis(notr(c.size), null, c.toList())
+
+    @Test
+    fun `basili sari sik dokunulmus sayilir`() {
+        // Dokunulduğu an beliren sarı (248,216,88) hiçbir renk bandına girmiyor;
+        // bot sen erken bastığında bunu görüp kendi şıkkına basmamalı.
+        assertTrue(
+            renkler(
+                intArrayOf(248, 248, 248), intArrayOf(248, 216, 88),
+                intArrayOf(248, 248, 248), intArrayOf(248, 248, 248)
+            ).anyTouched()
+        )
+    }
+
+    @Test
+    fun `beyaz haplar ve lacivert yazi dokunulmus sayilmaz`() {
+        assertFalse(
+            renkler(
+                intArrayOf(248, 248, 248), intArrayOf(248, 248, 248),
+                intArrayOf(24, 24, 104), intArrayOf(248, 248, 248)
+            ).anyTouched()
+        )
+    }
+
+    @Test
+    fun `sorular arasi gecis karesi taninir`() {
+        // Günlüklerde soru değişirken görülen kareler.
+        assertTrue(
+            renkler(
+                intArrayOf(56, 24, 152), intArrayOf(72, 40, 168),
+                intArrayOf(72, 40, 184), intArrayOf(88, 56, 200)
+            ).gecisKaresi()
+        )
+        assertTrue(
+            renkler(
+                intArrayOf(56, 40, 152), intArrayOf(56, 24, 136),
+                intArrayOf(56, 24, 136), intArrayOf(40, 24, 120)
+            ).gecisKaresi()
+        )
+    }
+
+    @Test
+    fun `sure dolunca gelen karartma gecis sayilmaz`() {
+        // Burada "süre doldu" kararı okunuyor; geçiş sayılsaydı soru kapanır,
+        // doğru cevap kaydedilmezdi.
+        assertFalse(
+            renkler(
+                intArrayOf(80, 80, 140), intArrayOf(80, 80, 140),
+                intArrayOf(80, 40, 100), intArrayOf(80, 80, 140)
+            ).gecisKaresi()
+        )
+        // Yarısı sönmüş kare de geçiş değil.
+        assertFalse(
+            renkler(
+                intArrayOf(248, 248, 248), intArrayOf(216, 136, 168),
+                intArrayOf(88, 72, 184), intArrayOf(88, 56, 200)
+            ).gecisKaresi()
+        )
+    }
 }
