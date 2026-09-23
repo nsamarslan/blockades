@@ -347,7 +347,7 @@ karşına çıktığında eksik şıklar tamamlanıyor.
 İki bölümü var:
 
 **Tarama geçmişi** — her taramanın tek satırlık özeti. Ekranda son **80**
-satır görünür, arkada **4000** satıra kadar tutulur ve *Paylaş* hepsini dışarı
+satır görünür, arkada **10 000** satıra kadar tutulur ve *Paylaş* hepsini dışarı
 verir. Bir sorunu fark ettiğinde onu doğuran satırlar çoktan ekrandan kaymış
 oluyor; asıl iş o yığında.
 
@@ -381,6 +381,35 @@ hata da sessizce yutulduğu için düğme hiçbir şey yapmıyormuş gibi
 görünüyordu. *Temizle*'den sonra yeniden çalışmasının sebebi günlüğün
 küçülmesiydi. Artık günlük dosyaya yazılıyor ve yalnızca dosyanın adresi
 paylaşılıyor; paylaşım yine de açılamazsa ekranda uyarı çıkıyor.
+
+### İz satırları: gecikme nereden geliyor, kod nerede kalıyor
+
+Günlükteki `İZ` ile başlayan satırlar okunmak için değil, arıza aramak için.
+Zaman damgası milisaniyeli. Satırlar olmadan "bot neden bekledi" sorusu hep
+satır aralarındaki boşluklardan tahmin ediliyordu. 20 saniyelik takılmanın
+sebebi, her taramada sessizce geri çeviren bir kapı, ancak ekran görüntüsü
+ölçülünce bulunabilmişti.
+
+| Satır | Ne söyler |
+|---|---|
+| `İZ 4812ms ×14 [kart_kapisi/-×12 durgun/-×2] ort=180 max=420(kart_kapisi/-: ocr=160 kutu=20 …)` | Son satırdan bu yana biten taramalar, **nerede bittiklerine** göre sayılmış; en yavaşının aşama aşama süresi. Her olaydan önce ve en geç 5 saniyede bir. |
+| `İZ YAVAŞ 1240ms …` | 900 ms'yi aşan tek tarama, aşama aşama |
+| `İZ BOŞLUK 3400ms önceki=…` | İki tarama arasında 2,5 saniyeden uzun ara: tarama hiç çalışmamış |
+| `İZ TAKILDI 4000ms aşama=ocr (3890ms)` | Süren bir tarama bir aşamada kaldı: **kodun beklediği yer**. Ayrı bir bekçi yazıyor, tarama dönmese de düşer. |
+| `İZ YOKLAMA TAKILDI 5000ms aşama=onplan_sorgu` | Taramayı tetikleyen döngü takıldı (ana iş parçacığı meşgul olabilir) |
+| `İZ SORU #id karar→okuma=… okuma→kayıt=… kapı=… teyit=… yol=kutu\|metin kutu=4` | Yeni sorunun zaman çizelgesi: önceki karardan ilk okunabildiği ana, oradan kayda; kaç kez kart kapısında ve teyitte geri çevrildiği; şıkların ekrandan ölçülen kutularla mı, metin yoluyla mı bulunduğu |
+| `OTOMATİK … · iz[db=12 kare=31 jest=96]` | Dokunuşun kendi içindeki süreler: arşiv sorgusu, karede şık kontrolü, jestin tamamlanması |
+| `CEVAP … · zaman[kart=+0 dokunuş=+515 tepki=+640 karar=+1180 …]` | Sorunun kaydından itibaren olaylar |
+| `İZ KARAR_TURU #id tur=23 1180ms sonuç=karar\|sessiz\|soru_degisti\|bitti` | Dokunuştan sonraki hızlı renk turunun nasıl bittiği |
+| `HATA tarama/iş/yoklama: … @ Dosya.kt:123` | Eskiden yalnızca logcat'e düşen hatalar |
+
+Tarama çıkışları: `burst` (karar turu sürüyor), `onplan` (oyun önde değil),
+`durgun` (kare değişmedi, atlandı), `veri_yok` (kare ya da OCR sırası yok),
+`red` (ayrıştırılamadı), `guven`, `ayni_soru` (bekleyen sorunun yeniden
+okunması), `kart_kapisi` (kart çizilmedi sayıldı), `teyit` (ikinci okuma
+bekleniyor), `yeni` / `tekrar` / `yeniden` (kayıt). Eğik çizgiden sonrası
+otomatik modun kararı: `yok`, `gecikme`, `kart_bekle`, `basiliyor`,
+`tekrar_bekle`, `tekrar_engel`, `is_suruyor`, `dokunus_bitti`.
 
 **Son tarama** — en son karede ekranda tam olarak hangi metinlerin, hangi
 dikey konumlarda görüldüğü. Bölge ayarlarını buna bakarak düzeltebilirsin.

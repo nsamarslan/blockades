@@ -312,6 +312,16 @@ class ProjectionService : Service() {
 
         val isRunning: Boolean get() = instance != null
 
+        /**
+         * Son gerçek karenin yaşı (ms); hızlı yakalama kapalıysa -1.
+         *
+         * Ekran kıpırdamadığında sistem yeni kare üretmediği için yaş büyür;
+         * bu olağan. Teşhiste anlamlı olan, ekran değişirken de büyümesi:
+         * kare akışı kopmuş demektir.
+         */
+        fun kareYasiMs(): Long =
+            instance?.let { SystemClock.uptimeMillis() - it.lastImageAt } ?: -1L
+
         /** Bağımsız kopya — OCR ve kaydetme gibi asenkron işler için. */
         fun grab(): Bitmap? = instance?.readFrame(copy = true)
 

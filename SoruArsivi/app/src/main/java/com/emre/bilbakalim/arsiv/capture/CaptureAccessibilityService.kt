@@ -25,6 +25,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -58,7 +60,14 @@ import kotlinx.coroutines.withContext
  */
 class CaptureAccessibilityService : AccessibilityService() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /**
+     * Yakalanmamış hata artık günlüğe de düşüyor. Eskiden bir işte (dokunuş,
+     * karar turu) fırlayan istisna yalnızca logcat'te iz bırakıyordu.
+     */
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            CoroutineExceptionHandler { _, t -> log("HATA iş: ${hataOzeti(t)}") }
+    )
 
     private lateinit var prefs: Prefs
     private lateinit var repo: Repo
@@ -251,6 +260,8 @@ class CaptureAccessibilityService : AccessibilityService() {
          * ekranda okumadığı yeni bir soru duruyordu.
          */
         var seenAt: Long = SystemClock.uptimeMillis(),
+        /** Son dokunuştan sonra ilk renkli şıkkın görüldüğü an (teşhis için). */
+        var ilkRenkAt: Long = 0L,
         /** Seçilen şık — yeniden denemelerde aynısına basılır. */
         var chosenIndex: Int? = null,
         /**
@@ -279,11 +290,30 @@ class CaptureAccessibilityService : AccessibilityService() {
     )
     @Volatile private var pendingAnswer: PendingAnswer? = null
     @Volatile private var burstJob: Job? = null
+    @Volatile private var watchdogJob: Job? = null
     private val workerRunning = AtomicBoolean(false)
     private val pollRunning = AtomicBoolean(false)
     /** [ProjectionService.restartCount]'un günlüğe düşmüş son değeri. */
     @Volatile private var lastProjectionRestart = 0
     @Volatile private var totalSaved = 0
+
+    /** Teşhis izi: taramalar nerede bitiyor, hangi aşama ne kadar sürüyor. */
+    private val izi = TaramaIzi({ SystemClock.uptimeMillis() }) { logHam(it) }
+    /** Otomatik modun bu taramadaki kararı — ize yazılıyor. */
+    @Volatile private var otoNeden = "-"
+    /** Yoklama döngüsünün o anki aşaması ve ne zamandan beri orada — bekçi için. */
+    @Volatile private var pollAsama = "-"
+    @Volatile private var pollAsamaAt = 0L
+    @Volatile private var pollTakildiYazildi = false
+    /**
+     * Okunabilen yeni bir sorunun ilk görüldüğü an ve kayda kadar kaç kez
+     * geri çevrildiği. "Soru ekrandaydı ama neden geç basıldı" sorusunu
+     * aşama aşama cevaplıyor: bkz. "İZ SORU" satırı.
+     */
+    @Volatile private var okumaSoru = ""
+    @Volatile private var okumaIlkAt = 0L
+    @Volatile private var okumaKapi = 0
+    @Volatile private var okumaTeyit = 0
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -297,8 +327,15 @@ class CaptureAccessibilityService : AccessibilityService() {
 
         scope.launch {
             var wasAuto = prefs.state.value.autoPlay
+            var hedefler = prefs.state.value.targetPackages
             prefs.state.collect { s ->
-                applyTargets(s.targetPackages)
+                // Ayarlar her taramada yeniden yayınlanıyor (teşhis dökümü de
+                // bir ayar); hedefler değişmediyse sisteme yeniden
+                // serviceInfo göndermenin anlamı yok.
+                if (s.targetPackages != hedefler) {
+                    hedefler = s.targetPackages
+                    applyTargets(s.targetPackages)
+                }
                 if (s.autoPlay != wasAuto) {
                     wasAuto = s.autoPlay
                     auto.reset()
@@ -310,6 +347,16 @@ class CaptureAccessibilityService : AccessibilityService() {
         }
         scope.launch {
             repo.totalCount.collect { totalSaved = it }
+        }
+        // Bekçi: taramadan da yoklamadan da bağımsız. İkisinden biri bir yerde
+        // takılırsa kendi satırını yazamaz; nerede kaldığını bu yazıyor.
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch {
+            while (isActive) {
+                delay(WATCHDOG_MS)
+                izi.denetle()
+                yoklamaDenetle()
+            }
         }
         Log.i(TAG, "Servis bağlandı")
     }
@@ -383,13 +430,16 @@ class CaptureAccessibilityService : AccessibilityService() {
             var misses = 0
             try {
                 while (isActive) {
+                    pollAdim("uyku")
                     delay(if (fastCapture) POLL_FAST_MS else POLL_SLOW_MS)
                     val cur = prefs.state.value
                     if (cur.targetPackages.isEmpty()) break
 
+                    pollAdim("onplan_sorgu")
                     val active = withContext(Dispatchers.Main) {
                         runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
                     }
+                    pollAdim("karar")
                     val grace = active == null &&
                         SystemClock.uptimeMillis() - lastForegroundAt < FOREGROUND_GRACE_MS
                     if (active != null && active in cur.targetPackages || grace) {
@@ -397,6 +447,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                         if (active != null) lastForegroundAt = SystemClock.uptimeMillis()
                         misses = 0
                         if (!cur.paused) requestScan()
+                        pollAdim("uyku_ek")
                         // Dokunulmayı bekleyen bir soru varken hızlı yoklama.
                         // Eskiden koşul "kart henüz ölçülmedi" idi; ölçüm artık
                         // sorunun kaydedildiği anda yapıldığı için o koşul hep
@@ -434,12 +485,20 @@ class CaptureAccessibilityService : AccessibilityService() {
                                 (misses - idleLimit(cur)) % (heartbeat - idleLimit(cur)) == 0)) {
                             log("yoklama bekleme kipinde · önplanda: ${active ?: "bilinmiyor"}")
                         }
-                        if (misses >= idleLimit(cur)) delay(IDLE_POLL_MS)
+                        if (misses >= idleLimit(cur)) {
+                            pollAdim("bekleme_kipi")
+                            delay(IDLE_POLL_MS)
+                        }
                     }
                 }
+            } catch (t: Throwable) {
+                if (t !is CancellationException) log("HATA yoklama: ${hataOzeti(t)}")
+                throw t
             } finally {
                 pollJob = null
                 pollRunning.set(false)
+                pollAsama = "-"
+                if (running.value) log("İZ yoklama döngüsü bitti")
                 // Emniyet ağı. Yoklama duran bir servis, oyun ekranı hiç olay
                 // üretmediği için bir daha kendine gelemiyor: soruyu gören
                 // tek şey bu döngü. Beklenmedik bir sebeple (istisna, servis
@@ -495,10 +554,34 @@ class CaptureAccessibilityService : AccessibilityService() {
 
     // -----------------------------------------------------------------------
 
+    /**
+     * Tek bir tarama; asıl iş [taramaIc]'te. Burada yalnızca iz tutuluyor:
+     * taramanın nerede bittiği, hangi aşamanın ne kadar sürdüğü ve
+     * fırlayan hata günlüğe düşüyor (bkz. [TaramaIzi]).
+     */
     private suspend fun scan(s: Prefs.Settings) {
+        val iz = izi.basla()
+        otoNeden = "-"
+        try {
+            taramaIc(s, iz)
+        } catch (t: Throwable) {
+            if (t is CancellationException) {
+                iz.cik("iptal")
+            } else {
+                iz.cik("HATA", t.javaClass.simpleName)
+                log("HATA tarama (aşama=${iz.asama}): ${hataOzeti(t)}")
+            }
+            throw t
+        } finally {
+            iz.oto = otoNeden
+            izi.bitir(iz)
+        }
+    }
+
+    private suspend fun taramaIc(s: Prefs.Settings, iz: TaramaIzi.Iz) {
         // Karar açılmak üzereyken hızlı renk turu çalışıyor; ekran görüntüsü
         // hakkını onunla paylaşmayalım.
-        if (burstJob?.isActive == true) return
+        if (burstJob?.isActive == true) return iz.cik("burst")
 
         // Hızlı yakalamanın kare akışı kendi kendine yenilendiyse haber ver.
         // Bu satır olmadan, akış koptuğunda uygulamanın neden ağırlaştığı
@@ -515,6 +598,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         // bir uygulamaya geçmiş olabilirsin. Bu kontrol olmadan uygulama
         // ekranda ne varsa onu okuyordu — kendi Teşhis ekranını ve sistem
         // pencerelerini soru sanıp kaydetmesinin sebebi buydu.
+        iz.adim("onplan")
         val front = withContext(Dispatchers.Main) {
             runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
         }
@@ -537,7 +621,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 lastLoggedFront = front
                 log("atlandı · önplanda: ${front ?: "bilinmiyor"}")
             }
-            return
+            return iz.cik("onplan", front ?: "null")
         }
         if (front != null) lastForegroundAt = SystemClock.uptimeMillis()
         lastLoggedFront = front
@@ -545,8 +629,10 @@ class CaptureAccessibilityService : AccessibilityService() {
         // Otomatik mod: ekranda cevabı beklenen bir soru varsa şıklardan
         // birine dokun. Tarama turunun başında duruyor ki soru ekranda
         // kaldığı sürece her turda yeniden denenebilsin.
+        iz.adim("oto")
         if (s.autoPlay) autoAnswerTick(s, screenW, screenH)
 
+        iz.adim("dugum")
         val nodes = withContext(Dispatchers.Main) {
             runCatching { NodeHarvester.harvest(rootInActiveWindow) }.getOrDefault(emptyList())
         }
@@ -569,6 +655,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         // Cevabı beklenen bir soru varsa, OCR gerekmese bile ekran görüntüsü
         // alıyoruz — yoksa cevabın açıldığı anı hiç göremeyiz.
         val waiting = pendingAnswer
+        iz.adim("kare")
         var shot: Bitmap? =
             if (needOcr || autoIdle || (s.detectAnswer && waiting != null)) captureScreen()
             else null
@@ -583,6 +670,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         // bekleyen soru yoksa kıpırdamayan ekran da belirli aralıkla baştan
         // okunuyor — ikinci okuma aynı sonucu verse bile en azından günlükte
         // sebebi görünüyor ve yakın plan OCR şansını buluyor.
+        iz.adim("imza")
         var frameStatic = false
         if (shot != null) {
             val sig = frameSignature(shot)
@@ -610,7 +698,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 val force = kartOlculmeli || now - lastForcedScanAt >= STATIC_RESCAN_MS
                 if (!autoIdle && !force) {
                     shot.recycle()
-                    return
+                    return iz.cik("durgun", "kare_yasi=${ProjectionService.kareYasiMs()}")
                 }
                 if (force) lastForcedScanAt = now
             } else {
@@ -635,8 +723,12 @@ class CaptureAccessibilityService : AccessibilityService() {
         // QuestionParser.lastReject'i eziyor, ama teşhis için asıl anlamlı
         // olan bu ("dört kutu gördüm, birinin metnini okuyamadım").
         var kutuRed: String? = null
+        // Soru hangi yoldan okundu: şık kutuları ekrandan mı ölçüldü, yoksa
+        // eski metin yolu mu? Bu sorudaki arıza tam da bu ayrımdaydı.
+        var yolKutu = false
         if ((needOcr || autoIdle) && shot != null && ocrDue) {
             lastOcrAt = SystemClock.uptimeMillis()
+            iz.adim("ocr")
             ocrItems = OcrEngine.recognize(shot)
             lastOcrItems = ocrItems
 
@@ -645,13 +737,17 @@ class CaptureAccessibilityService : AccessibilityService() {
             // hiçbir şey değişmez, aşağıdaki eski yol devreye girer.
             var viaOcr: QuestionParser.Parsed? = null
             if (s.findOptionBoxes) {
+                iz.adim("kutu")
                 kutular = OptionBoxFinder.find(shot)
                 if (kutular.size >= 3) {
+                    iz.adim("kutu_metin")
                     val kutuMetinleri = optionTextsFromBoxes(shot, kutular, ocrItems)
+                    iz.adim("ayr")
                     viaOcr = QuestionParser.parse(
                         ocrItems, shot.width, shot.height, s,
                         fromAccessibility = false, knownOptions = kutuMetinleri
                     )
+                    yolKutu = viaOcr != null
                     if (viaOcr == null) kutuRed = QuestionParser.lastReject
                     // Ölçüm her karede aynı sonucu verdiği sürece sessiz;
                     // yalnızca kutu sayısı değiştiğinde günlüğe düşüyor.
@@ -661,6 +757,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                     }
                 }
             }
+            iz.adim("ayr")
             if (viaOcr == null) viaOcr = QuestionParser.parse(
                 ocrItems, shot.width, shot.height, s, fromAccessibility = false
             )
@@ -705,8 +802,10 @@ class CaptureAccessibilityService : AccessibilityService() {
                 closeUpTries++
                 closeUpAt = SystemClock.uptimeMillis()
                 val onceki = ocrItems.size
+                iz.adim("yakin")
                 val yakin = closeUpOptions(shot, s, scale)
                 if (yakin != null) {
+                    yolKutu = false
                     ocrItems = yakin
                     viaOcr = QuestionParser.parse(
                         ocrItems, shot.width, shot.height, s, fromAccessibility = false
@@ -724,9 +823,16 @@ class CaptureAccessibilityService : AccessibilityService() {
             }
         }
         // OCR kısıldığı turlarda teşhis dökümünü boş verilerle ezmeyelim.
+        iz.adim("dokum")
         if (nodes.isNotEmpty() || ocrItems.isNotEmpty()) dumpDebug(nodes, ocrItems, parsed)
+        val yol = when {
+            source == CaptureSource.ACCESSIBILITY -> "dugum"
+            yolKutu -> "kutu"
+            else -> "metin"
+        }
 
         // --- 3. Karar açıldı mı? ----------------------------------------------
+        iz.adim("karar")
         if (shot != null && waiting != null && s.detectAnswer) {
             val hint = if (nodes.isNotEmpty() || ocrItems.isNotEmpty()) {
                 timedOut(nodes, ocrItems)
@@ -740,6 +846,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         }
 
         // --- 4. Yeni soru mu? -------------------------------------------------
+        iz.adim("sonuc")
         val p = parsed
         if (p == null) {
             // Kutu yolu denenip başarısız olduysa asıl sebep onunki; eski
@@ -756,14 +863,28 @@ class CaptureAccessibilityService : AccessibilityService() {
             }
             if (ocrItems.isNotEmpty() || nodes.size > 1) {
                 log("düğüm:${nodes.size} ocr:${ocrItems.size} kutu:${kutular.size} · RED: $sebep$ek")
+                iz.cik("red", sebep.take(50))
+            } else {
+                // Sessiz çıkış: ne okunacak kare vardı ne de OCR sırası.
+                iz.cik(
+                    "veri_yok",
+                    when {
+                        shot == null -> "kare_yok"
+                        !(needOcr || autoIdle) -> "ocr_gerekmedi"
+                        !ocrDue -> "ocr_erken"
+                        else -> "ocr_bos"
+                    }
+                )
             }
             // Şık bölgesiyle ilgili bir redse kareyi diske yaz: sebebi
             // günlükten geriye doğru tahmin etmek yerine bakabilelim.
             if (s.saveFailedFrames && shot != null && sebep.startsWith("şık")) {
+                iz.adim("teshis_kare")
                 teshisKaydet(shot, ocrItems, kutular, sebep + ek)
             }
             noteUnreadable(s)
             // Ekranda soru yok ve bir süredir de yoktu: tur bitmiş olabilir.
+            iz.adim("devam")
             if (autoIdle) tryContinue(nodes, ocrItems, shot, screenW, screenH)
             shot?.let { if (!it.isRecycled) it.recycle() }
             return
@@ -771,7 +892,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (p.confidence < s.minConfidence) {
             log("${p.options.size} şık %${(p.confidence * 100).toInt()} · RED: güven eşiğin altında")
             shot?.let { if (!it.isRecycled) it.recycle() }
-            return
+            return iz.cik("guven")
         }
         // Ekranda gerçek bir soru var: tur sonu yoklamasının sayacı sıfırlanır.
         lastQuestionAt = SystemClock.uptimeMillis()
@@ -835,8 +956,10 @@ class CaptureAccessibilityService : AccessibilityService() {
                 }
             }
             shot?.let { if (!it.isRecycled) it.recycle() }
-            return
+            return iz.cik("ayni_soru", "yol=$yol")
         }
+
+        okumaTakip(p)
 
         // Kart oturmadan kaydetmiyoruz. Soru kartı solarak geliyor ve bu
         // sırada metin yarı saydam, kayar hâlde; OCR harfleri yanlış okuyor
@@ -852,6 +975,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         // ve ekran bir süredir hiç kıpırdamıyorsa kart oturmuş sayılıyor —
         // bu kapının koruduğu şey solarak gelen kart, kıpırdamayan bir kare
         // solma animasyonunun ortası olamaz.
+        iz.adim("kart_olc")
         if (shot != null &&
             !AnswerColorDetector.optionsRendered(shot, p.optionRects, screenW, screenH)
         ) {
@@ -859,8 +983,9 @@ class CaptureAccessibilityService : AccessibilityService() {
             if (!frameStatic || durgun < CARD_STATIC_MS) {
                 noteRenderWait(p, shot, screenW, screenH)
                 confirmKey = null
+                okumaKapi++
                 shot.let { if (!it.isRecycled) it.recycle() }
-                return
+                return iz.cik("kart_kapisi", "yol=$yol")
             }
             if (p.key != renderForcedKey) {
                 renderForcedKey = p.key
@@ -884,11 +1009,13 @@ class CaptureAccessibilityService : AccessibilityService() {
         // önce kaydedilmiş bir kayıtla birebir aynı üretemez. O yüzden
         // tanıdık sorularda ikinci okumayı beklemiyoruz; her soruda bir
         // tarama turu (300-600 ms) kazanıyoruz.
+        iz.adim("db")
         val taniniyor = runCatching { repo.isKnownFingerprint(p.key) }.getOrDefault(false)
         if (!taniniyor && p.key != confirmKey) {
             confirmKey = p.key
+            okumaTeyit++
             shot?.let { if (!it.isRecycled) it.recycle() }
-            return
+            return iz.cik("teyit", "yol=$yol")
         }
         lastKey = p.key
 
@@ -896,11 +1023,13 @@ class CaptureAccessibilityService : AccessibilityService() {
         val category = s.activeCategory.takeIf { it.isNotBlank() } ?: p.category
 
         var shotPath: String? = null
+        iz.adim("foto")
         if (s.saveScreenshots) {
             if (shot == null) shot = captureScreen()
             shotPath = shot?.let { saveShot(it, p.key) }
         }
 
+        iz.adim("db")
         val result = repo.save(
             question = p.question,
             options = p.options,
@@ -918,12 +1047,21 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (savedId == null) {
             log("RED: kayıt çok kısa / şık yetersiz")
             pendingAnswer = null
+            iz.cik("kayit_red")
         } else {
             // Aynı soru ekranı saniyede birkaç kez taranıyor ve her tarama
             // küçük OCR farkları yüzünden ayrı bir kayıt denemesi oluyor.
             // Bunların hepsi TEK bir karşılaşmadır — sayaç yalnızca gerçekten
             // başka bir soruya geçildiğinde artar.
             val newEncounter = savedId != currentEncounterId
+            iz.cik(
+                when {
+                    result is Repo.SaveResult.Inserted -> "yeni"
+                    newEncounter -> "tekrar"
+                    else -> "yeniden"
+                },
+                "yol=$yol"
+            )
             if (newEncounter) {
                 currentEncounterId = savedId
                 // Yeni kayıt zaten seenCount = 1 ile başlıyor.
@@ -961,6 +1099,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                     if (s.unknownChime) Chime.play(this)
                 }
                 log("SORU #$savedId «${p.question.take(70)}»")
+                log(okumaOzeti(savedId, yol, kutular.size))
                 log(
                     "ŞIKLAR #$savedId: " +
                         p.options.mapIndexed { i, o -> "${'A' + i}«${o.take(24)}»" }
@@ -1010,6 +1149,7 @@ class CaptureAccessibilityService : AccessibilityService() {
     private fun autoAnswerTick(s: Prefs.Settings, screenW: Int, screenH: Int) {
         val waiting = pendingAnswer
         if (waiting == null) {
+            otoNeden = "yok"
             // Soru yakalanamadıysa bot dokunmaz — ama bunu sessizce
             // yapmasın. Sebep, ayrıştırıcının son red gerekçesi: teşhis
             // ekranında "neden bekliyor" sorusu ancak böyle cevaplanıyor.
@@ -1020,11 +1160,12 @@ class CaptureAccessibilityService : AccessibilityService() {
             return
         }
         if (waiting.rects.size < 2) {
+            otoNeden = "kutu<2"
             noteAutoIdle("şık kutusu ${waiting.rects.size}, dokunulmaz")
             return
         }
-        if (waiting.taps >= AUTO_MAX_TAPS) return
-        if (autoJob?.isActive == true) return
+        if (waiting.taps >= AUTO_MAX_TAPS) { otoNeden = "dokunus_bitti"; return }
+        if (autoJob?.isActive == true) { otoNeden = "is_suruyor"; return }
 
         // İlk dokunuş şıklar yerine otursun diye bekliyor. Sonrakiler yeniden
         // deneme: jest sisteme başarıyla gönderilse bile oyunun onu yuttuğu
@@ -1039,19 +1180,29 @@ class CaptureAccessibilityService : AccessibilityService() {
             !s.detectAnswer -> waiting.bornAt
             waiting.brightSince > 0L -> maxOf(waiting.bornAt, waiting.brightSince)
             now - waiting.bornAt > CARD_READY_TIMEOUT_MS -> waiting.bornAt
-            else -> return
+            else -> { otoNeden = "kart_bekle"; return }
         }
         val due = if (waiting.taps == 0) cardAt + s.autoAnswerDelayMs
                   else waiting.lastTapAt + AUTO_RETAP_MS
-        if (now < due) return
-        // Yeniden deneme ancak soru dokunuştan sonra yeniden okunduysa: yoksa
-        // ekranda hâlâ o soru var mı bilmiyoruz demektir (bkz. [PendingAnswer.seenAt]).
-        if (waiting.taps > 0 && waiting.seenAt <= waiting.lastTapAt) {
+        if (now < due) {
+            otoNeden = if (waiting.taps == 0) "gecikme" else "tekrar_bekle"
+            return
+        }
+        // Yeniden deneme ancak ekranda hâlâ o soru olduğunu biliyorsak: ya
+        // dokunuştan sonra yeniden okundu, ya da ekran dokunuştan beri hiç
+        // değişmedi (dokunuş yutulmuş). İkisi de yoksa ekranda başka bir şey
+        // var demektir (bkz. [PendingAnswer.seenAt]).
+        if (waiting.taps > 0 && waiting.seenAt <= waiting.lastTapAt &&
+            lastFrameChangeAt > waiting.lastTapAt
+        ) {
+            otoNeden = "tekrar_engel"
             noteAutoIdle("#${waiting.id} yeniden denenmiyor: soru dokunuştan sonra okunmadı")
             return
         }
 
+        otoNeden = "basiliyor"
         autoJob = scope.launch {
+            val isBasla = SystemClock.uptimeMillis()
             val cur = prefs.state.value
             if (!cur.autoPlay || cur.paused) return@launch
             // Bekleme sırasında soru değişmiş olabilir.
@@ -1093,6 +1244,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             }
 
             val known = (lookup as? Repo.KnownAnswer.OnScreen)?.index
+            val dbBitti = SystemClock.uptimeMillis()
 
             // Cevabı bilinmiyorsa ve kullanıcı "kararı bana bırak" dediyse
             // dokunmuyoruz. Soru ekranda kalır, sen cevaplarsın; doğrusu yine
@@ -1132,6 +1284,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 noteAutoIdle("#${waiting.id}: şıklar ekranda görünmüyor, dokunulmadı")
                 return@launch
             }
+            val kareBitti = SystemClock.uptimeMillis()
 
             // Sayaçlar dokunuştan önce artıyor: jest başarısız olsa bile bu
             // bir denemedir, yoksa saniyede birkaç kez yeniden denenirdi.
@@ -1152,6 +1305,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 log("otomatik: #${waiting.id} şıkkına dokunulamadı")
                 return@launch
             }
+            val jestBitti = SystemClock.uptimeMillis()
             // Neden rastgele seçtiğimizi de yazıyoruz: "yeni soru" ile
             // "arşivde cevap var ama bulunamadı" bambaşka iki durum.
             val neden = when (lookup) {
@@ -1166,7 +1320,11 @@ class CaptureAccessibilityService : AccessibilityService() {
                     (if (retry) " · ${waiting.taps}. deneme" else "") +
                     " · ${gecikme} ms" +
                     (if (waiting.brightSince == 0L) " (kart ölçülemedi)" else "") +
-                    " · bu oturumda ${auto.tapCount} cevap"
+                    " · bu oturumda ${auto.tapCount} cevap" +
+                    // Dokunuşun kendi içindeki süreler: arşiv sorgusu, karede
+                    // şık kontrolü, jestin sistemce tamamlanması.
+                    " · iz[db=${dbBitti - isBasla} kare=${kareBitti - dbBitti} " +
+                    "jest=${jestBitti - kareBitti}]"
             )
             // Dokunduk; karar bir iki saniyede açılıp geçecek. Renk turunu
             // hemen başlatıyoruz ki cevabı kaçırmayalım.
@@ -1356,6 +1514,72 @@ class CaptureAccessibilityService : AccessibilityService() {
         log("kart oturmadı sayılıyor, dokunulmuyor · " + renderReport(p, shot, screenW, screenH))
     }
 
+    // --- Teşhis izi ---------------------------------------------------------
+
+    /** Yoklama döngüsü yeni bir aşamaya geçti — bekçi takılmayı buradan görüyor. */
+    private fun pollAdim(ad: String) {
+        val now = SystemClock.uptimeMillis()
+        if (pollTakildiYazildi) {
+            pollTakildiYazildi = false
+            log("İZ YOKLAMA sürdü: $pollAsama ${now - pollAsamaAt}ms sonra bitti")
+        }
+        pollAsama = ad
+        pollAsamaAt = now
+    }
+
+    /**
+     * Yoklama döngüsü bir aşamada takıldı mı? Döngü soruyu gören tek şey
+     * olduğu için takılırsa hiçbir satır düşmüyordu; ana iş parçacığı
+     * meşgulken pencere sorgusu ("onplan_sorgu") en olası yer.
+     */
+    private fun yoklamaDenetle() {
+        if (!pollRunning.get() || pollTakildiYazildi || pollAsama == "-") return
+        val gecen = SystemClock.uptimeMillis() - pollAsamaAt
+        if (gecen < POLL_STUCK_MS) return
+        pollTakildiYazildi = true
+        log("İZ YOKLAMA TAKILDI ${gecen}ms aşama=$pollAsama")
+    }
+
+    /**
+     * Okunabilen yeni bir soruyu izler: ilk ne zaman okundu, kayda kadar
+     * kaç kez geri çevrildi. OCR her karede birkaç harf farklı okuduğu için
+     * parmak izi değil metin benzerliği kullanılıyor.
+     */
+    private fun okumaTakip(p: QuestionParser.Parsed) {
+        if (TurkishText.similarity(p.question, okumaSoru) >= OKUMA_AYNI_SORU) return
+        okumaSoru = p.question
+        okumaIlkAt = SystemClock.uptimeMillis()
+        okumaKapi = 0
+        okumaTeyit = 0
+    }
+
+    /**
+     * Yeni karşılaşmanın zaman çizelgesi. `karar→okuma`: önceki sorunun
+     * kararından bu sorunun ilk okunabildiği ana (geçiş + okuyamama);
+     * `okuma→kayıt`: ilk okumadan kayda (kart kapısı, teyit, veritabanı).
+     */
+    private fun okumaOzeti(id: Long, yol: String, kutu: Int): String {
+        val now = SystemClock.uptimeMillis()
+        val ilk = okumaIlkAt.takeIf { it > 0L } ?: now
+        val kararOkuma = if (lastAnsweredAt in 1L..ilk) "${ilk - lastAnsweredAt}ms" else "-"
+        return "İZ SORU #$id karar→okuma=$kararOkuma okuma→kayıt=${now - ilk}ms " +
+            "kapı=$okumaKapi teyit=$okumaTeyit yol=$yol kutu=$kutu"
+    }
+
+    /** CEVAP satırının sonuna: sorunun ekrana gelişinden itibaren olaylar. */
+    private fun zamanlama(w: PendingAnswer): String {
+        fun goreli(t: Long) = if (t > 0L) "+${t - w.bornAt}" else "-"
+        return " · zaman[kart=${goreli(w.brightSince)} dokunuş=${goreli(w.lastTapAt)} " +
+            "tepki=${goreli(w.ilkRenkAt)} karar=+${SystemClock.uptimeMillis() - w.bornAt} " +
+            "dokunuş_sayısı=${w.taps}]"
+    }
+
+    /** Hatanın kısa özeti: türü, mesajı ve bizim koddaki ilk üç kare. */
+    private fun hataOzeti(t: Throwable): String =
+        "${t.javaClass.simpleName}: ${t.message?.take(80)} @ " +
+            t.stackTrace.filter { it.className.startsWith("com.emre") }.take(3)
+                .joinToString(" < ") { "${it.fileName}:${it.lineNumber}" }
+
     /** Kart ölçüsünün neden tutmadığı: şık başına baskın renk ve parlak örnek oranı. */
     private fun renderReport(
         p: QuestionParser.Parsed,
@@ -1431,7 +1655,10 @@ class CaptureAccessibilityService : AccessibilityService() {
         // Renk deseni her değiştiğinde günlüğe düşüyor; kaçan cevapların
         // sebebini tahmin etmek yerine akışı görebilmek için.
         val summary = a.summary()
-        if (a.tints.any { it != AnswerColorDetector.Tint.NEUTRAL }) waiting.tintSeen = true
+        if (a.tints.any { it != AnswerColorDetector.Tint.NEUTRAL }) {
+            if (!waiting.tintSeen) waiting.ilkRenkAt = SystemClock.uptimeMillis()
+            waiting.tintSeen = true
+        }
         if (summary != waiting.lastSummary && summary.contains(Regex("YESIL|turkuaz|KIRMIZI"))) {
             waiting.lastSummary = summary
             log("renk #${waiting.id}: $summary")
@@ -1474,7 +1701,8 @@ class CaptureAccessibilityService : AccessibilityService() {
             )
             log(
                 "CEVAP #${waiting.id} → ${optionLabel(waiting, correct)} · " +
-                    (if (kesin) "bilemedin" else "bildin") + " · ${a.detail()}"
+                    (if (kesin) "bilemedin" else "bildin") + " · ${a.detail()}" +
+                    zamanlama(waiting)
             )
             // Hata listesine yalnızca gerçekten yanıldığımız tur giriyor.
             //
@@ -1510,7 +1738,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 countAsAttempt = false, layout = layout)
             log(
                 "CEVAP #${waiting.id} → ${optionLabel(waiting, dimmed)} · " +
-                    "süre doldu (denemeye sayılmadı) · ${a.colorSummary()}"
+                    "süre doldu (denemeye sayılmadı) · ${a.colorSummary()}" + zamanlama(waiting)
             )
             noteMiss(waiting, chosen = null, correct = dimmed, timedOut = true)
             finishAnswer(waiting.id)
@@ -1554,7 +1782,10 @@ class CaptureAccessibilityService : AccessibilityService() {
             return false
         }
         record(waiting, pending, Repo.AnswerEvidence.TOUCH, true, attempt, layout)
-        log("CEVAP #${waiting.id} → ${optionLabel(waiting, pending)} · bildin (turkuaz sabit kaldı)")
+        log(
+            "CEVAP #${waiting.id} → ${optionLabel(waiting, pending)} · bildin (turkuaz sabit kaldı)" +
+                zamanlama(waiting)
+        )
         finishAnswer(waiting.id)
         return true
     }
@@ -1651,6 +1882,13 @@ class CaptureAccessibilityService : AccessibilityService() {
      * akışa yalnızca ekranda görünen pencere veriliyor.
      */
     private fun log(line: String) {
+        // Birikmiş iz grubu önce yazılsın ki satırlar zaman sırasını korusun.
+        izi.bosalt()
+        logHam(line)
+    }
+
+    /** Günlüğe doğrudan yazar; [TaramaIzi] kendi satırları için bunu kullanıyor. */
+    private fun logHam(line: String) {
         var toplam = 0
         val visible = synchronized(logLock) {
             logLines.addFirst(logStamp.format(java.util.Date()) + "  " + line)
@@ -1689,35 +1927,50 @@ class CaptureAccessibilityService : AccessibilityService() {
         // geçen kare sayısı sınırı dolunca turu erken bitiriyoruz.
         val tapCountAtStart = waiting.taps
         burstJob = scope.launch {
-            var sessiz = 0
-            repeat(if (fast) VERDICT_TRIES_FAST else VERDICT_TRIES_SLOW) {
-                if (pendingAnswer?.id != waiting.id) return@launch
-                if (tapCountAtStart > 0 && !waiting.tintSeen) {
-                    if (++sessiz >= SILENT_BURST_LIMIT) {
-                        log("otomatik #${waiting.id}: dokunuşa tepki yok, yeniden denenecek")
-                        return@launch
+            // Teşhis: tur kaç kare sürdü, nasıl bitti. Tur sürerken tarama
+            // bekliyor ("İZ burst" çıkışları yazılmıyor), süresi buradan.
+            val turBasla = SystemClock.uptimeMillis()
+            var tur = 0
+            var kareYok = 0
+            var sonuc = "bitti"
+            try {
+                var sessiz = 0
+                repeat(if (fast) VERDICT_TRIES_FAST else VERDICT_TRIES_SLOW) {
+                    tur++
+                    if (pendingAnswer?.id != waiting.id) { sonuc = "soru_degisti"; return@launch }
+                    if (tapCountAtStart > 0 && !waiting.tintSeen) {
+                        if (++sessiz >= SILENT_BURST_LIMIT) {
+                            sonuc = "sessiz"
+                            log("otomatik #${waiting.id}: dokunuşa tepki yok, yeniden denenecek")
+                            return@launch
+                        }
+                    } else {
+                        sessiz = 0
                     }
-                } else {
-                    sessiz = 0
+                    if (fast) {
+                        delay(VERDICT_GAP_FAST_MS)
+                        // peek() yeniden kullanılan kareyi döndürür: hiç bellek
+                        // ayrılmaz, bu yüzden saniyede 20 kez bakmak ucuz.
+                        // Dönen Bitmap recycle EDİLMEZ.
+                        val bmp = ProjectionService.peek() ?: run { kareYok++; return@repeat }
+                        val done = runCatching {
+                            evaluateAnswer(bmp, waiting, screenW, screenH, timedOutHint = null)
+                        }.getOrDefault(false)
+                        if (done) { sonuc = "karar"; return@launch }
+                    } else {
+                        val bmp = captureScreen() ?: run { kareYok++; return@repeat }
+                        val done = runCatching {
+                            evaluateAnswer(bmp, waiting, screenW, screenH, timedOutHint = null)
+                        }.getOrDefault(false)
+                        if (!bmp.isRecycled) bmp.recycle()
+                        if (done) { sonuc = "karar"; return@launch }
+                    }
                 }
-                if (fast) {
-                    delay(VERDICT_GAP_FAST_MS)
-                    // peek() yeniden kullanılan kareyi döndürür: hiç bellek
-                    // ayrılmaz, bu yüzden saniyede 20 kez bakmak ucuz.
-                    // Dönen Bitmap recycle EDİLMEZ.
-                    val bmp = ProjectionService.peek() ?: return@repeat
-                    val done = runCatching {
-                        evaluateAnswer(bmp, waiting, screenW, screenH, timedOutHint = null)
-                    }.getOrDefault(false)
-                    if (done) return@launch
-                } else {
-                    val bmp = captureScreen() ?: return@repeat
-                    val done = runCatching {
-                        evaluateAnswer(bmp, waiting, screenW, screenH, timedOutHint = null)
-                    }.getOrDefault(false)
-                    if (!bmp.isRecycled) bmp.recycle()
-                    if (done) return@launch
-                }
+            } finally {
+                log(
+                    "İZ KARAR_TURU #${waiting.id} tur=$tur ${SystemClock.uptimeMillis() - turBasla}ms " +
+                        "sonuç=$sonuc kare_yok=$kareYok"
+                )
             }
         }
     }
@@ -2077,6 +2330,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         pollJob?.cancel()
         burstJob?.cancel()
         autoJob?.cancel()
+        watchdogJob?.cancel()
         return super.onUnbind(intent)
     }
 
@@ -2086,6 +2340,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         pollJob?.cancel()
         burstJob?.cancel()
         autoJob?.cancel()
+        watchdogJob?.cancel()
         super.onDestroy()
     }
 
@@ -2243,6 +2498,15 @@ class CaptureAccessibilityService : AccessibilityService() {
         private const val CARD_STATIC_MS = 1000L
         /** "Kart oturmadı" kapısında bu kadar takılan okuma günlüğe yazılır. */
         private const val RENDER_WAIT_LOG_MS = 1000L
+        /** Bekçinin tarama ve yoklamaya bakma aralığı. */
+        private const val WATCHDOG_MS = 1000L
+        /**
+         * Yoklama döngüsü tek bir aşamada bundan uzun kalırsa takılmış sayılır.
+         * En uzun olağan aşaması bekleme kipindeki 2 saniyelik uyku.
+         */
+        private const val POLL_STUCK_MS = 5000L
+        /** İki okuma "aynı soru" sayılsın diye soru metinlerinin en az benzerliği. */
+        private const val OKUMA_AYNI_SORU = 0.8f
         /**
          * Yakın plan OCR'dan önce ekranın en az bu kadar kıpırdamamış olması
          * gerekiyor: şıklar teker teker belirirken 3/4 normaldir, o anda
@@ -2309,7 +2573,7 @@ class CaptureAccessibilityService : AccessibilityService() {
          * çoktan ekrandan kaymış oluyor — "Paylaş" düğmesi geçmişin tamamını
          * dışarı veriyor.
          */
-        const val LOG_LIMIT = 4000
+        const val LOG_LIMIT = 10_000
         /** Teşhis ekranında gösterilen satır sayısı. */
         const val LOG_VISIBLE = 80
 
@@ -2318,7 +2582,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         private val logLines = ArrayDeque<String>()
         /** Tek örnek; her satırda yenisini kurmak çağrının kendisinden pahalıydı. */
         private val logStamp =
-            java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+            java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault())
 
         /**
          * Arayüzün gördüğü pencere — yalnızca son [LOG_VISIBLE] satır.
