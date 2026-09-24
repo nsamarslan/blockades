@@ -292,28 +292,70 @@ class AutoPlayer(
                 for (line in item.lines) {
                     if (line.text != item.text) out.add(line)
                     val words = line.lines
-                    if (line.text.length > RUN_LINE_MAX_LEN || words.size < 2) continue
-                    for (i in words.indices) {
-                        for (j in i until minOf(words.size, i + RUN_MAX_WORDS)) {
-                            if (i == 0 && j == words.lastIndex) continue // satırın kendisi
-                            val run = words.subList(i, j + 1)
-                            out.add(
-                                TextItem(
-                                    run.joinToString(" ") { it.text },
-                                    Rect(
-                                        run.minOf { it.bounds.left },
-                                        run.minOf { it.bounds.top },
-                                        run.maxOf { it.bounds.right },
-                                        run.maxOf { it.bounds.bottom }
-                                    )
-                                )
-                            )
+                    if (words.size < 2) continue
+                    // Satır, kelimeler arasındaki geniş boşluklardan
+                    // parçalara bölünüyor: yan yana duran düğmelerin yazıları
+                    // ("Kategoriler   Ana Menü   Tekrar Oyna") bazen tek
+                    // satıra birleşiyor ve satır uzun olduğu için aşağıdaki
+                    // kelime dizileri hiç çıkarılmıyordu — tur sonunda hiçbir
+                    // şeye basılmadı. Düğmeler arasındaki boşluk kelime
+                    // arasındaki boşluktan çok daha geniş; her parça ayrı bir
+                    // düğme yazısı gibi ele alınıyor.
+                    val parcalar = bosluklaBol(
+                        IntArray(words.size) { words[it].bounds.left },
+                        IntArray(words.size) { words[it].bounds.right },
+                        IntArray(words.size) { words[it].bounds.height() }
+                    )
+                    for (parca in parcalar) {
+                        val pw = words.subList(parca.first, parca.last + 1)
+                        if (parcalar.size > 1) out.add(birlestir(pw))
+                        val metin = pw.joinToString(" ") { it.text }
+                        if (metin.length > RUN_LINE_MAX_LEN || pw.size < 2) continue
+                        for (i in pw.indices) {
+                            for (j in i until minOf(pw.size, i + RUN_MAX_WORDS)) {
+                                if (i == 0 && j == pw.lastIndex) continue // parçanın kendisi
+                                out.add(birlestir(pw.subList(i, j + 1)))
+                            }
                         }
                     }
                 }
             }
             return out
         }
+
+        private fun birlestir(run: List<TextItem>): TextItem = TextItem(
+            run.joinToString(" ") { it.text },
+            Rect(
+                run.minOf { it.bounds.left },
+                run.minOf { it.bounds.top },
+                run.maxOf { it.bounds.right },
+                run.maxOf { it.bounds.bottom }
+            )
+        )
+
+        /**
+         * Bir satırın kelimelerini, aralarındaki boşluk kelime yüksekliğinin
+         * [PARCA_BOSLUK_ORANI] katından genişse ayrı parçalara böler.
+         * Kelimeler soldan sağa sıralı gelmeli. Dönen aralıklar kelime
+         * indisleridir. `Rect` birim testte çalışmadığı için düz sayılarla.
+         */
+        internal fun bosluklaBol(sol: IntArray, sag: IntArray, yukseklik: IntArray): List<IntRange> {
+            if (sol.isEmpty()) return emptyList()
+            val h = yukseklik.sorted()[yukseklik.size / 2].coerceAtLeast(1)
+            val out = ArrayList<IntRange>()
+            var bas = 0
+            for (i in 1 until sol.size) {
+                if (sol[i] - sag[i - 1] > h * PARCA_BOSLUK_ORANI) {
+                    out.add(bas until i)
+                    bas = i
+                }
+            }
+            out.add(bas until sol.size)
+            return out
+        }
+
+        /** Kelime yüksekliğinin bu katından geniş boşluk, iki ayrı düğme demek. */
+        private const val PARCA_BOSLUK_ORANI = 1.5f
 
         /** Kelime dizisi çıkarılacak satırın en fazla uzunluğu (düğme yazısı gibi kısa). */
         private const val RUN_LINE_MAX_LEN = 28

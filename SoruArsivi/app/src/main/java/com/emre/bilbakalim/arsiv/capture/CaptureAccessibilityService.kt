@@ -1599,12 +1599,16 @@ class CaptureAccessibilityService : AccessibilityService() {
      * bir kez günlüğe yazar. Aynı ekran için tekrar tekrar yazmaz.
      */
     private fun logIdleScreen(items: List<TextItem>) {
+        // Satırlar ayrı ayrı yazılıyor ve uzun satırlar da görünüyor: düğme
+        // yazıları tek satıra birleşince (32 harf) eskiden 28 harf sınırına
+        // takılıp günlükten düşüyordu; ekranda düğme yokmuş gibi görünüyordu.
         val labels = items
-            .filter { it.text.trim().length in 2..28 }
+            .flatMap { if (it.lines.size > 1) it.lines else listOf(it) }
+            .filter { it.text.trim().length in 2..48 }
             .sortedBy { it.centerY }
             .map { it.text.trim().replace('\n', ' ') }
             .distinct()
-            .take(12)
+            .take(16)
         if (labels.isEmpty()) return
         val line = labels.joinToString(" | ")
         if (line == lastIdleScreen) return

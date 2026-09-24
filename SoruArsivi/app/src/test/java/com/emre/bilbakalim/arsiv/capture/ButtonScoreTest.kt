@@ -68,4 +68,21 @@ class ButtonScoreTest {
         assertEquals(0, AutoPlayer.buttonScore("Doldur"))
         assertEquals(0, AutoPlayer.buttonScore("+1 Can"))
     }
+
+    @Test
+    fun `yan yana dugme yazilari genis bosluktan bolunur`() {
+        // Tur sonu, 1080 px: "Kategoriler | Ana Menü | Tekrar Oyna" tek satır.
+        val sol = intArrayOf(95, 440, 520, 790, 915)
+        val sag = intArrayOf(290, 505, 640, 900, 1015)
+        val yuk = intArrayOf(40, 40, 40, 40, 40)
+        assertEquals(listOf(0..0, 1..2, 3..4), AutoPlayer.bosluklaBol(sol, sag, yuk))
+    }
+
+    @Test
+    fun `normal cumle bolunmez`() {
+        val sol = intArrayOf(100, 215, 330)
+        val sag = intArrayOf(200, 315, 430)
+        val yuk = intArrayOf(40, 40, 40)
+        assertEquals(listOf(0..2), AutoPlayer.bosluklaBol(sol, sag, yuk))
+    }
 }

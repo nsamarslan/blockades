@@ -885,6 +885,14 @@ Artık:
   kısa satırların kelime dizileri de düğme adayı. "Tekrar Oyna" dizisi
   birebir eşleştiği için satırın kendisinden yüksek puan alıyor ve dokunuş
   o yazıya gidiyor.
+* **Üç düğme tek satır olunca hiç basmıyordu (3.4).** OCR bazen
+  "Kategoriler", "Ana Menü" ve "Tekrar Oyna"yı tek satır okuyor. Bu satır
+  28 harfi aştığı için kelime dizileri çıkarılmıyordu. Aynı sınır yüzünden
+  satır günlüğe de yazılmıyordu: `tur sonu · tanınan düğme yok` satırında
+  düğme yazısı hiç görünmüyordu. Artık satır, kelimeler arasındaki geniş
+  boşluklardan (kelime yüksekliğinin 1,5 katından geniş) parçalara bölünüyor
+  ve her parça ayrı bir düğme yazısı sayılıyor. Günlükte de 48 harfe kadar
+  satırlar ayrı ayrı yazılıyor.
 * **Tek harflik okuma hatası.** "Tekrar Oyna" bir dakika boyunca "Tekrar
   Oynd" okundu ve hiçbir şeye basılmadı. Sekiz harften uzun düğme yazılarında
   tek harf farkı hoş görülüyor. Kısa yazılarda bu tolerans yok, çünkü tek
