@@ -31,6 +31,13 @@ class Prefs private constructor(context: Context) {
         val activeCategory: String = "",
         /** Kategori adını ekrandan otomatik tanımaya çalış. */
         val autoDetectCategory: Boolean = true,
+        /**
+         * Ana ekranda seçilebilen kategoriler. Kullanıcı ekleyip adlarını
+         * değiştirebiliyor; hiç dokunmadıysa [BILINEN_KATEGORILER].
+         */
+        val categories: List<String> = BILINEN_KATEGORILER,
+        /** Adı değiştirilmiş kategorilerin eski adları (bkz. [KategoriListesi]). */
+        val categoryAliases: Map<String, String> = emptyMap(),
         /** Erişilebilirlik metni yetersizse ekran görüntüsü + OCR'a düş. */
         val ocrFallback: Boolean = true,
         /** Erişilebilirlik başarılı olsa bile OCR ile karşılaştır (daha yavaş). */
@@ -114,13 +121,30 @@ class Prefs private constructor(context: Context) {
         val unknownChime: Boolean = false,
         /** Bilgilendirme ekranı gösterildi mi. */
         val onboarded: Boolean = false
-    )
+    ) {
+        /**
+         * Kategori listesi eski adlarıyla birlikte. Bir kez kuruluyor: ad
+         * tanıma her ayrıştırmada buna bakıyor.
+         */
+        val kategoriListesi: KategoriListesi by lazy { KategoriListesi(categories, categoryAliases) }
+    }
 
     private fun read() = Settings(
         targetPackages = sp.getStringSet(K_TARGETS, emptySet()) ?: emptySet(),
         paused = sp.getBoolean(K_PAUSED, false),
         activeCategory = sp.getString(K_CATEGORY, "") ?: "",
         autoDetectCategory = sp.getBoolean(K_AUTO_CAT, true),
+        categories = sp.getString(K_CAT_LIST, null)
+            ?.split('\n')?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() }
+            ?: BILINEN_KATEGORILER,
+        categoryAliases = sp.getString(K_CAT_ALIASES, null)
+            ?.split('\n')
+            ?.mapNotNull { satir ->
+                val i = satir.indexOf('\t')
+                if (i <= 0 || i == satir.lastIndex) null else satir.substring(0, i) to satir.substring(i + 1)
+            }
+            ?.toMap()
+            ?: emptyMap(),
         ocrFallback = sp.getBoolean(K_OCR_FALLBACK, true),
         ocrAlways = sp.getBoolean(K_OCR_ALWAYS, false),
         detectAnswer = sp.getBoolean(K_DETECT_ANSWER, true),
@@ -178,11 +202,50 @@ class Prefs private constructor(context: Context) {
 
     fun resetRegions() = setRegions(0.08f, 0.55f, 0.45f, 0.90f)
 
+    /**
+     * Listeye kategori ekler. Aynı ad (belki farklı yazılışla) zaten varsa
+     * liste değişmez. Listedeki adı döndürür; ad boşsa null.
+     */
+    @Synchronized
+    fun addCategory(ad: String): String? {
+        val liste = _state.value.kategoriListesi
+        val temiz = KategoriListesi.sadelestir(ad).takeIf { it.isNotEmpty() } ?: return null
+        liste.bul(temiz)?.let { return it }
+        commit { putKategoriler(liste.ekle(temiz)) }
+        return temiz
+    }
+
+    /**
+     * Kategorinin adını listede değiştirir; seçili kategori o ise seçim de
+     * yeni ada geçer. Arşivdeki kayıtlar [Repo.renameCategory] ile taşınır.
+     */
+    @Synchronized
+    fun renameCategory(eski: String, yeni: String): KategoriListesi.AdDegisimi? {
+        val s = _state.value
+        val sonuc = s.kategoriListesi.yenidenAdlandir(eski, yeni) ?: return null
+        val seciliydi = s.activeCategory.isNotBlank() &&
+            KategoriListesi.anahtar(s.activeCategory) == KategoriListesi.anahtar(eski)
+        commit {
+            putKategoriler(sonuc.liste)
+            if (seciliydi) putString(K_CATEGORY, sonuc.hedef)
+        }
+        return sonuc
+    }
+
+    private fun SharedPreferences.Editor.putKategoriler(liste: KategoriListesi) {
+        // Adlar KategoriListesi.sadelestir'den geçtiği için satır sonu ya da
+        // sekme içermiyor; anahtarlar yalnızca harf ve rakam.
+        putString(K_CAT_LIST, liste.adlar.joinToString("\n"))
+        putString(K_CAT_ALIASES, liste.eskiAdlar.entries.joinToString("\n") { "${it.key}\t${it.value}" })
+    }
+
     companion object {
         private const val K_TARGETS = "hedef_paketler"
         private const val K_PAUSED = "duraklatildi"
         private const val K_CATEGORY = "kategori"
         private const val K_AUTO_CAT = "kategori_otomatik"
+        private const val K_CAT_LIST = "kategori_listesi"
+        private const val K_CAT_ALIASES = "kategori_eski_adlari"
         private const val K_OCR_FALLBACK = "ocr_yedek"
         private const val K_OCR_ALWAYS = "ocr_her_zaman"
         private const val K_DETECT_ANSWER = "cevap_tespiti"

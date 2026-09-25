@@ -100,6 +100,17 @@ interface QuestionDao {
     @Query("SELECT category, COUNT(*) AS adet FROM questions GROUP BY category ORDER BY adet DESC")
     fun observeCategoryCounts(): Flow<List<CategoryCount>>
 
+    /** Arşivde geçen kategori adları, yazıldıkları gibi. */
+    @Query("SELECT DISTINCT category FROM questions WHERE category IS NOT NULL")
+    suspend fun distinctCategories(): List<String>
+
+    /**
+     * Bir kategorinin bütün kayıtlarını başka ada taşır; elle düzeltilmiş
+     * kayıtlar da dahil. Kaç kayıt değişti.
+     */
+    @Query("UPDATE questions SET category = :yeni WHERE category = :eski")
+    suspend fun renameCategory(eski: String, yeni: String): Int
+
     @Query(
         """
         SELECT * FROM questions

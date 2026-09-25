@@ -43,6 +43,8 @@ class AutoPlayer(
     @Volatile private var lastButtonKey: String? = null
     @Volatile private var sameButtonCount = 0
     @Volatile private var blockedUntil = 0L
+    /** İşe yaramadığı için [blockedUntil]'e kadar basılmayan düğmenin anahtarı. */
+    @Volatile private var blockedKey: String? = null
 
     /** Kaç soru otomatik cevaplandı / kaç kez tur yeniden başlatıldı. */
     @Volatile var tapCount = 0
@@ -58,6 +60,7 @@ class AutoPlayer(
         lastButtonKey = null
         sameButtonCount = 0
         blockedUntil = 0L
+        blockedKey = null
     }
 
     /** Mod kapatıldığında ya da servis düştüğünde her şeyi unut. */
@@ -89,8 +92,11 @@ class AutoPlayer(
 
     /** [pressContinue] sonucu. */
     sealed interface Continue {
-        /** Basıldı. */
-        data class Pressed(val label: String) : Continue
+        /**
+         * Basıldı. [pencere] doluysa basılan düğme yeni tur başlatmadı,
+         * araya giren bir pencereyi kapattı; değeri pencerenin başlığı.
+         */
+        data class Pressed(val label: String, val pencere: String? = null) : Continue
         /** Tanıdık bir düğme yok — çağıran taraf ekranı raporlayabilir. */
         data object NotFound : Continue
         /**
@@ -117,7 +123,14 @@ class AutoPlayer(
         allowDismiss: Boolean,
         refillLives: Boolean
     ): Continue {
-        val adaylar = buttonCandidates(items)
+        val adaylar = buttonCandidates(items).filter { ekranda(it, screenH) }
+        val now = SystemClock.uptimeMillis()
+        // İşe yaramadığı için ara verilen düğme. Ekranda başka tanıdık bir
+        // düğme varsa ona geçiliyor: düğmenin önünü bizim tanımadığımız bir
+        // pencere kapatıyor olabilir. Eskiden 30 saniye boyunca hiçbir şeye
+        // basılmıyor, sonra aynı düğmeyle yeniden başlanıyordu.
+        val haric = blockedKey?.takeIf { now < blockedUntil }
+        var pencere: String? = null
         // "Can Kalmadı" penceresi: arkasındaki "Tekrar Oyna" soluk da olsa
         // okunuyor ve bot ona basıyordu; oysa pencere kapanmadan hiçbir şey
         // olmuyor. Ya "Doldur"a basılıyor ya da beklenip hiçbir şeye
@@ -127,26 +140,55 @@ class AutoPlayer(
                 logOnce("otomatik: can kalmadı, doldurma kapalı (ayar) · bekliyorum")
                 return Continue.Waiting
             }
-            findRefill(adaylar, screenH) ?: run {
+            val doldur = findRefill(adaylar) ?: run {
                 logOnce("otomatik: can kalmadı ama \"Doldur\" okunamadı · bekliyorum")
                 return Continue.Waiting
             }
+            // Altın yetmiyorsa: pencerenin arkasındaki düğmelere yine basılmıyor.
+            if (haric != null && TurkishText.normalizeKey(doldur.text).contains(haric)) {
+                return Continue.Waiting
+            }
+            doldur
         } else {
-            // Önce düğmeyi arıyoruz: "bulunamadı" ile "bekliyoruz" ayrımı ancak
-            // böyle doğru kurulur.
-            findButton(adaylar, screenH, allowDismiss) ?: return Continue.NotFound
+            // Seviye atlama ("Tebrikler!") penceresi tur sonu ekranının üstüne
+            // açılıyor. Arkadaki "Tekrar Oyna" soluk da olsa okunuyor, "Devam
+            // Et" ile aynı puanı alıyor ve eşitlikte ekranda aşağıda olan
+            // kazandığı için bot hep arkadaki düğmeye basıyordu. Pencere
+            // kapanmadığı için o dokunuş hiçbir şey yapmıyor; bot dört kez
+            // basıp 30 saniye bekliyor ve bunu sonsuza kadar tekrarlıyordu.
+            // Pencere görünüyorsa önce onun kendi düğmesine basılıyor.
+            val anahtarlar = adaylar.map { TurkishText.normalizeKey(it.text) }
+            val pencereDugmesi = pencereDugmesi(anahtarlar, IntArray(adaylar.size) { adaylar[it].centerY })
+                ?.takeIf { i -> haric == null || !anahtarlar[i].contains(haric) }
+            if (pencereDugmesi != null) {
+                pencere = pencereBasligi(anahtarlar, adaylar)
+                adaylar[pencereDugmesi]
+            } else {
+                // Önce düğmeyi arıyoruz: "bulunamadı" ile "bekliyoruz" ayrımı
+                // ancak böyle doğru kurulur.
+                findButton(adaylar, allowDismiss, haric)
+                    ?: return if (haric != null && findButton(adaylar, allowDismiss, null) != null) {
+                        Continue.Waiting
+                    } else {
+                        Continue.NotFound
+                    }
+            }
         }
 
-        val now = SystemClock.uptimeMillis()
-        if (now < blockedUntil || now - lastButtonAt < BUTTON_GAP_MS) return Continue.Waiting
+        if (now - lastButtonAt < BUTTON_GAP_MS) return Continue.Waiting
 
         val key = TurkishText.normalizeKey(target.text)
         if (key == lastButtonKey) {
             sameButtonCount++
             if (sameButtonCount > SAME_BUTTON_LIMIT) {
                 blockedUntil = now + BUTTON_COOLDOWN_MS
+                blockedKey = key
                 sameButtonCount = 0
-                log("otomatik: \"${target.text}\" işe yaramadı, ${BUTTON_COOLDOWN_MS / 1000} sn ara veriliyor")
+                lastButtonKey = null
+                log(
+                    "otomatik: \"${target.text}\" işe yaramadı, ${BUTTON_COOLDOWN_MS / 1000} sn " +
+                        "ona basılmayacak (ekranda başka düğme varsa ona geçiliyor)"
+                )
                 return Continue.Waiting
             }
         } else {
@@ -158,8 +200,8 @@ class AutoPlayer(
         if (!tap(target.bounds.centerX(), target.bounds.centerY(), longPress = false)) {
             return Continue.Waiting
         }
-        restartCount++
-        return Continue.Pressed(target.text)
+        if (pencere == null) restartCount++
+        return Continue.Pressed(target.text, pencere)
     }
 
     // -----------------------------------------------------------------------
@@ -177,10 +219,16 @@ class AutoPlayer(
     }
 
     /** "Can Kalmadı" penceresindeki "Doldur" düğmesi. */
-    private fun findRefill(adaylar: List<TextItem>, screenH: Int): TextItem? =
-        adaylar.filter { ekranda(it, screenH) }
-            .filter { TurkishText.normalizeKey(it.text) == DOLDUR }
+    private fun findRefill(adaylar: List<TextItem>): TextItem? =
+        adaylar.filter { TurkishText.normalizeKey(it.text) == DOLDUR }
             .maxByOrNull { it.centerY }
+
+    /** Günlük için pencerenin başlığı: "Tebrikler!", okunamadıysa en üstteki başlık. */
+    private fun pencereBasligi(anahtarlar: List<String>, adaylar: List<TextItem>): String =
+        adaylar.indices.filter { pencereBasligiMi(anahtarlar[it]) }
+            .minWithOrNull(compareBy({ !anahtarlar[it].startsWith("tebrik") }, { adaylar[it].centerY }))
+            ?.let { adaylar[it].text.trim().replace('\n', ' ') }
+            ?: "pencere"
 
     private fun ekranda(item: TextItem, screenH: Int): Boolean =
         item.bounds.bottom >= screenH * 0.05f && item.bounds.top <= screenH * 0.98f &&
@@ -195,18 +243,22 @@ class AutoPlayer(
      *
      * "Çıkış", "Hayır" gibi oyunu kapatabilecek hiçbir yazı listede yok —
      * tanımadığı bir düğmeye asla basmaz.
+     *
+     * [items] önceden [ekranda] süzgecinden geçmiş olmalı: durum çubuğu ve
+     * gezinme çubuğu bölgesine hiç dokunulmuyor. Anahtarında [haric] geçen
+     * yazılar atlanıyor (işe yaramadığı için ara verilen düğme; "Ana Menü
+     * Tekrar Oyna" gibi birleşik satırlarıyla birlikte).
      */
     private fun findButton(
         items: List<TextItem>,
-        screenH: Int,
-        allowDismiss: Boolean
+        allowDismiss: Boolean,
+        haric: String?
     ): TextItem? {
         var best: TextItem? = null
         var bestScore = 0
         val minScore = if (allowDismiss) 2 else 3
         for (item in items) {
-            // Durum çubuğu ve gezinme çubuğu bölgesine hiç dokunma.
-            if (!ekranda(item, screenH)) continue
+            if (haric != null && TurkishText.normalizeKey(item.text).contains(haric)) continue
 
             val score = buttonScore(item.text)
             if (score < minScore) continue
@@ -389,6 +441,53 @@ class AutoPlayer(
             if (DISMISS.any { it == k }) return 2
             return 0
         }
+
+        /**
+         * Araya giren bir pencere (seviye atlama, "Tebrikler!") görünüyorsa
+         * onun düğmesinin indisi; pencere yoksa ya da düğmesi okunamadıysa
+         * null.
+         *
+         * Pencerenin düğmesi, en üstteki başlık yazısının altındaki ilk
+         * pencere düğmesi ("Devam Et", "Tamam"). Arkadaki tur sonu ekranının
+         * düğmeleri ("Tekrar Oyna") bu listede yok; onlara pencere
+         * kapanınca sıradan yoldan basılıyor.
+         *
+         * [anahtarlar] [TurkishText.normalizeKey] ile sadeleşmiş yazılar,
+         * [ortaY] kutularının dikey ortası. `Rect` birim testte çalışmadığı
+         * için düz sayılarla.
+         */
+        internal fun pencereDugmesi(anahtarlar: List<String>, ortaY: IntArray): Int? {
+            val baslikY = anahtarlar.indices.filter { pencereBasligiMi(anahtarlar[it]) }
+                .minOfOrNull { ortaY[it] } ?: return null
+            return anahtarlar.indices
+                .filter { i -> ortaY[i] > baslikY && pencereDugmesiMi(anahtarlar[i]) }
+                .minByOrNull { ortaY[it] }
+        }
+
+        /** "Tebrikler!", "SEVİYE 28", "Seviye Atladın" gibi pencere başlıkları. */
+        internal fun pencereBasligiMi(k: String): Boolean =
+            k.length <= PENCERE_BASLIK_MAX_LEN && PENCERE_BASLIKLARI.any { k.startsWith(it) }
+
+        private fun pencereDugmesiMi(k: String): Boolean =
+            PENCERE_DUGMELERI.any { d ->
+                k == d || (d.length >= PENCERE_FUZZY_MIN_LEN && TurkishText.sameOptionKey(k, d))
+            }
+
+        /**
+         * Pencere başlıkları. Yalnızca başta: "Seviye 28" sadeleşince
+         * "seviye28" oluyor.
+         */
+        private val PENCERE_BASLIKLARI = listOf("tebrik", "seviye", "yeniseviye")
+        /** Uzun bir cümlenin başındaki "tebrik" pencere başlığı sayılmasın. */
+        private const val PENCERE_BASLIK_MAX_LEN = 20
+
+        /**
+         * Pencereyi kapatan düğmeler. Bilerek kısa tutuldu: "2x Topla",
+         * "Reklam İzle" gibi reklam açan düğmeler yok.
+         */
+        private val PENCERE_DUGMELERI = listOf("devamet", "devam", "tamam", "kapat")
+        /** "Devam Ef" gibi tek harf hatası yalnızca "devamet"te hoş görülüyor. */
+        private const val PENCERE_FUZZY_MIN_LEN = 7
 
         /** Tek harflik hatanın hoş görüldüğü en kısa düğme yazısı. */
         private const val FUZZY_MIN_LEN = 8

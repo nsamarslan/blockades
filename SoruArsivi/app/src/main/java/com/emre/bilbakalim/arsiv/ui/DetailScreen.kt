@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Save
@@ -37,13 +39,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
-import com.emre.bilbakalim.arsiv.data.Prefs
 import java.io.File
 
 @Composable
 fun DetailScreen(vm: ArsivViewModel, id: Long, onBack: () -> Unit) {
 
     val question by vm.observeQuestion(id).collectAsState(initial = null)
+    val settings by vm.settings.collectAsState()
 
     var qText by remember { mutableStateOf("") }
     var opts by remember { mutableStateOf(listOf("", "", "", "")) }
@@ -140,8 +142,9 @@ fun DetailScreen(vm: ArsivViewModel, id: Long, onBack: () -> Unit) {
                         singleLine = true
                     )
                     Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Prefs.BILINEN_KATEGORILER.take(4).forEach { c ->
+                    // Ana ekrandaki kategori listesi (eklenenler ve adı değişenler dahil).
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(settings.categories) { c ->
                             FilterChip(
                                 selected = category == c,
                                 onClick = { category = c },

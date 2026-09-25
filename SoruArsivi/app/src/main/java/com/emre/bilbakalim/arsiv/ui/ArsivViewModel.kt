@@ -16,6 +16,7 @@ import com.emre.bilbakalim.arsiv.capture.CaptureAccessibilityService
 import com.emre.bilbakalim.arsiv.capture.ProjectionPermissionActivity
 import com.emre.bilbakalim.arsiv.capture.ProjectionService
 import com.emre.bilbakalim.arsiv.data.CategoryCount
+import com.emre.bilbakalim.arsiv.data.KategoriListesi
 import com.emre.bilbakalim.arsiv.data.Prefs
 import com.emre.bilbakalim.arsiv.data.QuestionEntity
 import com.emre.bilbakalim.arsiv.data.Repo
@@ -140,6 +141,30 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setCategory(v: String) = prefs.setCategory(v)
     fun setTargets(v: Set<String>) = prefs.setTargets(v)
     fun setAutoDetectCategory(v: Boolean) = prefs.setAutoDetectCategory(v)
+
+    /** Listeye kategori ekler; listedeki adı döndürür (zaten varsa onun yazılışı). */
+    fun addCategory(ad: String): String? = prefs.addCategory(ad)
+
+    /**
+     * Kategorinin adını değiştirir: listede, seçimde, liste ekranının
+     * süzgecinde ve arşivdeki bütün kayıtlarında. [onDone] kaç kaydın
+     * değiştiğiyle çağrılır.
+     */
+    fun renameCategory(
+        eski: String,
+        yeni: String,
+        onDone: (KategoriListesi.AdDegisimi, Int) -> Unit
+    ) {
+        val sonuc = prefs.renameCategory(eski, yeni) ?: return
+        val eskiK = KategoriListesi.anahtar(eski)
+        if (filterCategory.value?.let { KategoriListesi.anahtar(it) } == eskiK) {
+            filterCategory.value = sonuc.hedef
+        }
+        viewModelScope.launch {
+            val adet = repo.renameCategory(eski, sonuc.hedef)
+            onDone(sonuc, adet)
+        }
+    }
     fun setOcrFallback(v: Boolean) = prefs.setOcrFallback(v)
     fun setOcrAlways(v: Boolean) = prefs.setOcrAlways(v)
     fun setDetectAnswer(v: Boolean) = prefs.setDetectAnswer(v)

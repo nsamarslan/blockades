@@ -77,7 +77,8 @@ Gereken: JDK 17, Android SDK 35.
 3. Uygulamaya dön, **"Hangi uygulamayı izleyeyim?"** düğmesine bas ve listeden
    yarışma uygulamasını işaretle.
 4. Ana ekranda kaydedilecek **kategoriyi** seç (ör. *Felsefe*). Böylece o
-   oturumda yakalanan her soru bu etiketle kaydedilir.
+   oturumda yakalanan her soru bu etiketle kaydedilir. Listede yoksa
+   **Ekle** ile kendin ekleyebilirsin (aşağıya bak: *Kategoriler*).
 5. Kart yeşile döndüyse hazırsın. Oyunu aç ve normal şekilde oyna.
 
 Kayıt sayısı arttıkça bildirim çubuğunda sessizce güncellenir; ana ekranda da
@@ -531,6 +532,7 @@ app/src/main/java/com/emre/bilbakalim/arsiv/
 │   ├── QuestionDao.kt           sorgular
 │   ├── ArsivDatabase.kt         Room veritabanı
 │   ├── Prefs.kt                 ayarlar
+│   ├── KategoriListesi.kt       kategori listesi: ekleme, ad değiştirme, eski adlar
 │   └── Repo.kt                  kaydetme + tekrar eleme mantığı
 ├── capture/
 │   ├── CaptureAccessibilityService.kt   motor: olay → tarama → kayıt
@@ -902,6 +904,51 @@ Artık:
   bot pencerede bekliyor; pencerenin arkasında soluk görünen "Tekrar
   Oyna"ya artık basmıyor. Altın yetmezse aynı düğmeye dört kez basılıp 30
   saniye ara veriliyor.
+* **Seviye atlama: "Tebrikler!" (3.6).** Seviye atlayınca tur sonu
+  ekranının üstüne "SEVİYE 28 · Tebrikler! · Devam Et" penceresi açılıyor.
+  Arkadaki "Tekrar Oyna" soluk da olsa okunuyor ve "Devam Et" ile aynı puanı
+  alıyordu; eşitlikte ekranda aşağıda olan kazandığı için bot pencerenin
+  arkasına basıyordu. Pencere kapanmadığı için o dokunuş hiçbir şey
+  yapmıyor, bot dört kez basıp 30 saniye bekliyor ve bunu sonsuza kadar
+  tekrarlıyordu. Artık ekranda "Tebrikler" ya da "Seviye" başlığı varsa
+  önce başlığın altındaki pencere düğmesine ("Devam Et", "Devam", "Tamam",
+  "Kapat") basılıyor, pencere kapanınca "Tekrar Oyna"ya. Günlükte
+  `OTOMATİK: "Tebrikler!" penceresi → "Devam Et"`.
+* **İşe yaramayan düğme artık her şeyi durdurmuyor (3.6).** Aynı düğmeye
+  dört kez basılıp ekran değişmezse eskiden 30 saniye boyunca **hiçbir**
+  düğmeye basılmıyordu. Artık yalnızca o düğmeye ara veriliyor; ekranda
+  tanıdık başka bir düğme varsa ona basılıyor. Önünü bizim tanımadığımız bir
+  pencere kapatıyorsa bot böylece kendiliğinden kurtuluyor. "Can Kalmadı"
+  penceresinde bu geçerli değil: "Doldur" işe yaramazsa (altın yetmiyor)
+  arkadaki düğmelere yine basılmıyor.
+
+## Kategoriler (3.6)
+
+Ana ekrandaki **Kaydedilecek kategori** listesi artık düzenlenebiliyor.
+
+* **Ekle** — listeye yeni bir kategori ekler. Aynı ad farklı yazılışla
+  ("bilim", "BİLİM") zaten varsa ikinci kez eklenmez.
+* **Adını değiştir** — seçili kategorinin adını değiştirir. Herhangi bir
+  kategoriye **basılı tutarak** ya da *Arşivdeki dağılım* kartında bir
+  satıra dokunarak da açılır; ikincisi listede olmayan (elle yazılmış,
+  yedekten gelmiş) kategoriler için.
+
+Ad değişince **o kategorideki bütün kayıtlar** da yeni adı alıyor: "Din
+Kültürü"nü "Bilim" yaparsan Din Kültürü'ndeki soruların hepsinin kategorisi
+"Bilim" olur. Aynı kategorinin arşivdeki farklı yazılışları ("din kültürü",
+"DİN KÜLTÜRÜ") da taşınıyor; elle düzeltilmiş kayıtlar da dahil. Seçili
+kategori buysa seçim ve liste ekranındaki süzgeç de yeni ada geçiyor.
+
+Yeni ad listede başka bir kategoriyse iki kategori **birleşiyor**: pencere
+bunu önceden söylüyor ("«Tarih» zaten var: iki kategori birleşecek"), eski ad
+listeden kalkıyor, kayıtlar var olan kategoriye geçiyor.
+
+Eski ad unutulmuyor. Oyun kategoriyi ekranda hâlâ eski adıyla gösterdiği için
+"Kategoriyi ekrandan tanı" açıkken ekranda "Din Kültürü" okunursa kayda
+"Bilim" yazılıyor; eski bir yedeği içe aktarırken de eski ad yeni ada
+çevriliyor. Aksi hâlde eski kategori ilk yeni soruyla arşive geri dönerdi.
+Eski adı **Ekle** ile yeniden eklersen o ad artık yönlendirilmiyor, yeniden
+ayrı bir kategori oluyor.
 
 ## Hız: OCR kapısı
 

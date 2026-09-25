@@ -2,6 +2,7 @@ package com.emre.bilbakalim.arsiv.data
 
 import android.content.Context
 import android.util.Log
+import androidx.room.withTransaction
 import com.emre.bilbakalim.arsiv.util.Importers
 import com.emre.bilbakalim.arsiv.util.TurkishText
 import kotlinx.coroutines.flow.Flow
@@ -14,7 +15,9 @@ import kotlinx.coroutines.flow.Flow
  */
 class Repo private constructor(context: Context) {
 
-    private val dao = ArsivDatabase.get(context).questionDao()
+    private val db = ArsivDatabase.get(context)
+    private val dao = db.questionDao()
+    private val prefs = Prefs.get(context)
 
     val totalCount: Flow<Int> = dao.observeTotal()
     val answeredCount: Flow<Int> = dao.observeAnswered()
@@ -137,7 +140,9 @@ class Repo private constructor(context: Context) {
             optionB = opts.getOrNull(1),
             optionC = opts.getOrNull(2),
             optionD = opts.getOrNull(3),
-            category = category?.takeIf { it.isNotBlank() },
+            // Tarama kategori adını taramanın başında okuyor; ad o sırada
+            // değiştirildiyse eski ad arşive geri yazılmasın.
+            category = prefs.state.value.kategoriListesi.guncelAd(category),
             source = source.name,
             confidence = confidence,
             fingerprint = fp,
@@ -209,7 +214,11 @@ class Repo private constructor(context: Context) {
         var merged = 0
         var skipped = 0
 
-        for (row in rows) {
+        // Adı değiştirilmiş bir kategori eski yedekte eski adıyla duruyor;
+        // olduğu gibi alınsa arşive geri dönerdi.
+        val kategoriler = prefs.state.value.kategoriListesi
+        for (ham in rows) {
+            val row = ham.copy(category = kategoriler.guncelAd(ham.category))
             val incoming = Importers.toEntity(row)
             // İçe aktarma her satırda arşivi değiştirebildiği için önbelleği
             // kullanmıyor; her satır güncel arşivle karşılaştırılıyor.
@@ -418,6 +427,24 @@ class Repo private constructor(context: Context) {
     }
     suspend fun byId(id: Long) = dao.byId(id)
     suspend fun allForExport() = dao.allForExport()
+
+    /**
+     * Bir kategorinin bütün kayıtlarını [yeni] ada taşır; kaç kayıt değişti.
+     *
+     * Aynı kategori arşivde farklı yazılışlarla da durabiliyor (elle
+     * "din kültürü" yazılmış, yedekten "DİN KÜLTÜRÜ" gelmiş); hepsi taşınıyor.
+     * Elle düzeltilmiş kayıtlar da dahil: kategorinin adı değişti, kaydın
+     * içeriği değil.
+     */
+    suspend fun renameCategory(eski: String, yeni: String): Int {
+        val k = KategoriListesi.anahtar(eski)
+        if (k.isEmpty() || yeni.isBlank()) return 0
+        return db.withTransaction {
+            dao.distinctCategories()
+                .filter { it != yeni && KategoriListesi.anahtar(it) == k }
+                .sumOf { dao.renameCategory(it, yeni) }
+        }
+    }
 
     companion object {
         private const val TAG = "SoruArsivi/Repo"

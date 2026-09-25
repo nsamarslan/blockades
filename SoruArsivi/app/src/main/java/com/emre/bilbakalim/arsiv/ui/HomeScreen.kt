@@ -1,5 +1,6 @@
 package com.emre.bilbakalim.arsiv.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -10,15 +11,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
@@ -30,7 +35,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,6 +44,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -54,7 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.emre.bilbakalim.arsiv.data.Prefs
+import com.emre.bilbakalim.arsiv.data.KategoriListesi
 
 @Composable
 fun HomeScreen(
@@ -89,6 +94,55 @@ fun HomeScreen(
     }
 
     val hazir = a11yOn && settings.targetPackages.isNotEmpty() && !settings.paused
+
+    // ---- Kategori düzenleme -------------------------------------------------
+    var kategoriEkle by remember { mutableStateOf(false) }
+    /** Adı değiştirilecek kategori; null ise pencere kapalı. */
+    var adiDegisecek by remember { mutableStateOf<String?>(null) }
+    /** Yeni eklenen kategori: çip satırı ona kaysın diye. */
+    var sonEklenen by remember { mutableStateOf<String?>(null) }
+    val cipSatiri = rememberLazyListState()
+    LaunchedEffect(sonEklenen, settings.categories) {
+        val ad = sonEklenen ?: return@LaunchedEffect
+        val i = settings.categories.indexOf(ad)
+        if (i >= 0) {
+            cipSatiri.animateScrollToItem(i)
+            sonEklenen = null
+        }
+    }
+
+    if (kategoriEkle) {
+        KategoriEkleDialog(
+            liste = settings.kategoriListesi,
+            onDismiss = { kategoriEkle = false },
+            onEkle = { ad ->
+                kategoriEkle = false
+                vm.addCategory(ad)?.let { eklenen ->
+                    sonEklenen = eklenen
+                    Toast.makeText(context, "«$eklenen» eklendi", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
+    adiDegisecek?.let { eski ->
+        val eskiK = KategoriListesi.anahtar(eski)
+        KategoriAdiDialog(
+            eski = eski,
+            adet = categories.filter { c -> c.category?.let { KategoriListesi.anahtar(it) } == eskiK }
+                .sumOf { it.adet },
+            liste = settings.kategoriListesi,
+            onDismiss = { adiDegisecek = null },
+            onKaydet = { yeni ->
+                adiDegisecek = null
+                vm.renameCategory(eski, yeni) { sonuc, adet ->
+                    val ne = if (sonuc.birlesti) "«$eski», «${sonuc.hedef}» ile birleşti"
+                    else "«$eski» → «${sonuc.hedef}»"
+                    val kac = if (adet > 0) " · $adet soru güncellendi" else ""
+                    Toast.makeText(context, ne + kac, Toast.LENGTH_LONG).show()
+                }
+            }
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -340,21 +394,42 @@ fun HomeScreen(
                 SectionCard("Kaydedilecek kategori") {
                     Text(
                         "Yeni sorular bu etiketle kaydedilir. Uygulama kategori adını " +
-                            "ekranda görürse zaten kendisi yazar.",
+                            "ekranda görürse zaten kendisi yazar. Adını değiştirmek için " +
+                            "kategoriye basılı tut; o kategorideki bütün sorular da yeni adı alır.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(10.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(Prefs.BILINEN_KATEGORILER) { cat ->
-                            FilterChip(
-                                selected = settings.activeCategory == cat,
+                    LazyRow(state = cipSatiri, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(settings.categories) { cat ->
+                            KategoriCipi(
+                                ad = cat,
+                                secili = settings.activeCategory == cat,
                                 onClick = {
                                     vm.setCategory(if (settings.activeCategory == cat) "" else cat)
                                 },
-                                label = { Text(cat) },
-                                colors = FilterChipDefaults.filterChipColors()
+                                onLongClick = { adiDegisecek = cat }
                             )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { kategoriEkle = true },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Ekle")
+                        }
+                        OutlinedButton(
+                            onClick = { adiDegisecek = settings.activeCategory },
+                            enabled = settings.activeCategory.isNotBlank(),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Adını değiştir", maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
@@ -365,16 +440,38 @@ fun HomeScreen(
                 item {
                     SectionCard("Arşivdeki dağılım") {
                         categories.take(8).forEach { c ->
+                            val ad = c.category
+                            // Listede olmayan (elle yazılmış, yedekten gelmiş)
+                            // kategorilerin adı da buradan değiştirilebiliyor.
                             Row(
-                                Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = ad != null) { adiDegisecek = ad }
+                                    .padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(c.category ?: "Etiketsiz", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    ad ?: "Etiketsiz",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f)
+                                )
                                 Text(
                                     "${c.adet}",
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Bold
                                 )
+                                if (ad != null) {
+                                    Spacer(Modifier.width(8.dp))
+                                    Icon(
+                                        Icons.Default.Edit,
+                                        contentDescription = "Adını değiştir",
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
+                                    Spacer(Modifier.width(24.dp))
+                                }
                             }
                         }
                     }

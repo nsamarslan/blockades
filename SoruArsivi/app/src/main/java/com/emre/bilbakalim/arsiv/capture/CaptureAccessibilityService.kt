@@ -1581,6 +1581,8 @@ class CaptureAccessibilityService : AccessibilityService() {
             is AutoPlayer.Continue.Pressed -> {
                 if (TurkishText.normalizeKey(sonuc.label) == "doldur") {
                     log("OTOMATİK: can kalmadı → \"${sonuc.label}\" (4000 altın)")
+                } else if (sonuc.pencere != null) {
+                    log("OTOMATİK: \"${sonuc.pencere}\" penceresi → \"${sonuc.label}\"")
                 } else {
                     log("OTOMATİK: \"${sonuc.label}\" → yeni tur (${auto.restartCount}. kez)")
                 }

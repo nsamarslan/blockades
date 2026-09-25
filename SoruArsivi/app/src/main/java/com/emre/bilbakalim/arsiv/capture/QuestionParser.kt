@@ -221,7 +221,7 @@ object QuestionParser {
         }
 
         // --- 3. Kategori -------------------------------------------------------
-        val category = if (s.autoDetectCategory) detectCategory(cleaned) else null
+        val category = if (s.autoDetectCategory) detectCategory(cleaned, s) else null
 
         // --- 4. Güven skoru ----------------------------------------------------
         var conf = 0.20f
@@ -633,13 +633,14 @@ object QuestionParser {
         return merged.takeIf { it.length >= 8 }
     }
 
-    private fun detectCategory(items: List<TextItem>): String? {
-        for (item in items) {
-            val key = TurkishText.normalizeKey(item.text)
-            for (cat in Prefs.BILINEN_KATEGORILER) {
-                if (key == TurkishText.normalizeKey(cat)) return cat
-            }
-        }
+    /**
+     * Ekranda kategori listesindeki bir ad (ya da adı değiştirilmiş bir
+     * kategorinin eski adı) görünüyorsa bugünkü adı. Liste ana ekrandan
+     * düzenlenebiliyor; bkz. [com.emre.bilbakalim.arsiv.data.KategoriListesi].
+     */
+    private fun detectCategory(items: List<TextItem>, s: Prefs.Settings): String? {
+        val liste = s.kategoriListesi
+        for (item in items) liste.tani(item.text)?.let { return it }
         return null
     }
 }
