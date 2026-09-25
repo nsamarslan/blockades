@@ -74,9 +74,20 @@ class QuestionParserTest {
     fun `puan balonu sik sanilmaz`() {
         // Doğru cevaptan sonra şıkkın üstüne düşen "+5"; arşivde şıkkı
         // "5 +5" olarak kaydedilmiş sorular bundan.
-        listOf("+5", "5 +5", "+10", "-5", "+ 5").forEach {
+        listOf("+5", "5 +5", "+10", "+ 5").forEach {
             assertFalse("\"$it\" elenmeli", keptInOptions(it))
             assertFalse("\"$it\" elenmeli", keptOutside(it))
+        }
+        // Şık bölgesinin dışında eksili balon da çöp.
+        assertFalse(keptOutside("-5"))
+    }
+
+    @Test
+    fun `sik bolgesinde eksili sayi siktir`() {
+        // "(-4)² neye eşittir?" gibi sorularda şıklar "-16 / -4 / 4 / 16".
+        // Eskiden eksili olanlar balon sanılıp atılıyordu.
+        listOf("-16", "-4", "-5", "-0,5").forEach {
+            assertTrue("\"$it\" şık olarak kalmalı", keptInOptions(it))
         }
     }
 

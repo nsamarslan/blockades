@@ -125,6 +125,17 @@ object QuestionParser {
         Regex("^(?=[^0-9]*[0-9])(?=[^+\\-\u00b1]*[+\\-\u00b1])[0-9\\s+\\-\u00b1]+$")
 
     /**
+     * Şık bölgesinde yalnızca artılı balon ("+5", "5 +5") çöp sayılıyor.
+     *
+     * Tek başına duran eksili sayı ("-16") matematik sorularında şıkkın
+     * kendisi: eskiden balon sanılıp atılıyor ya da işareti siliniyordu ve
+     * "-16 / -4 / 4 / 16" şıkları "16 / 4 / 4 / 16" oluyordu. Bölgenin
+     * dışında "-5" yine balon.
+     */
+    private val SCORE_POPUP_IN_OPTIONS =
+        Regex("^(?=[^0-9]*[0-9])(?=[^+\u00b1]*[+\u00b1])[0-9\\s+\\-\u00b1]+$")
+
+    /**
      * @param knownOptions Şık kutuları ekrandan **piksel olarak** bulunduysa
      *   (bkz. [OptionBoxFinder]) buradan geçirilir. O zaman "kaç şık var ve
      *   nerede" sorusu metne hiç sorulmaz: konum tabanlı sezgiler, rozet
@@ -415,7 +426,7 @@ object QuestionParser {
         // Süre bildirimi şık olamaz.
         if (t.matches(SECONDS)) return true
         // Doğru cevaptan sonra düşen puan balonu.
-        if (t.matches(SCORE_POPUP)) return true
+        if (t.matches(if (inOptionArea) SCORE_POPUP_IN_OPTIONS else SCORE_POPUP)) return true
         // Alttaki joker düğmeleri.
         if (TurkishText.normalizeKey(t) in JOKERS) return true
 

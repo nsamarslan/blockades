@@ -29,7 +29,8 @@ class Repo private constructor(context: Context) {
 
     sealed interface SaveResult {
         data class Inserted(val id: Long) : SaveResult
-        data class Duplicate(val id: Long) : SaveResult
+        /** [onarim] doluysa kayıt bozuk bulunup ekrandaki okumadan onarıldı. */
+        data class Duplicate(val id: Long, val onarim: String? = null) : SaveResult
         data object Rejected : SaveResult
     }
 
@@ -49,7 +50,17 @@ class Repo private constructor(context: Context) {
 
         val fp = TurkishText.fingerprint(q, opts)
 
-        dao.byFingerprint(fp)?.let { return SaveResult.Duplicate(it.id) }
+        dao.byFingerprint(fp)?.let { mevcut ->
+            // Parmak izi işaretleri görmüyor ("-16" ile "16" aynı anahtar);
+            // işareti silinmiş eski kayıt tam burada bulunuyor.
+            if (!mevcut.edited) {
+                isaretOnarimi(mevcut.options, mevcut.correctText, opts)?.let { onarim ->
+                    siklariOnar(mevcut, opts, fp, onarim)
+                    return SaveResult.Duplicate(mevcut.id, ISARET_ONARIMI)
+                }
+            }
+            return SaveResult.Duplicate(mevcut.id)
+        }
 
         // Bulanık kontrol: son kayıtlar + cevabı eksik olan bütün kayıtlar.
         //
@@ -70,21 +81,12 @@ class Repo private constructor(context: Context) {
                 // şıklar yalnızca liste kısaysa tamamlanıyor. Ekrandaki okuma
                 // bozulmanın tam karşılığıysa şıklar ondan yeniden yazılıyor.
                 siraSayisiOnarimi(old.options, old.correctText, opts)?.let { onarim ->
-                    val onarilmis = old.copy(
-                        optionA = opts.getOrNull(0),
-                        optionB = opts.getOrNull(1),
-                        optionC = opts.getOrNull(2),
-                        optionD = opts.getOrNull(3),
-                        correctIndex = onarim.dogru,
-                        answerSource = if (onarim.dogru == null) null else old.answerSource,
-                        fingerprint = fp
-                    )
-                    if (runCatching { dao.update(onarilmis) }.isFailure) {
-                        runCatching { dao.update(onarilmis.copy(fingerprint = old.fingerprint)) }
-                    }
-                    adaylariUnut()
-                    Log.i(TAG, "#${old.id} şıkları sıra sayılarıyla onarıldı")
-                    return SaveResult.Duplicate(old.id)
+                    siklariOnar(old, opts, fp, onarim)
+                    return SaveResult.Duplicate(old.id, SIRA_SAYISI_ONARIMI)
+                }
+                isaretOnarimi(old.options, old.correctText, opts)?.let { onarim ->
+                    siklariOnar(old, opts, fp, onarim)
+                    return SaveResult.Duplicate(old.id, ISARET_ONARIMI)
                 }
                 // Hangi metin daha temiz? Arayüz uyarısı içermeyen kazanır;
                 // ikisi de temizse daha uzun olanı alırız.
@@ -159,6 +161,30 @@ class Repo private constructor(context: Context) {
         }
     }
 
+
+    /**
+     * Bozuk bulunan kaydın şıklarını ekrandaki okumayla değiştirir. Doğru
+     * cevap [onarim]'daki yeni sırasıyla yazılıyor; belirsizse boşaltılıyor,
+     * bir sonraki renk okuması yeniden öğretiyor.
+     */
+    private suspend fun siklariOnar(old: QuestionEntity, opts: List<String>, fp: String, onarim: Onarim) {
+        val onarilmis = old.copy(
+            optionA = opts.getOrNull(0),
+            optionB = opts.getOrNull(1),
+            optionC = opts.getOrNull(2),
+            optionD = opts.getOrNull(3),
+            correctIndex = onarim.dogru,
+            answerSource = if (onarim.dogru == null) null else old.answerSource,
+            fingerprint = fp
+        )
+        // Parmak izi başka bir satırda duruyorsa tekil indeks yazmayı
+        // reddeder; o zaman eski parmak iziyle.
+        if (runCatching { dao.update(onarilmis) }.isFailure) {
+            runCatching { dao.update(onarilmis.copy(fingerprint = old.fingerprint)) }
+        }
+        adaylariUnut()
+        Log.i(TAG, "#${old.id} şıkları onarıldı: ${old.options} → $opts")
+    }
 
     /**
      * Tekrar denetiminin karşılaştırdığı arşiv, önceden hesaplanmış hâliyle.
@@ -360,7 +386,7 @@ class Repo private constructor(context: Context) {
 
 
     /**
-     * [siraSayisiOnarimi] sonucu: kayıt onarılacak. [dogru] doğru cevabın
+     * [siraSayisiOnarimi] ve [isaretOnarimi] sonucu: kayıt onarılacak. [dogru] doğru cevabın
      * ekrandaki yeni sırası; bilinmiyorsa ya da belirsizse null.
      */
     internal data class Onarim(val dogru: Int?)
@@ -502,6 +528,43 @@ class Repo private constructor(context: Context) {
                 ?: return Onarim(null)
             return Onarim(eskiKuralla.indices.filter { eskiKuralla[it] == dogru }.singleOrNull())
         }
+
+        /**
+         * Eski temizlik kuralının işaretini sildiği şıkları tanır.
+         *
+         * O kural sayının başındaki eksiyi süs sanıp kırpıyordu: "-16 / -4 /
+         * 4 / 16" şıkları arşive "16 / 4 / 4 / 16" diye yazılmıştı. Şıklar
+         * ayırt edilemediği için doğru cevap hiç yazılamıyordu ve parmak
+         * izi de işareti görmediği için yeni okuma hep bu kayda düşüyordu.
+         *
+         * Onarım dar tutuldu: ekranda en az bir eksili şık olmalı, ekrandaki
+         * şıklar birbirinden ayırt edilebilmeli ve kayıttaki şıklar ekrandakilerin
+         * eksisi silinmiş hâliyle **birebir** aynı olmalı (sırası önemsiz).
+         *
+         * @return onarım gerekmiyorsa null.
+         */
+        internal fun isaretOnarimi(
+            stored: List<String>,
+            storedCorrect: String?,
+            fresh: List<String>
+        ): Onarim? {
+            if (stored.size != fresh.size || fresh.size < 2) return null
+            if (fresh.none { it.startsWith('-') }) return null
+            val yeni = fresh.map { TurkishText.lower(it.trim()) }
+            if (yeni.toSet().size != yeni.size) return null
+            val eskiKuralla = fresh.map { TurkishText.lower(it.trim().trimStart('-').trim()) }
+            val eski = stored.map { TurkishText.lower(it.trim()) }
+            if (eski.sorted() != eskiKuralla.sorted() || eski.sorted() == yeni.sorted()) return null
+
+            // Kayıttaki cevap "4" ise ekrandaki "-4" ile "4"ten hangisi olduğu
+            // bilinmiyor: boşaltılıyor. Tek karşılığı varsa yeni sırasıyla.
+            val dogru = storedCorrect?.let { TurkishText.lower(it.trim()) } ?: return Onarim(null)
+            return Onarim(eskiKuralla.indices.filter { eskiKuralla[it] == dogru }.singleOrNull())
+        }
+
+        /** Tarama günlüğündeki onarım adları. */
+        const val ISARET_ONARIMI = "eksi işaretleri"
+        const val SIRA_SAYISI_ONARIMI = "sıra sayıları"
 
         private fun strengthOf(source: String?): Int = when (source) {
             AnswerEvidence.CERTAIN.label -> AnswerEvidence.CERTAIN.strength

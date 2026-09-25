@@ -1178,9 +1178,11 @@ Ardından dört kademeli eşleştirme:
    SHA-256'sı alınır. Şıklar sıralanarak eklenir, böylece şık sırası değişse
    bile aynı kayda düşer.
 2. **Bulanık eşleşme** — OCR bir iki harfi yanlış okuduğunda parmak izi tutmaz;
-   son 300 kayıtla Levenshtein benzerliğine bakılır (%92 eşik).
+   arşivin tamamıyla Levenshtein benzerliğine bakılır (%92 eşik). **Şıklar da
+   uyuşmalı (3.7):** şıklardan en fazla biri tutmayabilir (bkz. aşağıda
+   *Metni benzeyen başka soru*).
 3. **Kapsama** — soru yarım yakalandıysa ("…kaç" ile "…kaç adettir?") biri
-   diğerini içeriyorsa aynı sayılır.
+   diğerini içeriyorsa aynı sayılır; şıklar yine uyuşmalı.
 4. **Şık eşleşmesi** — dört şıkkın tamamı birebir aynıysa neredeyse kesinlikle
    aynı sorudur. Metnin başına fazlalık yapışıp üstüne bir de OCR harf hatası
    geldiğinde 2 ve 3 tutmuyordu; bu kural ikisini birden kurtarıyor.
@@ -1191,8 +1193,55 @@ karakter benzerliği %91'e çıkıyor ve şıkları da aynı oluyor — ama bunl
 sorular. Metinlerden biri olumsuzluk taşıyıp diğeri taşımıyorsa hiçbir
 benzerlik ölçüsü onları birleştiremez.
 
+Olumsuzluk bazen ayrı bir kelime değil, fiilin içindeki ek: "3 **gelme**
+olasılığı" ile "3 **gelmeme** olasılığı", "yat**ar**" ile "yat**maz**". Bu
+çiftler de her zaman ayrı soru sayılıyor (3.7).
+
 Birleşirken hangi metnin kalacağına da bakılır: arayüz uyarısı içermeyen kayıt
 kazanır, ikisi de temizse daha eksiksiz olan alınır.
+
+### Metni benzeyen başka soru (3.7)
+
+Günlükten: "Hilesiz bir zar atıldığında 3 **gelme** olasılığı kaçtır?"
+(1/6 · 2/4 · 3/6 · 1/3) sorusu, arşivdeki "… 3 **gelmeme** olasılığı
+kaçtır?" (3/4 · 4/2 · 1/6 · 5/6) kaydıyla aynı soru sayıldı. İki metin %96
+benziyor ve bulanık eşleşme, metin %92'yi geçince şıklara hiç bakmıyordu.
+Dört şıktan yalnızca biri ortaktı. Bot arşivdeki «5/6»yı ekranda bulamadı
+(`UYUŞMAZLIK`), rastgele bastı, oyunun yeşil gösterdiği «1/6» da kayıttaki
+aynı metinli şıkka yazıldı. "Gelmeme" sorusunun doğru cevabı 5/6 iken arşivde
+1/6 görünmesinin sebebi bu.
+
+Artık metin benzese bile şıklar uyuşmuyorsa ayrı kayıt açılıyor. Şıklardan
+en fazla biri tutmayabilir, çünkü OCR bir şıkkı bozmuş ya da kayıt eksik
+şıkla açılmış olabilir. İki şıklık bir kayıtta ikisi de tutmalı. Yanlış
+yazılmış cevap, bot o soruda yanlış şıkka basıp oyun doğrusunu gösterince
+kendiliğinden düzeliyor; beklemek istemezsen soruyu açıp doğru harfe dokun.
+
+### Eksi işaretli şıklar (3.7)
+
+Günlükten: «(-6) neye eşittir?» sorusunun şıkları arşive "16 / 4 / 4 / 16"
+diye yazılmıştı; ekranda "-16 / 4 / -4 / 16" gibi duruyordu. İki sebep vardı:
+
+* OCR temizliği, metnin başındaki `-` işaretini süs sanıp kırpıyordu
+  ("- Ankara" gibi). Artık rakamdan hemen önceki eksi sayının işareti
+  sayılıyor. Uzun çizgi ve matematik eksisi (`–`, `−`) de düz eksiye
+  çevriliyor.
+* Puan balonu süzgeci ("+5") şık bölgesinde tek başına duran "-16"yı da balon
+  sayıp atıyordu. Şık bölgesinde artık yalnızca **artılı** yazı ("+5",
+  "5 +5") balon sayılıyor. Bölgenin dışında ve soru metninin sonunda "-5"
+  yine balon.
+
+Şık eşleştirmesinin ilk kademesi işaretleri koruyor, "-4" ile "4" ayrılıyor.
+Parmak izi ise işareti görmüyor. Bu yüzden eski bozuk kayıt bulunuyor ve
+onarılıyor: kayıttaki şıklar, ekrandakilerin eksisi silinmiş hâliyle
+birebir aynıysa şıklar ekrandan yeniden yazılıyor. Doğru cevap belirsizse
+("4" hem "-4" hem "4" olabilir) boşaltılıyor, bir sonraki renk okuması
+yeniden öğretiyor. Günlükte `ONARILDI #… şıklar eksi işaretleri ile yeniden
+yazıldı`.
+
+Soru metnindeki üs ("(-4)²") ML Kit'in okuyamadığı bir şey; soru metni
+"(-6)" gibi bozuk görünebilir. Bu, cevabı etkilemiyor: soru kaydı şıklarla
+birlikte tanınıyor.
 
 ## "Kaç kez çıktı" nasıl sayılıyor?
 

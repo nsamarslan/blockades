@@ -80,4 +80,71 @@ class TekrarSorgusuTest {
             )
         )
     }
+
+    // --- Şıkları farklı, metni çok benzer sorular -------------------------
+
+    private val gelme = "Hilesiz bir zar atıldığında 3 gelme olasılığı kaçtır?"
+    private val gelmeme = "Hilesiz bir zar atıldığında 3 gelmeme olasılığı kaçtır?"
+
+    @Test
+    fun `metni benzeyen ama siklari farkli soru ayri kayit`() {
+        // Gerçek günlük (3.6): iki soru tek kayıt olmuş, "gelme" sorusunun
+        // cevabı 1/6, "gelmeme" sorusunun doğru cevabı 5/6'nın üstüne yazılmıştı.
+        assertFalse(
+            ayni(
+                gelmeme, listOf("3/4", "4/2", "1/6", "5/6"),
+                gelme, listOf("1/6", "2/4", "3/6", "1/3")
+            )
+        )
+    }
+
+    @Test
+    fun `sikleri ayni olsa da olumsuzluk eki ayirir`() {
+        val s = listOf("1/6", "5/6", "2/6", "3/6")
+        assertFalse(ayni(gelmeme, s, gelme, s))
+        assertFalse(
+            ayni(
+                "Hangi hayvan kış uykusuna yatmaz?", siklar,
+                "Hangi hayvan kış uykusuna yatar?", siklar
+            )
+        )
+    }
+
+    @Test
+    fun `bir sikki bozuk okunan ayni soru yine ayni kayit`() {
+        // OCR harf hatası hem metinde hem bir şıkta: şıklardan biri tutmayabilir.
+        assertTrue(
+            ayni(
+                "Enerjisi bitince sönen yıldıza ne ad verilir?", siklar,
+                "Enerjisi bitince sönen yildza ne ad verilir?",
+                listOf("Kuyruklu yıldız", "Göktaşı", "Kara delik", "Bcyaz cüe")
+            )
+        )
+    }
+
+    @Test
+    fun `iki sikki tutmayan benzer metin ayri soru`() {
+        assertFalse(
+            ayni(
+                "Enerjisi bitince sönen yıldıza ne ad verilir?", siklar,
+                "Enerjisi bitince sönen yildza ne ad verilir?",
+                listOf("Kuyruklu yıldız", "Göktaşı", "Nötron yıldızı", "Kızıl dev")
+            )
+        )
+    }
+
+    @Test
+    fun `sik uyumu kurali`() {
+        fun uyar(a: List<String>, b: List<String>) = TekrarSorgusu.siklarUyusuyor(
+            a.map { com.emre.bilbakalim.arsiv.util.TurkishText.normalizeKey(it) },
+            b.map { com.emre.bilbakalim.arsiv.util.TurkishText.normalizeKey(it) }
+        )
+        assertTrue(uyar(listOf("A1", "B2", "C3", "D4"), listOf("D4", "C3", "B2", "A1")))
+        assertTrue(uyar(listOf("A1", "B2", "C3", "D4"), listOf("D4", "C3", "B2", "X9")))
+        assertFalse(uyar(listOf("A1", "B2", "C3", "D4"), listOf("D4", "C3", "Y8", "X9")))
+        // Eksik şıkla açılmış kayıt: kısa listenin biri tutmayabilir.
+        assertTrue(uyar(listOf("A1", "B2", "C3"), listOf("A1", "B2", "Z0", "D4")))
+        // İki şıklık listede ikisi de tutmalı.
+        assertFalse(uyar(listOf("A1", "B2"), listOf("A1", "Z0", "C3", "D4")))
+    }
 }

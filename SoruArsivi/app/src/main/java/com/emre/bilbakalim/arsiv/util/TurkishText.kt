@@ -56,13 +56,29 @@ object TurkishText {
             .replace(Regex("\\s{2,}"), " ")
             .trim()
 
-        // Baştaki/sondaki anlamsız tek karakterler ve süslemeler
-        s = s.trim(' ', '\t', '·', '•', '*', '_', '-', '—', '–', '~', '"', '\'')
+        // Rakamdan önceki uzun çizgi ve matematik eksisi düz eksi: "−16",
+        // "–16" → "-16". Şık eşleştirmesi ancak böyle aynı metni görüyor.
+        s = s.replace(EKSI_BENZERI, "-").replace(BASTAKI_EKSI_BOSLUK, "-")
+
+        // Baştaki/sondaki anlamsız tek karakterler ve süslemeler. Rakamdan
+        // hemen önceki eksi süs değil, sayının işareti: "-16" eskiden "16"
+        // oluyordu ve "-16 / -4 / 4 / 16" şıkları arşive "16 / 4 / 4 / 16"
+        // diye yazılıyordu. Şıklar ayırt edilemiyor, doğru cevap hiçbir
+        // zaman kaydedilemiyordu.
+        s = s.trimEnd(*SUSLER)
+        while (s.isNotEmpty() && s[0] in SUSLER && !(s[0] == '-' && s.getOrNull(1)?.isDigit() == true)) {
+            s = s.substring(1)
+        }
 
         // "?" ve "." tekrarlarını sadeleştir
         s = s.replace(Regex("\\?{2,}"), "?").replace(Regex("\\.{4,}"), "...")
         return s.trim()
     }
+
+    private val SUSLER = charArrayOf(' ', '\t', '·', '•', '*', '_', '-', '—', '–', '~', '"', '\'')
+    private val EKSI_BENZERI = Regex("[−–—](?=\\s*\\d)")
+    /** Baştaki "- 16": OCR eksiyle sayının arasına boşluk koyabiliyor. */
+    private val BASTAKI_EKSI_BOSLUK = Regex("^-\\s+(?=\\d)")
 
     /** Karşılaştırma için sadeleştirilmiş anahtar: sadece harf ve rakam. */
     fun normalizeKey(s: String): String = fold(lower(s)).replace(HARF_RAKAM_DISI, "")
@@ -259,6 +275,65 @@ object TurkishText {
         }
         return true
     }
+
+    /**
+     * İki şık listesinin kaç şıkkı birbirini tutuyor? Sıra önemsiz, her şık
+     * en fazla bir kez kullanılıyor. Anahtarlar [normalizeKey]'den geçmiş olmalı.
+     */
+    fun optionKeyOverlap(a: List<String>, b: List<String>): Int {
+        val kalan = b.toMutableList()
+        var ortak = 0
+        for (o in a) {
+            val i = kalan.indexOfFirst { sameOptionKey(o, it) }
+            if (i < 0) continue
+            kalan.removeAt(i)
+            ortak++
+        }
+        return ortak
+    }
+
+    /**
+     * İki kelime dizisi bir fiilin olumsuzluk ekiyle mi ayrılıyor?
+     *
+     * "Hilesiz bir zar atıldığında 3 **gelme** olasılığı" ile "3 **gelmeme**
+     * olasılığı" %96 benziyor; olumsuzluk imzası ([negationSignature]) ayrı
+     * kelimelere bakıyor ve eki göremiyor. İki biçim tanınıyor:
+     *  - araya "me"/"ma" girmiş: gel-me / gel-me-me, al-mak / al-ma-mak
+     *  - geniş zaman: gel-ir / gel-mez, ol-ur / ol-maz, yapıl-ır / yapıl-maz
+     *
+     * Kelimeler [words]'ten gelmeli (küçük, katlanmış). Kelime sayıları
+     * farklıysa bakılmıyor.
+     */
+    fun olumsuzlukEkiFarki(wa: List<String>, wb: List<String>): Boolean {
+        if (wa.size != wb.size) return false
+        for (i in wa.indices) {
+            val x = wa[i]
+            val y = wb[i]
+            if (x == y) continue
+            if (olumsuzCifti(x, y) || olumsuzCifti(y, x)) return true
+        }
+        return false
+    }
+
+    private fun olumsuzCifti(olumlu: String, olumsuz: String): Boolean {
+        if (olumsuz.length == olumlu.length + 2) {
+            // Kökte en az iki harf kalsın: baştaki "ma"/"me" ek değil.
+            for (p in 2..olumlu.length) {
+                if ((olumsuz.startsWith("me", p) || olumsuz.startsWith("ma", p)) &&
+                    olumsuz.regionMatches(0, olumlu, 0, p) &&
+                    olumsuz.regionMatches(p + 2, olumlu, p, olumlu.length - p)
+                ) return true
+            }
+        }
+        for (ek in GENIS_ZAMAN) {
+            if (!olumlu.endsWith(ek)) continue
+            val kok = olumlu.dropLast(ek.length)
+            if (kok.length >= 2 && (olumsuz == kok + "mez" || olumsuz == kok + "maz")) return true
+        }
+        return false
+    }
+
+    private val GENIS_ZAMAN = listOf("ir", "ur", "er", "ar", "r")
 
     /** Metinde arayüz uyarısı geçiyor mu — iki kayıttan temiz olanı seçmek için. */
     fun hasChromePhrase(s: String): Boolean {

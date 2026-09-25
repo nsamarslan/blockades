@@ -25,6 +25,29 @@ class QuestionChromeTest {
     }
 
     @Test
+    fun `sayinin eksisi sus sayilip kirpilmaz`() {
+        // Gerçek günlük: "-16 / -4 / 4 / 16" şıkları "16 / 4 / 4 / 16" okunuyordu.
+        assertEquals("-16", TurkishText.cleanOcr("-16"))
+        assertEquals("-4", TurkishText.cleanOcr(" -4 "))
+        assertEquals("-4", TurkishText.cleanOcr("- 4"))
+        assertEquals("-3/4", TurkishText.cleanOcr("−3/4"))
+        assertEquals("-12", TurkishText.cleanOcr("–12"))
+        // Harften önceki çizgi hâlâ süs.
+        assertEquals("Ankara", TurkishText.cleanOcr("- Ankara"))
+        assertEquals("Ankara", TurkishText.cleanOcr("— Ankara —"))
+        assertEquals("16", TurkishText.cleanOcr("16-"))
+    }
+
+    @Test
+    fun `eksili siklar eslestirmede ayrilir`() {
+        val siklar = listOf("-16", "-4", "4", "16")
+        assertEquals(1, TurkishText.matchIndex(siklar, "-4"))
+        assertEquals(2, TurkishText.matchIndex(siklar, "4"))
+        assertEquals(3, TurkishText.matchIndex(siklar, "16"))
+        assertEquals(0, TurkishText.matchIndex(siklar, TurkishText.cleanOcr("−16")))
+    }
+
+    @Test
     fun `bastaki KOMBO banneri sokulur`() {
         assertEquals(
             "Türkiye'nin uzay bilimleri programı hangisidir?",

@@ -1193,6 +1193,9 @@ class CaptureAccessibilityService : AccessibilityService() {
             Repo.SaveResult.Rejected -> null
         }
 
+        (result as? Repo.SaveResult.Duplicate)?.onarim?.let { neden ->
+            log("ONARILDI #$savedId: şıklar $neden ile yeniden yazıldı · ${p.options.joinToString(" / ")}")
+        }
         if (savedId == null) {
             log("RED: kayıt çok kısa / şık yetersiz")
             pendingAnswer = null

@@ -1,7 +1,9 @@
 package com.emre.bilbakalim.arsiv.util
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -85,5 +87,19 @@ class TurkishTextTest {
         assertEquals("Platon", TurkishText.stripOptionPrefix("b. Platon"))
         assertEquals("Platon", TurkishText.stripOptionPrefix("1) Platon"))
         assertEquals("Platon", TurkishText.stripOptionPrefix("(2) Platon"))
+    }
+
+    @Test
+    fun `olumsuzluk eki farki`() {
+        fun fark(a: String, b: String) = TurkishText.olumsuzlukEkiFarki(TurkishText.words(a), TurkishText.words(b))
+        assertTrue(fark("3 gelme olasılığı kaçtır?", "3 gelmeme olasılığı kaçtır?"))
+        assertTrue(fark("Hangisi yapılır?", "Hangisi yapılmaz?"))
+        assertTrue(fark("Su kaç derecede donar?", "Su kaç derecede donmaz?"))
+        assertTrue(fark("Hangisi okunur?", "Hangisi okunmaz?"))
+        // OCR harf hataları ve ilgisiz farklar olumsuzluk sayılmaz.
+        assertFalse(fark("Jüpiter'in uydularin sayısı", "Jüpiter'in uydulariin sayısı"))
+        assertFalse(fark("Hangisi gezegendir?", "Hangisi gezegen?"))
+        assertFalse(fark("Mars kaçıncı gezegendir?", "Dünya kaçıncı gezegendir?"))
+        assertFalse(fark("Aynı soru", "Aynı soru"))
     }
 }

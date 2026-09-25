@@ -81,8 +81,8 @@ internal class TekrarSorgusu(question: String, options: List<String>) {
         // aynı olmalı ya da fark çok küçük olmalı.
         val contained = oldKey.length >= 12 && key.length >= 12 &&
             (key.contains(oldKey) || oldKey.contains(key)) &&
-            (optionsMatch && lengthRatio >= 0.60f || lengthRatio >= 0.85f)
-        if (contained) return true
+            (optionsMatch && lengthRatio >= 0.60f || lengthRatio >= 0.85f && siklarUyusuyor(old))
+        if (contained) return !olumsuzlukEkiAyiriyor(old)
 
         // Benzerlik, uzunluk oranını aşamaz: %80 için oran en az %80, %92
         // için en az %92 olmalı. Tutamayacaksa hesaplanmıyor.
@@ -99,10 +99,45 @@ internal class TekrarSorgusu(question: String, options: List<String>) {
         // değildir?" aynı şıkları paylaşabiliyor). Bu yüzden eşik yüksek.
         val sameOptions = optionsMatch && sim >= 0.80f
 
-        return sameOptions || sim >= 0.92f
+        // Metin %92 benziyor diye şıklara bakmadan birleştirmek yetmiyordu:
+        // "Hilesiz bir zar atıldığında 3 gelme olasılığı kaçtır?" (1/6, 2/4,
+        // 3/6, 1/3) ile "… 3 gelmeme olasılığı kaçtır?" (3/4, 4/2, 1/6, 5/6)
+        // %96 benziyor, dört şıktan yalnızca biri ortak. İkisi tek kayıt
+        // oldu ve birinin cevabı ötekinin doğru cevabının üstüne yazıldı.
+        // Şıklardan en fazla biri tutmayabilir (OCR bir şıkkı bozmuş olabilir).
+        if (!(sameOptions || sim >= 0.92f && siklarUyusuyor(old))) return false
+        return !olumsuzlukEkiAyiriyor(old)
     }
 
+    /** Şıklardan en fazla biri tutmuyor (bkz. [siklarUyusuyor]). */
+    private fun siklarUyusuyor(old: TekrarAdayi): Boolean =
+        siklarUyusuyor(old.optionKeys, aday.optionKeys)
+
+    /**
+     * İki metin yalnızca bir fiilin olumsuzluk ekiyle mi ayrılıyor ("gelme" /
+     * "gelmeme")? Olumsuzluk imzası ayrı kelimelere ("değil", "olmayan")
+     * bakıyor; ek, kelimenin içinde kaldığı için onu göremiyor. Kelimeler
+     * yalnızca buraya kadar gelmiş, zaten çok benzeyen adaylar için bölünüyor.
+     */
+    private fun olumsuzlukEkiAyiriyor(old: TekrarAdayi): Boolean =
+        TurkishText.olumsuzlukEkiFarki(old.words, aday.words)
+
     companion object {
+        /**
+         * İki şık listesi aynı sorunun şıkları olabilir mi?
+         *
+         * Sıra önemsiz; her şık karşı listede en fazla bir şıkla eşleşiyor.
+         * Kısa listenin en fazla bir şıkkı tutmayabilir: OCR bir şıkkı
+         * bozmuş ya da kayıt eksik şıkla açılmış olabilir. İki şıklık bir
+         * listede ikisi de tutmalı.
+         */
+        internal fun siklarUyusuyor(a: List<String>, b: List<String>): Boolean {
+            val az = minOf(a.size, b.size)
+            if (az == 0) return true
+            val gereken = maxOf(minOf(2, az), az - 1)
+            return TurkishText.optionKeyOverlap(a, b) >= gereken
+        }
+
         /**
          * Biri diğerinin, sonundan bir iki kelime düşmüş hâli mi?
          *
