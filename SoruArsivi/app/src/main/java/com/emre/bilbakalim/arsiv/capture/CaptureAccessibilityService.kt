@@ -25,6 +25,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -58,7 +60,14 @@ import kotlinx.coroutines.withContext
  */
 class CaptureAccessibilityService : AccessibilityService() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /**
+     * Yakalanmamış hata artık günlüğe de düşüyor. Eskiden bir işte (dokunuş,
+     * karar turu) fırlayan istisna yalnızca logcat'te iz bırakıyordu.
+     */
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            CoroutineExceptionHandler { _, t -> log("HATA iş: ${hataOzeti(t)}") }
+    )
 
     private lateinit var prefs: Prefs
     private lateinit var repo: Repo
@@ -75,8 +84,107 @@ class CaptureAccessibilityService : AccessibilityService() {
     @Volatile private var pollJob: Job? = null
     @Volatile private var autoJob: Job? = null
     @Volatile private var lastFrameSig: IntArray? = null
+    /** Ekranın en son ne zaman değiştiği — "kaç saniyedir kıpırdamıyor" için. */
+    @Volatile private var lastFrameChangeAt = 0L
+    /** Kıpırdamayan ekranda zorla yapılan son tam tarama. */
+    @Volatile private var lastForcedScanAt = 0L
+    /** Yakın plan OCR'ın denendiği kare. */
+    @Volatile private var closeUpSig: IntArray? = null
+    /**
+     * Bu kare için yakın plan kaç kez denendi.
+     *
+     * OCR aynı görüntüye her zaman aynı cevabı verir; bu yüzden aynı kareyi
+     * aynı ölçekle yeniden okumak boşunadır. Deneme sayısı büyütme oranını
+     * artırmak için tutuluyor: 2x tutmazsa 3x, o da tutmazsa 4x. Yalıtık
+     * rakam şıkları ("2", "12") ancak yeterince büyütülünce tanınıyor.
+     */
+    @Volatile private var closeUpTries = 0
+    /** Son yakın plan denemesinin zamanı — bütçeyi tazelemek için. */
+    @Volatile private var closeUpAt = 0L
+    /** Son tam ekran OCR sonucu — yakın plan okumasıyla birleştirmek için. */
+    @Volatile private var lastOcrItems: List<TextItem> = emptyList()
+    /** Ekrandan ölçülen şık kutusu sayısı; yalnızca değişince günlüğe düşer. */
+    @Volatile private var sonKutuSayisi = -1
+    /** Son teşhis karesinin yazıldığı an; diski doldurmamak için kısılıyor. */
+    @Volatile private var lastTeshisAt = 0L
+    @Volatile private var lastAutoIdleLogAt = 0L
+    @Volatile private var lastAutoIdleReason: String? = null
+    /**
+     * Oyunun en son ne zaman önplanda olduğu doğrulandı.
+     *
+     * "Etkin pencereyi okuyamadım" ile "oyun kapandı" ayrımı buna dayanıyor:
+     * biraz önce oradaydıysa, null dönen bir sorgu yüzünden taramayı
+     * durdurmuyoruz.
+     */
+    @Volatile private var lastForegroundAt = 0L
+    /** Soru kartı okunamıyor: ne zamandan beri, uyarı verildi mi. */
+    @Volatile private var unreadableSince = 0L
+    @Volatile private var unreadableWarned = false
     /** Ekranda en son ne zaman gerçek bir soru görüldü (otomatik mod için). */
     @Volatile private var lastQuestionAt = 0L
+    /** Tur sonu ekranında en son hangi yazıları gördük — günlük tekrarı olmasın. */
+    @Volatile private var lastIdleScreen: String? = null
+    /**
+     * Dört şıkkıyla birlikte kaydedilmiş sorunun ekrandaki sıra numarası.
+     *
+     * Soru bir kez düzgün okunduktan sonra ekran değişmeye devam ediyor:
+     * cevap açılıyor, şıklar renk değiştiriyor, üstlerine puan balonu
+     * düşüyor. Bunlar yeni bir soru değil — ama metin değiştiği için
+     * parmak izi de değişiyor ve uygulama yeni soru sanıp bozuk bir kayıt
+     * daha açıyordu. Numara artana kadar bu soruyu kilitli tutuyoruz.
+     */
+    @Volatile private var lockedNumber: Int? = null
+    @Volatile private var lockedQuestion: String = ""
+    /** Bir kez görülmüş ama henüz doğrulanmamış okuma (kararlılık kapısı). */
+    @Volatile private var confirmKey: String? = null
+    @Volatile private var confirmAt = 0L
+    /** "Kart çizilmedi" kapısında bekleyen okuma: ne zamandan beri, yazıldı mı. */
+    @Volatile private var renderWaitKey: String? = null
+    @Volatile private var renderWaitSince = 0L
+    @Volatile private var renderWaitLogged = false
+    /** Kapıdan kıpırdamayan ekran sayesinde geçen son okuma — satır bir kez düşsün. */
+    @Volatile private var renderForcedKey: String? = null
+    /**
+     * Kapıda (kart ya da teyit) geri çevrilen son okuma ve alındığı kare.
+     *
+     * Sonraki kare buna tıpatıp benziyorsa soru yeniden OCR'dan geçirilmiyor,
+     * bu okuma kullanılıyor. Bu telefonda tek OCR ~1 saniye; teyit için ikinci
+     * bir OCR beklemek, bilinmeyen her sorunun kaydını ve uyarı sesini bir
+     * saniye geciktiriyordu. Kapının koruduğu şey hareket eden kare; kare
+     * kıpırdamadıysa ikinci OCR aynı sonucu verirdi.
+     */
+    @Volatile private var bekleyenOkuma: QuestionParser.Parsed? = null
+    @Volatile private var bekleyenOkumaImza: IntArray? = null
+    @Volatile private var bekleyenOkumaAt = 0L
+    @Volatile private var bekleyenOkumaKutu = false
+    /** Aynı "bir şık okunamadı" sonucu üst üste kaç kez geldi. */
+    @Volatile private var okunamayanImza: String? = null
+    @Volatile private var okunamayanSayi = 0
+    /**
+     * Bu oturumda yapılan bir hata.
+     *
+     * Amaç tek bir soruyu cevaplamak: **neye bastık, doğrusu neydi.**
+     * Arşivdeki kayıt bunu söylemiyor — orada yalnızca doğru cevap var,
+     * bizim seçtiğimiz şık değil. Liste bellekte duruyor ve oturumla
+     * birlikte gidiyor; kalıcı olması istenen şey zaten arşivin kendisi.
+     */
+    data class Miss(
+        /** Liste anahtarı; zaman damgası aynı milisaniyede çakışabiliyor. */
+        val seq: Long,
+        val at: Long,
+        val questionId: Long,
+        val question: String,
+        /** Bastığımız şık; süre dolduysa null. */
+        val chosen: String?,
+        val chosenLabel: String?,
+        val correct: String,
+        val correctLabel: String,
+        /** Dokunuşu bot mu yaptı? */
+        val byAuto: Boolean,
+        /** Kimse basmadı, süre doldu. */
+        val timedOut: Boolean
+    )
+
     /**
      * Cevabı açılmayı bekleyen soru.
      *
@@ -86,14 +194,45 @@ class CaptureAccessibilityService : AccessibilityService() {
      */
     private data class PendingAnswer(
         val id: Long,
-        val rects: List<Rect>,
+        /**
+         * Sorunun kendi metni.
+         *
+         * Yalnızca "bu oturumun hataları" listesi için taşınıyor: hata
+         * anında veritabanına gitmek gerekmesin ve liste kayıt silinse bile
+         * okunabilir kalsın.
+         */
+        val question: String,
+        /**
+         * Şıkların ekrandaki kutuları.
+         *
+         * Değişebilir: şıklar animasyonla yerine oturduğu için ilk okumadaki
+         * konumlar birkaç yüz milisaniye sonra kaymış olabiliyor. Aynı soru
+         * yeniden okunduğunda tazeleniyor ki hem renk ölçümü hem de otomatik
+         * dokunuş güncel konuma baksın.
+         */
+        var rects: List<Rect>,
+        /**
+         * Şıkların **ekrandaki** metinleri, [rects] ile aynı sırada.
+         *
+         * Oyun şıkları her turda karıştırdığı için "doğru cevap 2. şık"
+         * bilgisi tek başına bir işe yaramıyor: hem kayda doğru cevabı
+         * yazarken hem de otomatik modda bilinen cevaba dokunurken metni
+         * eşleştirmek gerekiyor.
+         *
+         * **var olmak zorunda.** Oyun şıkların sırasını değiştirdiğinde
+         * [rects] tek başına tazelenirse "2. metin" ile "2. kutu" başka
+         * şıklara ait olur; bot bir şıkka basıp oyun başkasında tepki verir
+         * ve arşive yanlış cevap yazılır. İkisi her zaman birlikte
+         * güncellenmeli.
+         */
+        var options: List<String>,
         /**
          * Soru ekrana ne zaman geldi. Otomatik dokunuş hem bu süreyi bekler
          * hem de bu değeri karşılaşmanın kimliği olarak kullanır: aynı soru
          * sonraki turda yeniden çıktığında veritabanı kimliği aynı kalır ama
          * bu damga değişir, böylece yeniden cevaplanır.
          */
-        val bornAt: Long = SystemClock.uptimeMillis(),
+        var bornAt: Long = SystemClock.uptimeMillis(),
         /** Kararın yeşili hangi şıkta ve ne zamandan beri görülüyor. */
         var greenIndex: Int? = null,
         var greenSince: Long = 0L,
@@ -101,12 +240,120 @@ class CaptureAccessibilityService : AccessibilityService() {
         var pendingIndex: Int? = null,
         var pendingSince: Long = 0L,
         /** Günlüğe aynı deseni tekrar tekrar yazmamak için. */
-        var lastSummary: String? = null
+        var lastSummary: String? = null,
+        /** Atlanan karar satırı da tekrarlanmasın. */
+        var lastSkip: String? = null,
+        /** "Cevap bilinmiyor, dokunmuyorum" satırı bir kez yazılsın. */
+        var skippedUnknown: Boolean = false,
+        /**
+         * Bu soruda hiç renkli şık görüldü mü (turkuaz/yeşil/kırmızı)?
+         *
+         * "Dokunuş yutuldu mu" kararı buna bakıyor. lastSummary'ye bakmak
+         * yanlış olurdu: o, renk bulunamadığında ölçülen ham renkleri de
+         * yazıyor ve dokunuşa hiç tepki gelmese bile doluyor.
+         */
+        var tintSeen: Boolean = false,
+        /**
+         * Şık yerleşiminin sürümü; oyun şıkları karıştırdıkça artar.
+         *
+         * [bornAt] artık değişebilir olduğu için "bu hâlâ aynı soru mu"
+         * kontrolü tek başına yetmiyor: aynı nesne üzerinde metinler ve
+         * kutular değiştiğinde damga da değiştiği hâlde karşılaştırma hep
+         * eşit çıkıyor. Dokunuş ile kayıt arasında geçen sürede şıklar
+         * karışırsa, elimizdeki kutu artık başka bir metne ait olur. Bu
+         * sayaç o aralığı yakalıyor.
+         */
+        var layout: Int = 0,
+        /** Otomatik modda bu soruya kaç kez dokunuldu ve en son ne zaman. */
+        var taps: Int = 0,
+        var lastTapAt: Long = 0L,
+        /**
+         * Bu soru ekranda en son ne zaman okundu.
+         *
+         * Yeniden dokunuş buna bağlı: son dokunuştan sonra soru yeniden
+         * okunmadıysa ekranda hâlâ o soru olduğunu bilmiyoruz. Karar tek
+         * karede görünüp kaçtığında soru bekler hâlde kalıyor ve bot
+         * "dokunuş yutuldu" sanıp eski konumlara basıyordu — o sırada
+         * ekranda okumadığı yeni bir soru duruyordu.
+         */
+        var seenAt: Long = SystemClock.uptimeMillis(),
+        /** Son dokunuştan sonra ilk renkli şıkkın görüldüğü an (teşhis için). */
+        var ilkRenkAt: Long = 0L,
+        /**
+         * Soru en son okunduğunda ekranın imzası.
+         *
+         * Dokunmadan hemen önce ekran buna hâlâ benziyor mu diye bakılıyor.
+         * Sen erken cevaplayınca oyun sonraki soruya geçiyor; yeni sorunun
+         * hapları aynı yerde durduğu için "şıklar ekranda mı" kontrolü
+         * geçiyordu ve bot önceki soru için seçtiği şıkka YENİ soruda
+         * basıyordu. Ekran değiştiyse soru yeniden okunmadan dokunulmuyor.
+         */
+        var seenSig: IntArray? = null,
+        /**
+         * Oyunun kabul ettiği şık görüldü mü (turkuaz ya da kırmızı), hangisi.
+         *
+         * "Bastığımız" şık artık botun niyetinden değil bundan geliyor: sen
+         * A'ya erken bastığında bot yine de kendi seçtiği C'ye basıyor, oyun
+         * C'yi yok sayıyor ama Hatalar ekranı "bastığımız C" yazıyordu.
+         */
+        var secimGoruldu: Int? = null,
+        /**
+         * Soruyu bot dokunmadan önce biri (sen) cevapladı; bot bu soruya
+         * artık dokunmuyor.
+         */
+        var elleSecildi: Boolean = false,
+        /** Seçilen şık — yeniden denemelerde aynısına basılır. */
+        var chosenIndex: Int? = null,
+        /**
+         * Bu soruya dokunan uygulamanın kendisi mi (otomatik mod)?
+         *
+         * Önemli, çünkü "dokunduğun şık öyle kaldı, demek doğru bildin"
+         * geri düşüşü elle oynayan biri için makul ama rastgele dokunan bir
+         * bot için dörtte üç ihtimalle yanlış — ve o yanlışı arşive doğru
+         * cevap diye yazıyor.
+         */
+        var autoTapped: Boolean = false,
+        /** Arşivin doğru cevap dediği şıkkın ekrandaki sırası, biliniyorsa. */
+        var knownIndex: Int? = null,
+        /**
+         * Şık kutuları ne zamandan beri çizilmiş durumda (0 = henüz değil).
+         *
+         * Soru kartı ekrana solarak geliyor ve bu sırada şıklar yerlerine
+         * kayıyor. Metin daha kart kararmışken okunabildiği için, dokunuş
+         * eski konumlara gidiyor ve **başka bir şıkka** basılıyordu: günlükte
+         * "OTOMATİK → C" yazıp ekranda A'nın turkuaza döndüğü kareler bundan.
+         * Üstelik oyunun o yanlış şıkka verdiği tepki doğru cevap diye
+         * arşive yazılıyordu. Bu yüzden bekleme süresi sorunun okunduğu andan
+         * değil, kutuların çizildiği andan itibaren sayılıyor.
+         */
+        var brightSince: Long = 0L
     )
     @Volatile private var pendingAnswer: PendingAnswer? = null
     @Volatile private var burstJob: Job? = null
+    @Volatile private var watchdogJob: Job? = null
     private val workerRunning = AtomicBoolean(false)
+    private val pollRunning = AtomicBoolean(false)
+    /** [ProjectionService.restartCount]'un günlüğe düşmüş son değeri. */
+    @Volatile private var lastProjectionRestart = 0
     @Volatile private var totalSaved = 0
+
+    /** Teşhis izi: taramalar nerede bitiyor, hangi aşama ne kadar sürüyor. */
+    private val izi = TaramaIzi({ SystemClock.uptimeMillis() }) { logHam(it) }
+    /** Otomatik modun bu taramadaki kararı — ize yazılıyor. */
+    @Volatile private var otoNeden = "-"
+    /** Yoklama döngüsünün o anki aşaması ve ne zamandan beri orada — bekçi için. */
+    @Volatile private var pollAsama = "-"
+    @Volatile private var pollAsamaAt = 0L
+    @Volatile private var pollTakildiYazildi = false
+    /**
+     * Okunabilen yeni bir sorunun ilk görüldüğü an ve kayda kadar kaç kez
+     * geri çevrildiği. "Soru ekrandaydı ama neden geç basıldı" sorusunu
+     * aşama aşama cevaplıyor: bkz. "İZ SORU" satırı.
+     */
+    @Volatile private var okumaSoru = ""
+    @Volatile private var okumaIlkAt = 0L
+    @Volatile private var okumaKapi = 0
+    @Volatile private var okumaTeyit = 0
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -120,8 +367,15 @@ class CaptureAccessibilityService : AccessibilityService() {
 
         scope.launch {
             var wasAuto = prefs.state.value.autoPlay
+            var hedefler = prefs.state.value.targetPackages
             prefs.state.collect { s ->
-                applyTargets(s.targetPackages)
+                // Ayarlar her taramada yeniden yayınlanıyor (teşhis dökümü de
+                // bir ayar); hedefler değişmediyse sisteme yeniden
+                // serviceInfo göndermenin anlamı yok.
+                if (s.targetPackages != hedefler) {
+                    hedefler = s.targetPackages
+                    applyTargets(s.targetPackages)
+                }
                 if (s.autoPlay != wasAuto) {
                     wasAuto = s.autoPlay
                     auto.reset()
@@ -133,6 +387,16 @@ class CaptureAccessibilityService : AccessibilityService() {
         }
         scope.launch {
             repo.totalCount.collect { totalSaved = it }
+        }
+        // Bekçi: taramadan da yoklamadan da bağımsız. İkisinden biri bir yerde
+        // takılırsa kendi satırını yazamaz; nerede kaldığını bu yazıyor.
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch {
+            while (isActive) {
+                delay(WATCHDOG_MS)
+                izi.denetle()
+                yoklamaDenetle()
+            }
         }
         Log.i(TAG, "Servis bağlandı")
     }
@@ -188,33 +452,106 @@ class CaptureAccessibilityService : AccessibilityService() {
      * Uygulamadan çıkılınca kendiliğinden durur: her turda etkin pencerenin
      * hangi uygulamaya ait olduğuna bakar.
      */
+    /** Kaç ıskalamadan sonra yoklama yavaş bekleme kipine geçsin. */
+    private fun idleLimit(s: Prefs.Settings): Int =
+        if (s.autoPlay) POLL_MISS_LIMIT_AUTO else POLL_MISS_LIMIT
+
     private fun ensurePolling() {
-        if (pollJob?.isActive == true) return
+        // Kapı atomik olmak zorunda. `ensurePolling` hem ana iş parçacığından
+        // (erişilebilirlik olayı) hem de arka plandan (döngü ölünce kendini
+        // dirilten iş) çağrılıyor; "bak sonra ata" sırası ikisinin araya
+        // girmesine açıktı. O anda iki döngü birden başlıyor, `pollJob`
+        // yalnızca birini tutuyor ve öbürü sahipsiz kalıyor: kimse iptal
+        // edemiyor, her 200 ms'de bir ANA İŞ PARÇACIĞINDA pencere sorgusu
+        // yapmaya devam ediyor. Her ölüm-diriliş turunda bir tane daha
+        // birikebiliyordu.
+        if (!pollRunning.compareAndSet(false, true)) return
         pollJob = scope.launch {
             var misses = 0
             try {
                 while (isActive) {
+                    pollAdim("uyku")
                     delay(if (fastCapture) POLL_FAST_MS else POLL_SLOW_MS)
                     val cur = prefs.state.value
                     if (cur.targetPackages.isEmpty()) break
 
+                    pollAdim("onplan_sorgu")
                     val active = withContext(Dispatchers.Main) {
                         runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
                     }
-                    if (active != null && active in cur.targetPackages) {
+                    pollAdim("karar")
+                    val grace = active == null &&
+                        SystemClock.uptimeMillis() - lastForegroundAt < FOREGROUND_GRACE_MS
+                    if (active != null && active in cur.targetPackages || grace) {
+                        if (misses >= idleLimit(cur)) log("yoklama yeniden devrede")
+                        if (active != null) lastForegroundAt = SystemClock.uptimeMillis()
                         misses = 0
                         if (!cur.paused) requestScan()
+                        pollAdim("uyku_ek")
+                        // Dokunulmayı bekleyen bir soru varken hızlı yoklama.
+                        // Eskiden koşul "kart henüz ölçülmedi" idi; ölçüm artık
+                        // sorunun kaydedildiği anda yapıldığı için o koşul hep
+                        // yanlış çıkıyor ve yoklama yavaş moda dönüyordu —
+                        // dokunuş vakti gelse bile 800 ms'ye kadar bekleniyordu.
+                        pendingAnswer?.let { w ->
+                            // Kararı kullanıcıya bıraktığımız soruda hızlı
+                            // yoklamanın anlamı yok: dakikalarca bekleyebilir.
+                            if (w.taps == 0 && !w.skippedUnknown) delay(POLL_FAST_MS)
+                        }
                     } else {
+                        // Oyun önplanda görünmüyor: reklam, sistem penceresi ya
+                        // da rootInActiveWindow'un geçici olarak null dönmesi.
+                        //
+                        // Burada döngüyü BIRAKMAK ölümcül bir hataydı. Oyun
+                        // ekranı kendi yüzeyine çizildiği için Android hiç
+                        // "içerik değişti" olayı üretmiyor; yoklama durunca
+                        // onu yeniden başlatacak hiçbir şey kalmıyordu. Ekrandaki
+                        // soru sonsuza kadar cevapsız kalıyor, kullanıcı elle
+                        // ekrana dokunana dek hiçbir satır bile yazılmıyordu.
+                        // Hızlı yakalama açıkken sınır 40 x 200 ms = 8 saniyeye
+                        // denk geliyordu; yani sekiz saniyelik bir reklam
+                        // tarayıcıyı temelli durduruyordu.
+                        //
+                        // Artık bırakmıyoruz, yavaşlıyoruz: ekranı okumadan
+                        // yalnızca "önplanda kim var" diye bakmak ucuz bir
+                        // sorgu. Oyun geri geldiğinde kaldığımız yerden devam.
                         misses++
-                        // Otomatik modda araya giren bir reklam ya da sistem
-                        // penceresi yüzünden yoklamayı bırakırsak bot orada
-                        // takılı kalır; bu yüzden çok daha uzun bekleriz.
-                        val limit = if (cur.autoPlay) POLL_MISS_LIMIT_AUTO else POLL_MISS_LIMIT
-                        if (misses >= limit) break
+                        // Bekleme kipinde tarama yapılmadığı için günlük de
+                        // susuyor; bu, geçen sefer 20 saniyelik boşlukların
+                        // sebebini bulmayı zorlaştırmıştı. Girişte bir kez,
+                        // sonra onar saniyede bir yazıyoruz.
+                        val heartbeat = idleLimit(cur) + (IDLE_HEARTBEAT_MS / IDLE_POLL_MS).toInt()
+                        if (misses == idleLimit(cur) || (misses > idleLimit(cur) &&
+                                (misses - idleLimit(cur)) % (heartbeat - idleLimit(cur)) == 0)) {
+                            log("yoklama bekleme kipinde · önplanda: ${active ?: "bilinmiyor"}")
+                        }
+                        if (misses >= idleLimit(cur)) {
+                            pollAdim("bekleme_kipi")
+                            delay(IDLE_POLL_MS)
+                        }
                     }
                 }
+            } catch (t: Throwable) {
+                if (t !is CancellationException) log("HATA yoklama: ${hataOzeti(t)}")
+                throw t
             } finally {
                 pollJob = null
+                pollRunning.set(false)
+                pollAsama = "-"
+                if (running.value) log("İZ yoklama döngüsü bitti")
+                // Emniyet ağı. Yoklama duran bir servis, oyun ekranı hiç olay
+                // üretmediği için bir daha kendine gelemiyor: soruyu gören
+                // tek şey bu döngü. Beklenmedik bir sebeple (istisna, servis
+                // tuhaflığı) bittiyse kendini yeniden kuruyor. İptal edilerek
+                // bitmişse — mod kapandı, servis düşüyor — scope da iptal
+                // olduğu için bu launch hiç çalışmaz, yani kapatma yolu
+                // etkilenmiyor.
+                if (running.value && prefs.state.value.targetPackages.isNotEmpty()) {
+                    scope.launch {
+                        delay(IDLE_POLL_MS)
+                        ensurePolling()
+                    }
+                }
             }
         }
     }
@@ -257,10 +594,43 @@ class CaptureAccessibilityService : AccessibilityService() {
 
     // -----------------------------------------------------------------------
 
+    /**
+     * Tek bir tarama; asıl iş [taramaIc]'te. Burada yalnızca iz tutuluyor:
+     * taramanın nerede bittiği, hangi aşamanın ne kadar sürdüğü ve
+     * fırlayan hata günlüğe düşüyor (bkz. [TaramaIzi]).
+     */
     private suspend fun scan(s: Prefs.Settings) {
+        val iz = izi.basla()
+        otoNeden = "-"
+        try {
+            taramaIc(s, iz)
+        } catch (t: Throwable) {
+            if (t is CancellationException) {
+                iz.cik("iptal")
+            } else {
+                iz.cik("HATA", t.javaClass.simpleName)
+                log("HATA tarama (aşama=${iz.asama}): ${hataOzeti(t)}")
+            }
+            throw t
+        } finally {
+            iz.oto = otoNeden
+            izi.bitir(iz)
+        }
+    }
+
+    private suspend fun taramaIc(s: Prefs.Settings, iz: TaramaIzi.Iz) {
         // Karar açılmak üzereyken hızlı renk turu çalışıyor; ekran görüntüsü
         // hakkını onunla paylaşmayalım.
-        if (burstJob?.isActive == true) return
+        if (burstJob?.isActive == true) return iz.cik("burst")
+
+        // Hızlı yakalamanın kare akışı kendi kendine yenilendiyse haber ver.
+        // Bu satır olmadan, akış koptuğunda uygulamanın neden ağırlaştığı
+        // yalnızca logcat'ten görülebiliyordu.
+        val yenileme = ProjectionService.restartCount
+        if (yenileme != lastProjectionRestart) {
+            lastProjectionRestart = yenileme
+            log("hızlı yakalama: kare akışı yenilendi (#$yenileme)")
+        }
 
         val (screenW, screenH) = ProjectionService.screenSize(this)
 
@@ -268,23 +638,41 @@ class CaptureAccessibilityService : AccessibilityService() {
         // bir uygulamaya geçmiş olabilirsin. Bu kontrol olmadan uygulama
         // ekranda ne varsa onu okuyordu — kendi Teşhis ekranını ve sistem
         // pencerelerini soru sanıp kaydetmesinin sebebi buydu.
+        iz.adim("onplan")
         val front = withContext(Dispatchers.Main) {
             runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
         }
-        if (front == null || front !in s.targetPackages) {
+        // "front == null" demek "oyun kapandı" değil, "hangi pencerenin etkin
+        // olduğunu öğrenemedim" demek. rootInActiveWindow bu cihazda geçici
+        // olarak null dönebiliyor (günlükte "önplanda: bilinmiyor"). Bunu
+        // yabancı uygulama saymak taramayı tümden durduruyordu: ekranda soru
+        // dururken hiçbir satır yazılmıyor, hiç dokunulmuyordu.
+        //
+        // Az önce bir soru gördüysek oyun neredeyse kesin hâlâ orada; ekran
+        // görüntüsü de erişilebilirlik ağacından değil MediaProjection'dan
+        // geldiği için okumaya devam edebiliriz. Başka bir uygulama gerçekten
+        // önplandaysa rootInActiveWindow onun paketini döndürür, null değil.
+        val oyunVardi =
+            SystemClock.uptimeMillis() - lastForegroundAt < FOREGROUND_GRACE_MS
+        val usable = front != null && front in s.targetPackages ||
+            front == null && oyunVardi
+        if (!usable) {
             if (front != lastLoggedFront) {
                 lastLoggedFront = front
                 log("atlandı · önplanda: ${front ?: "bilinmiyor"}")
             }
-            return
+            return iz.cik("onplan", front ?: "null")
         }
+        if (front != null) lastForegroundAt = SystemClock.uptimeMillis()
         lastLoggedFront = front
 
         // Otomatik mod: ekranda cevabı beklenen bir soru varsa şıklardan
         // birine dokun. Tarama turunun başında duruyor ki soru ekranda
         // kaldığı sürece her turda yeniden denenebilsin.
+        iz.adim("oto")
         if (s.autoPlay) autoAnswerTick(s, screenW, screenH)
 
+        iz.adim("dugum")
         val nodes = withContext(Dispatchers.Main) {
             runCatching { NodeHarvester.harvest(rootInActiveWindow) }.getOrDefault(emptyList())
         }
@@ -307,17 +695,81 @@ class CaptureAccessibilityService : AccessibilityService() {
         // Cevabı beklenen bir soru varsa, OCR gerekmese bile ekran görüntüsü
         // alıyoruz — yoksa cevabın açıldığı anı hiç göremeyiz.
         val waiting = pendingAnswer
+        iz.adim("kare")
         var shot: Bitmap? =
             if (needOcr || autoIdle || (s.detectAnswer && waiting != null)) captureScreen()
             else null
 
         // --- 1. Ekran anlamlı biçimde değişti mi? -----------------------------
+        //
+        // Aynı kareyi yeniden okumamak işlemciyi koruyor; ama bekleyen soru
+        // yokken bu atlama bizi kör ediyordu. Soru ekranda dururken ilk
+        // okuma "3/4 şık" diye reddedilince sonraki kareler "aynı ekran"
+        // sayılıp sessizce atlanıyor, ne yeni bir deneme yapılıyor ne de
+        // günlüğe satır düşüyordu: 83 saniyelik boşluklar bundan. Şimdi
+        // bekleyen soru yoksa kıpırdamayan ekran da belirli aralıkla baştan
+        // okunuyor — ikinci okuma aynı sonucu verse bile en azından günlükte
+        // sebebi görünüyor ve yakın plan OCR şansını buluyor.
+        iz.adim("imza")
+        var frameStatic = false
+        // Bu taramadaki karenin imzası; soru okunursa bekleyen soruya yazılıyor.
+        var buKareImza: IntArray? = null
+        // Kapıda bekleyen okuma bu karede yeniden kullanılacaksa (OCR'sız).
+        var tekrarOkuma: QuestionParser.Parsed? = null
         if (shot != null) {
             val sig = frameSignature(shot)
+            buKareImza = sig
             val prev = lastFrameSig
-            if (sig != null && prev != null && sameFrame(sig, prev) && !autoIdle) {
-                shot.recycle()
-                return
+            val now = SystemClock.uptimeMillis()
+            if (sig != null && prev != null && sameFrame(sig, prev)) {
+                frameStatic = true
+                // Bekleyen soru, okunduğu karedeki hâliyle duruyorsa yeniden
+                // okumanın bir anlamı yok: "hâlâ ekranda" bilgisi kareden
+                // geliyor. Eskiden bu hâlde her 1,5 saniyede bir OCR yapılıyordu
+                // (bu telefonda her biri ~1 sn); sen düşünürken işlemci boşa
+                // dönüyordu.
+                val soruAyni = waiting != null &&
+                    waiting.seenSig?.let { sameFrame(sig, it) } == true
+                if (soruAyni) waiting!!.seenAt = now
+                tekrarOkuma = bekleyenOkuma?.takeIf {
+                    now - bekleyenOkumaAt < ACIL_OKUMA_MS &&
+                        bekleyenOkumaImza?.let { i -> sameFrame(sig, i) } == true
+                }
+                // Bekleyen soru varken kartın oturduğunu HENÜZ ölçmediysek
+                // kareyi atlamak yasak. Oturmuş bir kart zaten kıpırdamayan
+                // karedir: tam ölçmemiz gereken an burasıdır. Atlayınca
+                // brightSince hiç kurulmuyor, otomatik dokunuş da her seferinde
+                // 4 saniyelik emniyet süresini bekliyordu — ayarlardaki
+                // "dokunmadan önce bekleme" değeri bu yüzden hiçbir işe
+                // yaramıyordu.
+                //
+                // Yeniden okuma bekleyen soru varken de yapılıyor. Eskiden
+                // yalnızca "bekleyen soru yok"ken yapılıyordu; ama bekleyen
+                // soru bayatlayabiliyor: karar tek karede görünüp kaçınca soru
+                // bekler hâlde kalıyor, ekrana gelen YENİ soru geçiş sırasında
+                // okunamadıysa kıpırdamayan karesi de hiç okunmuyordu. Bot o
+                // arada eski sorunun konumlarına "yeniden deneme" diye basıp
+                // okumadığı yeni soruları cevaplıyordu (günlüğün başındaki
+                // "2. deneme · 7415 ms", "3. deneme · 13065 ms").
+                val kartOlculmeli = waiting != null && waiting.brightSince == 0L
+                // Yeni bir soru ikinci okumayı (teyit) ya da kartın oturmasını
+                // bekliyorsa kıpırdamayan kare 1,5 saniye bekletilmiyor: soru
+                // zaten okundu, onu bir sonraki karede yeniden görmek kaydı ve
+                // "bilinmiyor" sesini o kadar öne çekiyor.
+                val kapiBekliyor =
+                    confirmKey != null && now - confirmAt < ACIL_OKUMA_MS ||
+                        renderWaitKey != null && now - renderWaitSince < ACIL_OKUMA_MS
+                val force = kartOlculmeli || kapiBekliyor || tekrarOkuma != null ||
+                    !soruAyni && now - lastForcedScanAt >= STATIC_RESCAN_MS
+                if (!autoIdle && !force) {
+                    shot.recycle()
+                    return iz.cik("durgun", "kare_yasi=${ProjectionService.kareYasiMs()}")
+                }
+                if (force) lastForcedScanAt = now
+            } else {
+                lastFrameChangeAt = now
+                closeUpSig = null
+                closeUpTries = 0
             }
             if (sig != null) lastFrameSig = sig
         }
@@ -328,24 +780,187 @@ class CaptureAccessibilityService : AccessibilityService() {
         // renk kontrolü ise her karede yapılmaya devam ediyor.
         // Tur sonu ekranı kıpırdamadığı için orada metin tanımayı daha da
         // seyrekleştiriyoruz; düğmeyi bir saniye geç bulmanın zararı yok.
-        val ocrGap = if (autoIdle && !needOcr) AUTO_IDLE_OCR_GAP_MS else MIN_OCR_GAP_MS
+        //
+        // OCR kapısı. Bu telefonda tek bir tam ekran OCR ~1 saniye sürüyor ve
+        // eskiden neredeyse her taramada yapılıyordu: cevabı açılmış eski
+        // kart, sorular arası geçiş kareleri, bekleme sırasında kıpırdamayan
+        // ekran. Bir çekirdek sürekli metin tanımayla meşguldü (kasma), yeni
+        // soru da ancak o boşa giden OCR bittikten sonra okunabiliyordu —
+        // önceki karardan yeni sorunun ilk okunmasına 3,5-7,7 saniye.
+        //
+        // Şık kutusu ölçümü ise ~26 ms. Artık önce o yapılıyor: dört hap
+        // çizili ve hiçbiri seçilmemişse (okunacak yeni bir soru) OCR hemen,
+        // ve yalnızca soru ile şıkların bölgesinde yapılıyor. Hap yoksa OCR
+        // seyrek (tur sonu ekranı, kutusu ölçülemeyen soru eski yoldan yine
+        // okunabilsin diye).
+        var kutular: List<OptionBoxFinder.Box> = emptyList()
+        var haplarHazir = false
+        if (shot != null && s.findOptionBoxes && tekrarOkuma == null) {
+            iz.adim("kutu")
+            kutular = OptionBoxFinder.find(shot)
+            haplarHazir = kutular.size >= 4 && !AnswerColorDetector.analyze(
+                shot, kutular.map { Rect(it.left, it.top, it.right, it.bottom) },
+                shot.width, shot.height
+            ).anyTouched()
+            if (kutular.size >= 3 && sonKutuSayisi != kutular.size) {
+                // Ölçüm her karede aynı sonucu verdiği sürece sessiz;
+                // yalnızca kutu sayısı değiştiğinde günlüğe düşüyor.
+                sonKutuSayisi = kutular.size
+                log("şık kutusu ekrandan ölçüldü: ${kutular.size} hap")
+            }
+        }
+        val ocrGap = when {
+            !s.findOptionBoxes || haplarHazir -> MIN_OCR_GAP_MS
+            autoIdle -> AUTO_IDLE_OCR_GAP_MS
+            else -> OCR_HAPSIZ_MS
+        }
         val ocrDue = SystemClock.uptimeMillis() - lastOcrAt >= ocrGap
         var ocrItems: List<TextItem> = emptyList()
-        if ((needOcr || autoIdle) && shot != null && ocrDue) {
+        // Kutu yolunun kendi reddi: eski yol arkasından çalıştığı için
+        // QuestionParser.lastReject'i eziyor, ama teşhis için asıl anlamlı
+        // olan bu ("dört kutu gördüm, birinin metnini okuyamadım").
+        var kutuRed: String? = null
+        // Soru hangi yoldan okundu: şık kutuları ekrandan mı ölçüldü, yoksa
+        // eski metin yolu mu? Bu sorudaki arıza tam da bu ayrımdaydı.
+        var yolKutu = false
+        if (tekrarOkuma != null) {
+            // Kapıda bekleyen okuma, tıpatıp aynı karede: OCR yok.
+            iz.adim("tekrar_okuma")
+            parsed = tekrarOkuma
+            yolKutu = bekleyenOkumaKutu
+            source = if (nodes.isNotEmpty()) CaptureSource.HYBRID else CaptureSource.OCR
+        } else if ((needOcr || autoIdle) && shot != null && ocrDue) {
             lastOcrAt = SystemClock.uptimeMillis()
-            ocrItems = OcrEngine.recognize(shot)
-            val viaOcr = QuestionParser.parse(
+            iz.adim("ocr")
+            // Haplar hazırsa yalnızca soru kartı ile şıkların bölgesi okunuyor:
+            // üstteki altın/yıldız/ilerleme şeridi ve alttaki jokerler hem
+            // süreyi uzatıyor hem ayrıştırıcıya gürültü taşıyordu.
+            ocrItems = if (haplarHazir) {
+                val ust = (kutular.first().top - OCR_SORU_PAYI * shot.height).toInt()
+                val alt = kutular.last().bottom + (0.01f * shot.height).toInt()
+                ocrBolgesi(shot, ust, alt)
+            } else OcrEngine.recognize(shot)
+            lastOcrItems = ocrItems
+
+            // Önce kutu yolu: şıkların yeri ve sayısı ekrandan piksel olarak
+            // ölçülür, metin sonra doldurulur. Ölçüm tutmazsa (boş liste)
+            // hiçbir şey değişmez, aşağıdaki eski yol devreye girer.
+            var viaOcr: QuestionParser.Parsed? = null
+            if (s.findOptionBoxes && kutular.size >= 3) {
+                iz.adim("kutu_metin")
+                val kutuMetinleri = optionTextsFromBoxes(shot, kutular, ocrItems)
+                iz.adim("ayr")
+                viaOcr = QuestionParser.parse(
+                    ocrItems, shot.width, shot.height, s,
+                    fromAccessibility = false, knownOptions = kutuMetinleri
+                )
+                if (viaOcr == null) {
+                    kutuRed = QuestionParser.lastReject
+                    // Tek bir şık üst üste aynı biçimde okunamıyorsa (ML Kit'in
+                    // tanımadığı bir simge: ∧, ∨, →) beklemenin anlamı yok:
+                    // bot bir dakika boyunca aynı kareyi okuyup sorunun
+                    // süresini dolduruyordu. İkinci kez aynı sonuç gelince o şık
+                    // yer tutucuyla dolduruluyor; soru kaydediliyor, renk
+                    // okuması kutudan çalıştığı için cevap da okunuyor.
+                    val red = kutuRed
+                    if (red != null && red.contains(QuestionParser.TEK_OKUNAMAYAN)) {
+                        okunamayanSayi = if (red == okunamayanImza) okunamayanSayi + 1 else 1
+                        okunamayanImza = red
+                        if (okunamayanSayi >= OKUNAMAYAN_KABUL) {
+                            viaOcr = QuestionParser.parse(
+                                ocrItems, shot.width, shot.height, s,
+                                fromAccessibility = false, knownOptions = kutuMetinleri,
+                                tekOkunamayanaIzin = true
+                            )
+                            if (viaOcr != null) {
+                                kutuRed = null
+                                log("OKUNAMAYAN ŞIK: bir şık ${okunamayanSayi} kez okunamadı, " +
+                                    "«${QuestionParser.OKUNAMAYAN_SIK}» ile devam · $red")
+                            }
+                        }
+                    } else {
+                        okunamayanImza = null
+                        okunamayanSayi = 0
+                    }
+                }
+                yolKutu = viaOcr != null
+            }
+            iz.adim("ayr")
+            if (viaOcr == null) viaOcr = QuestionParser.parse(
                 ocrItems, shot.width, shot.height, s, fromAccessibility = false
             )
+            // Dört şıktan üçü okundu ve ekran bir süredir kıpırdamıyor: bu
+            // artık "şıklar teker teker beliriyor" hâli değil, OCR'ın bir
+            // şıkkı görmemesi. Tek karakterlik şıklarda ("1") ML Kit bloğu
+            // sık düşürüyor. Şık şeridini kırpıp iki kat büyüterek bir kez
+            // daha okuyoruz; küçük harfler büyütülünce tanınıyor.
+            val eksikSik =
+                QuestionParser.lastReject?.startsWith("şıklar henüz tamamlanmadı") == true
+            // Bulunan şıkların hepsi kısaysa (sayı soruları: "2", "12", "165")
+            // beklemenin anlamı yok. Bu şıklar teker teker belirmiyor —
+            // hepsi aynı anda çiziliyor; eksik olan, ML Kit'in yalıtık
+            // rakam bloğunu düşürmesi. Kullanıcının bildirdiği "tüm şıkları
+            // sayı olan sorularda bazen hiç dokunmuyor" durumu bu: kare
+            // durulana kadar beklerken sorunun süresi doluyordu.
+            val hepsiKisa = QuestionParser.lastPartial.let { p ->
+                p.isNotEmpty() && p.all { it.length <= NUMERIC_OPTION_MAX_LEN }
+            }
+            // Aynı karede denemeler tükendiyse bir süre sonra baştan başla.
+            // Soru ekranda yetmiş saniye duruyor; üç denemede pes edip kalan
+            // sürede hiçbir şey yapmamak elde edilebilecek en kötü sonuç.
+            if (closeUpTries >= CLOSEUP_MAX_TRIES &&
+                SystemClock.uptimeMillis() - closeUpAt >= CLOSEUP_RETRY_MS
+            ) {
+                closeUpTries = 0
+                closeUpSig = null
+            }
+            if (viaOcr == null && shot != null && eksikSik &&
+                (hepsiKisa || frameStatic &&
+                    SystemClock.uptimeMillis() - lastFrameChangeAt >= CLOSEUP_AFTER_MS) &&
+                (lastFrameSig?.let { sig -> closeUpSig?.let { sameFrame(it, sig) } } != true ||
+                    closeUpTries < CLOSEUP_MAX_TRIES)
+            ) {
+                // Aynı kare için yeniden deniyorsak ölçeği artırıyoruz;
+                // aynı büyütmeyle ikinci okuma birebir aynı sonucu verirdi.
+                if (lastFrameSig?.let { sig -> closeUpSig?.let { sameFrame(it, sig) } } != true) {
+                    closeUpTries = 0
+                }
+                closeUpSig = lastFrameSig
+                val scale = CLOSEUP_SCALE + closeUpTries
+                closeUpTries++
+                closeUpAt = SystemClock.uptimeMillis()
+                val onceki = ocrItems.size
+                iz.adim("yakin")
+                val yakin = closeUpOptions(shot, s, scale)
+                if (yakin != null) {
+                    yolKutu = false
+                    ocrItems = yakin
+                    viaOcr = QuestionParser.parse(
+                        ocrItems, shot.width, shot.height, s, fromAccessibility = false
+                    )
+                    log(
+                        "yakın plan OCR (${scale}x): $onceki → ${ocrItems.size} metin · " +
+                            (viaOcr?.let { "${it.options.size} şık bulundu" }
+                                ?: "RED: ${QuestionParser.lastReject ?: "?"}")
+                    )
+                }
+            }
             if (viaOcr != null && (viaNodes == null || viaOcr.confidence > viaNodes.confidence + 0.04f)) {
                 parsed = rescale(viaOcr, shot.width, shot.height, screenW, screenH)
                 source = if (nodes.isNotEmpty()) CaptureSource.HYBRID else CaptureSource.OCR
             }
         }
         // OCR kısıldığı turlarda teşhis dökümünü boş verilerle ezmeyelim.
+        iz.adim("dokum")
         if (nodes.isNotEmpty() || ocrItems.isNotEmpty()) dumpDebug(nodes, ocrItems, parsed)
+        val yol = when {
+            source == CaptureSource.ACCESSIBILITY -> "dugum"
+            yolKutu -> "kutu"
+            else -> "metin"
+        }
 
         // --- 3. Karar açıldı mı? ----------------------------------------------
+        iz.adim("karar")
         if (shot != null && waiting != null && s.detectAnswer) {
             val hint = if (nodes.isNotEmpty() || ocrItems.isNotEmpty()) {
                 timedOut(nodes, ocrItems)
@@ -359,39 +974,211 @@ class CaptureAccessibilityService : AccessibilityService() {
         }
 
         // --- 4. Yeni soru mu? -------------------------------------------------
+        iz.adim("sonuc")
         val p = parsed
         if (p == null) {
-            if (ocrItems.isNotEmpty() || nodes.size > 1) {
-                log("düğüm:${nodes.size} ocr:${ocrItems.size} · RED: ${QuestionParser.lastReject ?: "?"}")
+            // Kutu yolu denenip başarısız olduysa asıl sebep onunki; eski
+            // yolun reddi ikinci sırada yazılıyor.
+            val sebep = kutuRed ?: QuestionParser.lastReject ?: "?"
+            val ek = buildString {
+                if (kutuRed != null) append(" · eski yol: ${QuestionParser.lastReject}")
+                // Kutu ölçümü hiç kutu bulamadıysa sebebini de yazıyoruz:
+                // "kutu:0" tek başına, ölçümün ekranı hiç mi göremediğini
+                // yoksa dizilimi mi beğenmediğini söylemiyordu.
+                if (kutular.isEmpty() && s.findOptionBoxes) {
+                    OptionBoxFinder.lastReason?.let { append(" · kutu ölçümü: $it") }
+                }
             }
+            if (ocrItems.isNotEmpty() || nodes.size > 1) {
+                log("düğüm:${nodes.size} ocr:${ocrItems.size} kutu:${kutular.size} · RED: $sebep$ek")
+                iz.cik("red", sebep.take(50))
+            } else {
+                // Sessiz çıkış: ne okunacak kare vardı ne de OCR sırası.
+                iz.cik(
+                    "veri_yok",
+                    when {
+                        shot == null -> "kare_yok"
+                        !(needOcr || autoIdle) -> "ocr_gerekmedi"
+                        // OCR kapısı: okunmaya hazır dört hap yok (geçiş,
+                        // cevabı açılmış kart, tur sonu).
+                        !ocrDue && !haplarHazir && s.findOptionBoxes -> "hap_bekleniyor"
+                        !ocrDue -> "ocr_erken"
+                        else -> "ocr_bos"
+                    }
+                )
+            }
+            // Şık bölgesiyle ilgili bir redse kareyi diske yaz: sebebi
+            // günlükten geriye doğru tahmin etmek yerine bakabilelim.
+            // Yalnızca hap görülmüş karelerde: geçiş karelerinin "0 metin"
+            // redleri gürültüydü ve her biri taramaya ~300 ms ekliyordu.
+            if (s.saveFailedFrames && shot != null && sebep.startsWith("şık") && kutular.size >= 3) {
+                iz.adim("teshis_kare")
+                teshisKaydet(shot, ocrItems, kutular, sebep + ek)
+            }
+            noteUnreadable(s)
             // Ekranda soru yok ve bir süredir de yoktu: tur bitmiş olabilir.
-            if (autoIdle) tryContinue(nodes, ocrItems, shot, screenW, screenH)
+            iz.adim("devam")
+            if (autoIdle) tryContinue(nodes, ocrItems, shot, screenW, screenH, s.autoRefillLives)
             shot?.let { if (!it.isRecycled) it.recycle() }
             return
         }
         if (p.confidence < s.minConfidence) {
             log("${p.options.size} şık %${(p.confidence * 100).toInt()} · RED: güven eşiğin altında")
             shot?.let { if (!it.isRecycled) it.recycle() }
-            return
+            return iz.cik("guven")
         }
         // Ekranda gerçek bir soru var: tur sonu yoklamasının sayacı sıfırlanır.
         lastQuestionAt = SystemClock.uptimeMillis()
+        lastIdleScreen = null
+        unreadableSince = 0L
+        unreadableWarned = false
         if (s.autoPlay) auto.noteQuestion()
-        if (p.key == lastKey) {
+        // Aynı soru numarası duruyorsa bu hâlâ aynı sorudur: ekran değişmiş
+        // olabilir ama yeni bir kayıt açılmaz. Numara okunamadıysa (null)
+        // eski davranışa düşüyoruz. Soru metni tamamen başkalaşmışsa da
+        // kilidi açıyoruz — numarayı yanlış okumuş olabiliriz ve kilitli
+        // kalmak yakalamayı tümden durdurur.
+        val no = p.number
+        val locked = no != null && no == lockedNumber &&
+            TurkishText.similarity(p.question, lockedQuestion) > LOCK_MIN_SIMILARITY
+
+        if (locked || p.key == lastKey) {
+            // Şıklar animasyonla yerine oturuyor. Oyun şıkların sırasını
+            // değiştirdiğinde burada `options` ve `rects` BİRLİKTE
+            // tazelenmek zorunda.
+            //
+            // Eskiden yalnızca kutular tazeleniyor, metinler ilk okumadan
+            // kalıyordu. O zaman "2. metin" ile "2. kutu" başka şıklara ait
+            // oluyor: bot bir şıkka basıp oyun başkasında tepki veriyor,
+            // arşive yanlış cevap yazılıyor ve otomatik mod sonraki turlarda
+            // o yanlış cevaba basmaya devam ediyordu — hata kendini besliyordu.
+            pendingAnswer?.let { waiting ->
+                if (waiting.id == currentEncounterId) {
+                    waiting.seenAt = SystemClock.uptimeMillis()
+                    buKareImza?.let { waiting.seenSig = it }
+                    if (sameOrder(waiting.options, p.options)) {
+                        // Sıra aynı: kutular animasyonla biraz kaymış olabilir.
+                        waiting.rects = p.optionRects
+                    } else if (yalnizcaHarfFarki(waiting.options, p.options)) {
+                        // "Töz" bir karede "Toz" okunmuş olabilir, şıklar da
+                        // gerçekten yer değiştirmiş olabilir; ikisi ayırt
+                        // edilemiyor. Hiçbir şeye dokunmuyoruz.
+                    } else if (waiting.options.size == p.options.size) {
+                        // Sıra değişti. Metinle kutu birlikte güncelleniyor.
+                        waiting.options = p.options
+                        waiting.rects = p.optionRects
+                        // Konuma bağlı bütün durum artık geçersiz: hangi
+                        // kutunun yeşil olduğu, hangisine basıldığı, kaç
+                        // saniyedir beklenildiği — hepsi yeniden okunmalı.
+                        waiting.greenIndex = null
+                        waiting.greenSince = 0L
+                        waiting.pendingIndex = null
+                        waiting.pendingSince = 0L
+                        waiting.chosenIndex = null
+                        waiting.knownIndex = null
+                        waiting.lastSummary = null
+                        waiting.lastSkip = null
+                        // Yeni bir karşılaşma gibi sıfırla: dokunma gecikmesi
+                        // bu andan sayılsın, kart yeniden otursun diye beklesin.
+                        waiting.bornAt = SystemClock.uptimeMillis()
+                        waiting.brightSince = 0L
+                        waiting.taps = 0
+                        waiting.lastTapAt = 0L
+                        waiting.autoTapped = false
+                        waiting.secimGoruldu = null
+                        waiting.elleSecildi = false
+                        // Uçuşta olan dokunuş ve kayıt işleri bu artıştan
+                        // eski yerleşimle çalıştıklarını anlayıp vazgeçsin.
+                        waiting.layout++
+                    }
+                    // Sayılar uyuşmuyorsa (bir tarafta OCR şık düşürmüşse)
+                    // hiçbir şeye dokunmuyoruz: yanlış eşleştirme riski var.
+                }
+            }
             shot?.let { if (!it.isRecycled) it.recycle() }
-            return
+            return iz.cik("ayni_soru", "yol=$yol")
+        }
+
+        okumaTakip(p)
+
+        // Kart oturmadan kaydetmiyoruz. Soru kartı solarak geliyor ve bu
+        // sırada metin yarı saydam, kayar hâlde; OCR harfleri yanlış okuyor
+        // ("yıldıza" yerine "yildza") ve bozuk metin arşive ayrı bir kayıt
+        // olarak düşüyor. Yarım saniye beklemek, sonradan elle temizlenmesi
+        // gereken çift kayıttan ucuz.
+        //
+        // Bu kapı eskiden sessizdi ve bir soruda takılınca hiç açılmıyordu:
+        // "Demokratikleşme" gibi iri yazılmış bir şıkta ölçüm hep "çizilmedi"
+        // diyor, soru her taramada okunup burada geri çevriliyordu. Soru
+        // okunduğu için "bekleyen soru yok" satırı da düşmüyordu; günlükte
+        // 20 saniyelik boşluklar bundan. İki önlem: takılma günlüğe yazılıyor,
+        // ve ekran bir süredir hiç kıpırdamıyorsa kart oturmuş sayılıyor —
+        // bu kapının koruduğu şey solarak gelen kart, kıpırdamayan bir kare
+        // solma animasyonunun ortası olamaz.
+        iz.adim("kart_olc")
+        if (shot != null &&
+            !AnswerColorDetector.optionsRendered(shot, p.optionRects, screenW, screenH)
+        ) {
+            val durgun = SystemClock.uptimeMillis() - lastFrameChangeAt
+            if (!frameStatic || durgun < CARD_STATIC_MS) {
+                noteRenderWait(p, shot, screenW, screenH)
+                confirmKey = null
+                okumaKapi++
+                okumayiBeklet(p, buKareImza, yolKutu)
+                shot.let { if (!it.isRecycled) it.recycle() }
+                return iz.cik("kart_kapisi", "yol=$yol")
+            }
+            if (p.key != renderForcedKey) {
+                renderForcedKey = p.key
+                log("kart ölçüsü tutmadı ama ekran $durgun ms'dir kıpırdamıyor, oturmuş sayıldı · " +
+                    renderReport(p, shot, screenW, screenH))
+            }
+        }
+
+        // Aynı okumayı iki kez üst üste görmeden yeni kayıt açmıyoruz.
+        //
+        // Sorular birbirine solarak geçiyor: kart henüz çizilmemişken OCR
+        // yarım kalmış metni okuyor ve her karede başka türlü bozuyor.
+        // Bu karelerden biri dört "şık" bulabiliyor ve arşive harfleri
+        // karışmış bir soru düşüyordu — hemen ardından gerçek soru ayrıca
+        // kaydediliyor, yani her geçişte bir çöp kayıt. Gerçek soru saniyede
+        // birkaç kez okunduğu için ikinci okumayı beklemenin maliyeti yok;
+        // bozuk okuma ise kendini iki kez aynı biçimde tekrar edemiyor.
+        // Bu kapı bozuk geçiş okumalarına karşı. Soru arşivde bu haliyle
+        // zaten varsa (parmak izi soru metni + sıralanmış şıklardan
+        // hesaplanıyor) bozuk okuma olamaz: bozulmuş bir metin kendini daha
+        // önce kaydedilmiş bir kayıtla birebir aynı üretemez. O yüzden
+        // tanıdık sorularda ikinci okumayı beklemiyoruz; her soruda bir
+        // tarama turu (300-600 ms) kazanıyoruz.
+        iz.adim("db")
+        val taniniyor = runCatching { repo.isKnownFingerprint(p.key) }.getOrDefault(false)
+        if (!taniniyor && p.key != confirmKey) {
+            confirmKey = p.key
+            confirmAt = SystemClock.uptimeMillis()
+            okumaTeyit++
+            okumayiBeklet(p, buKareImza, yolKutu)
+            shot?.let { if (!it.isRecycled) it.recycle() }
+            return iz.cik("teyit", "yol=$yol")
         }
         lastKey = p.key
+        // Teyit geçildi; aynı okuma artık lastKey'den tanınıyor. Temizlenmezse
+        // kıpırdamayan kare üç saniye boyunca boşuna yeniden okunuyordu.
+        confirmKey = null
+        bekleyenOkuma = null
+        okunamayanImza = null
+        okunamayanSayi = 0
 
         // Kullanıcı Ana ekrandan bir kategori seçtiyse o kazanır; yoksa ekrandan tanınan kullanılır.
         val category = s.activeCategory.takeIf { it.isNotBlank() } ?: p.category
 
         var shotPath: String? = null
+        iz.adim("foto")
         if (s.saveScreenshots) {
             if (shot == null) shot = captureScreen()
             shotPath = shot?.let { saveShot(it, p.key) }
         }
 
+        iz.adim("db")
         val result = repo.save(
             question = p.question,
             options = p.options,
@@ -409,12 +1196,21 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (savedId == null) {
             log("RED: kayıt çok kısa / şık yetersiz")
             pendingAnswer = null
+            iz.cik("kayit_red")
         } else {
             // Aynı soru ekranı saniyede birkaç kez taranıyor ve her tarama
             // küçük OCR farkları yüzünden ayrı bir kayıt denemesi oluyor.
             // Bunların hepsi TEK bir karşılaşmadır — sayaç yalnızca gerçekten
             // başka bir soruya geçildiğinde artar.
             val newEncounter = savedId != currentEncounterId
+            iz.cik(
+                when {
+                    result is Repo.SaveResult.Inserted -> "yeni"
+                    newEncounter -> "tekrar"
+                    else -> "yeniden"
+                },
+                "yol=$yol"
+            )
             if (newEncounter) {
                 currentEncounterId = savedId
                 // Yeni kayıt zaten seenCount = 1 ile başlıyor.
@@ -422,20 +1218,74 @@ class CaptureAccessibilityService : AccessibilityService() {
             }
 
             val conf = (p.confidence * 100).toInt()
+            // Numara günlüğe de yazılıyor: kilit mekanizmasının doğru sayıyı
+            // okuyup okumadığı ancak cihazda görülebiliyor.
+            val noLabel = (no?.let { " · soru $it" } ?: " · numarasız") +
+                // Sayı şıkları tek bloğa yapışmışsa ayrıştırıcı onu
+                // satırlarına ayırmış demektir; görünür olsun.
+                (if (QuestionParser.lastSplit > 0) " · blok bölündü" else "")
             when {
                 result is Repo.SaveResult.Inserted -> {
                     Log.i(TAG, "Kaydedildi #$savedId")
-                    log("${p.options.size} şık %$conf · KAYDEDİLDİ #$savedId")
+                    log("${p.options.size} şık %$conf · KAYDEDİLDİ #$savedId$noLabel")
                 }
-                newEncounter -> log("${p.options.size} şık %$conf · tekrar #$savedId")
+                newEncounter -> log("${p.options.size} şık %$conf · tekrar #$savedId$noLabel")
                 // Aynı ekranın yeniden okunması: günlüğe yazmaya değmez.
+            }
+            // Sorunun kendisi ve ekrandaki şık sırası, karşılaşma başına bir
+            // kez. Bunlar olmadan sonraki "OTOMATİK → C" ve "ÇELİŞKİ"
+            // satırları havada kalıyordu: hangi metne dokunulduğu, OCR'ın
+            // şıkları doğru okuyup okumadığı görülemiyordu.
+            if (newEncounter) {
+                // Cevabı arşivde bulunamıyorsa haber ver. Bu, otomatik modun
+                // dokunup dokunmayacağından bağımsız: manuel modda da
+                // "bu soru bizde yok" bilgisini ekrana bakmadan veriyor.
+                // Yeni açılan kaydın cevabı olamaz; ses veritabanı sorgusunu
+                // beklemeden çalıyor.
+                val bilinen = if (result is Repo.SaveResult.Inserted) Repo.KnownAnswer.None
+                else runCatching {
+                    repo.knownAnswerOnScreen(savedId, p.options)
+                }.getOrDefault(Repo.KnownAnswer.None)
+                if (bilinen !is Repo.KnownAnswer.OnScreen) {
+                    log("BİLİNMİYOR #$savedId: cevap arşivde bulunamadı")
+                    if (s.unknownChime) Chime.play(this)
+                }
+                log("SORU #$savedId «${p.question.take(70)}»")
+                log(okumaOzeti(savedId, yol, kutular.size))
+                log(
+                    "ŞIKLAR #$savedId: " +
+                        p.options.mapIndexed { i, o -> "${'A' + i}«${o.take(24)}»" }
+                            .joinToString(" ")
+                )
+            }
+
+            // Soru dört şıkkıyla düzgün okundu: numara artana kadar bunu
+            // yeniden okumaya çalışmayalım.
+            if (no != null && p.options.size >= 4) {
+                lockedNumber = no
+                lockedQuestion = p.question
             }
 
             val answeredJustNow = savedId == lastAnsweredId &&
                 SystemClock.uptimeMillis() - lastAnsweredAt < ANSWER_COOLDOWN_MS
             val current = pendingAnswer
+            if (current != null && current.id == savedId) {
+                current.seenAt = SystemClock.uptimeMillis()
+                buKareImza?.let { current.seenSig = it }
+            }
             if (!answeredJustNow && (current == null || current.id != savedId)) {
-                pendingAnswer = PendingAnswer(savedId, p.optionRects)
+                // Kartın oturduğu bu noktada ZATEN ölçülmüş durumda: birkaç
+                // satır yukarıdaki optionsRendered() kapısını geçemeseydik
+                // buraya hiç gelmezdik. Eskiden brightSince 0 ile başlıyor ve
+                // ölçüm için bir tarama turu daha bekleniyordu; dokunuş o tur
+                // kadar (300-600 ms) geç gidiyordu. Ölçümü burada kabul etmek
+                // hiçbir güvenliği gevşetmiyor, sadece aynı bilgiyi iki kez
+                // toplamayı bırakıyor.
+                val now = SystemClock.uptimeMillis()
+                pendingAnswer = PendingAnswer(savedId, p.question, p.optionRects, p.options).apply {
+                    if (shot != null) brightSince = now
+                    seenSig = buKareImza
+                }
             }
         }
 
@@ -453,35 +1303,240 @@ class CaptureAccessibilityService : AccessibilityService() {
      * yoksa jestin tamamlanmasını beklerken tarama döngüsü durur.
      */
     private fun autoAnswerTick(s: Prefs.Settings, screenW: Int, screenH: Int) {
-        val waiting = pendingAnswer ?: return
-        if (waiting.bornAt == auto.answeredToken) return
-        if (waiting.rects.size < 2) return
-        if (SystemClock.uptimeMillis() - waiting.bornAt < s.autoAnswerDelayMs) return
-        if (autoJob?.isActive == true) return
+        val waiting = pendingAnswer
+        if (waiting == null) {
+            otoNeden = "yok"
+            // Soru yakalanamadıysa bot dokunmaz — ama bunu sessizce
+            // yapmasın. Sebep, ayrıştırıcının son red gerekçesi: teşhis
+            // ekranında "neden bekliyor" sorusu ancak böyle cevaplanıyor.
+            val since = SystemClock.uptimeMillis() - lastQuestionAt
+            if (since > AUTO_IDLE_LOG_AFTER_MS) {
+                noteAutoIdle("bekleyen soru yok · son red: ${QuestionParser.lastReject ?: "?"}")
+            }
+            return
+        }
+        if (waiting.elleSecildi) {
+            otoNeden = "elle"
+            return
+        }
+        if (waiting.rects.size < 2) {
+            otoNeden = "kutu<2"
+            noteAutoIdle("şık kutusu ${waiting.rects.size}, dokunulmaz")
+            return
+        }
+        if (waiting.taps >= AUTO_MAX_TAPS) { otoNeden = "dokunus_bitti"; return }
+        if (autoJob?.isActive == true) { otoNeden = "is_suruyor"; return }
 
+        // İlk dokunuş şıklar yerine otursun diye bekliyor. Sonrakiler yeniden
+        // deneme: jest sisteme başarıyla gönderilse bile oyunun onu yuttuğu
+        // oluyor ve soru ekranda süre dolana kadar öylece kalıyordu. Cevap
+        // açılınca soru kapandığı için fazladan dokunuş atılmıyor.
+        val now = SystemClock.uptimeMillis()
+        // Bekleme, sorunun okunduğu andan değil şık kutularının çizildiği
+        // andan başlıyor. Renk okuması kapalıysa ya da kart bir türlü
+        // oturmadıysa sorunun geldiği ana geri düşüyoruz, yoksa hiç
+        // dokunmamış oluruz.
+        val cardAt = when {
+            !s.detectAnswer -> waiting.bornAt
+            waiting.brightSince > 0L -> maxOf(waiting.bornAt, waiting.brightSince)
+            now - waiting.bornAt > CARD_READY_TIMEOUT_MS -> waiting.bornAt
+            else -> { otoNeden = "kart_bekle"; return }
+        }
+        val due = if (waiting.taps == 0) cardAt + s.autoAnswerDelayMs
+                  else waiting.lastTapAt + AUTO_RETAP_MS
+        if (now < due) {
+            otoNeden = if (waiting.taps == 0) "gecikme" else "tekrar_bekle"
+            return
+        }
+        // Yeniden deneme ancak ekranda hâlâ o soru olduğunu biliyorsak: ya
+        // dokunuştan sonra yeniden okundu, ya da ekran dokunuştan beri hiç
+        // değişmedi (dokunuş yutulmuş). İkisi de yoksa ekranda başka bir şey
+        // var demektir (bkz. [PendingAnswer.seenAt]).
+        if (waiting.taps > 0 && waiting.seenAt <= waiting.lastTapAt &&
+            lastFrameChangeAt > waiting.lastTapAt
+        ) {
+            otoNeden = "tekrar_engel"
+            noteAutoIdle("#${waiting.id} yeniden denenmiyor: soru dokunuştan sonra okunmadı")
+            return
+        }
+
+        otoNeden = "basiliyor"
         autoJob = scope.launch {
+            val isBasla = SystemClock.uptimeMillis()
             val cur = prefs.state.value
             if (!cur.autoPlay || cur.paused) return@launch
             // Bekleme sırasında soru değişmiş olabilir.
             if (pendingAnswer?.bornAt != waiting.bornAt) return@launch
 
-            val known = if (cur.autoUseKnownAnswer) {
-                runCatching { repo.byId(waiting.id)?.correctIndex }.getOrNull()
-            } else null
+            // Kutu sayısı ile metin sayısı tutmuyorsa hangi kutunun hangi
+            // metne ait olduğunu bilmiyoruz. Eskiden burada sessizce
+            // rastgeleye düşülüyordu — üstelik günlük yine "bilinen cevap"
+            // yazdığı için teşhis imkânsızdı. Dokunmamak yeğ: soru zaten
+            // bir sonraki karede yeniden okunacak.
+            val layoutAtStart = waiting.layout
+            if (waiting.rects.size != waiting.options.size) {
+                log(
+                    "otomatik atlandı #${waiting.id}: şık kutusu " +
+                        "(${waiting.rects.size}) ve metin (${waiting.options.size}) " +
+                        "sayısı tutmuyor"
+                )
+                return@launch
+            }
 
-            val index = auto.answer(waiting.bornAt, waiting.rects, known)
-            if (index == null) {
+            // Soruyu daha önce görmüşsek doğru şıkka, görmemişsek rastgele
+            // birine dokunuyoruz. Kayıttaki sıra değil, kayıttaki doğru
+            // cevabın o anki ekrandaki sırası aranıyor: şıklar karışıyor.
+            val lookup = if (cur.autoUseKnownAnswer) {
+                runCatching { repo.knownAnswerOnScreen(waiting.id, waiting.options) }
+                    .getOrDefault(Repo.KnownAnswer.None)
+            } else Repo.KnownAnswer.None
+
+            // Arşivde cevap olduğu hâlde ekranda bulunamadıysa bu bir arıza:
+            // sessizce rastgeleye düşmek yerine sebebini yazıyoruz.
+            (lookup as? Repo.KnownAnswer.Unmatched)?.let {
+                log(
+                    "UYUŞMAZLIK #${waiting.id}: arşivdeki cevap " +
+                        (it.text?.let { t -> "«$t»" } ?: "(kayıt bozuk)") +
+                        " ekranda bulunamadı → rastgele seçiliyor · ekranda: " +
+                        waiting.options.mapIndexed { i, o -> optionLabel(waiting, i) }
+                            .joinToString(" ")
+                )
+            }
+
+            val known = (lookup as? Repo.KnownAnswer.OnScreen)?.index
+            val dbBitti = SystemClock.uptimeMillis()
+
+            // Cevabı bilinmiyorsa ve kullanıcı "kararı bana bırak" dediyse
+            // dokunmuyoruz. Soru ekranda kalır, sen cevaplarsın; doğrusu yine
+            // renk okumasıyla arşive yazılır.
+            if (lookup !is Repo.KnownAnswer.OnScreen && !cur.autoRandomWhenUnknown) {
+                if (!waiting.skippedUnknown) {
+                    waiting.skippedUnknown = true
+                    log("otomatik #${waiting.id}: cevap bilinmiyor, karar sende (ayar)")
+                }
+                return@launch
+            }
+
+            val retry = waiting.taps > 0
+            val index = waiting.chosenIndex
+                ?: auto.pickOption(waiting.rects.size, known).also { waiting.chosenIndex = it }
+            // Arşiv bir şık gösterdiği hâlde ona basmıyorsak sebebi
+            // görünsün; yoksa "bilinen cevap" yazıp başka yere basmış
+            // oluyorduk.
+            if (known != null && index != known) {
+                log(
+                    "SAPMA #${waiting.id}: arşiv ${optionLabel(waiting, known)} diyor ama " +
+                        "${optionLabel(waiting, index)} seçildi " +
+                        "(kutu sayısı ${waiting.rects.size})"
+                )
+            }
+
+            // Dokunmadan hemen önce şıklar gerçekten ekranda mı? Tarama
+            // "önplanda kim var" sorusu null döndüğünde oyunu 30 saniye daha
+            // önplanda sayıyor (bu cihazda geçici null'lar var); o arada
+            // uygulama değiştirilirse dokunuş başka bir ekrana gidiyordu —
+            // günlükte "15465 ms" gecikmeyle atılıp son kullanılanlar
+            // ekranına düşen dokunuş bundan. Pencere adına güvenemediğimiz
+            // için karenin kendisine bakıyoruz: dokunacağımız yerlerde şık
+            // hapları yoksa dokunmuyoruz. Soru arada değiştiyse de bu kontrol
+            // eski konuma basmayı engelliyor.
+            dokunusEngeli(waiting, screenW, screenH)?.let { engel ->
+                noteAutoIdle("#${waiting.id}: $engel, dokunulmadı")
+                return@launch
+            }
+            // Arşiv sorgusu ve kare denetimi sürerken yeni soru kaydedilmiş olabilir.
+            if (pendingAnswer !== waiting) return@launch
+            val kareBitti = SystemClock.uptimeMillis()
+
+            // Sayaçlar dokunuştan önce artıyor: jest başarısız olsa bile bu
+            // bir denemedir, yoksa saniyede birkaç kez yeniden denenirdi.
+            waiting.taps++
+            waiting.lastTapAt = SystemClock.uptimeMillis()
+            waiting.autoTapped = true
+            // Yeni dokunuşun tepkisi ayrıca ölçülsün.
+            waiting.tintSeen = false
+            waiting.knownIndex = known
+
+            // Arşiv sorgusu sürerken şıklar karışmış olabilir; o zaman
+            // elimizdeki kutu artık başka bir metne ait.
+            if (waiting.layout != layoutAtStart) {
+                log("otomatik iptal #${waiting.id}: şıklar dokunmadan önce karıştı")
+                return@launch
+            }
+            if (!auto.tapOption(waiting.rects, index, longPress = retry)) {
                 log("otomatik: #${waiting.id} şıkkına dokunulamadı")
                 return@launch
             }
+            val jestBitti = SystemClock.uptimeMillis()
+            // Neden rastgele seçtiğimizi de yazıyoruz: "yeni soru" ile
+            // "arşivde cevap var ama bulunamadı" bambaşka iki durum.
+            val neden = when (lookup) {
+                is Repo.KnownAnswer.OnScreen -> "bilinen cevap"
+                is Repo.KnownAnswer.Unmatched -> "rastgele (eşleşmedi)"
+                Repo.KnownAnswer.None ->
+                    if (cur.autoUseKnownAnswer) "rastgele (cevabı bilinmiyor)" else "rastgele"
+            }
+            val gecikme = SystemClock.uptimeMillis() - waiting.bornAt
             log(
-                "OTOMATİK #${waiting.id} → ${'A' + index} · " +
-                    "${if (known != null) "bilinen cevap" else "rastgele"} · " +
-                    "bu oturumda ${auto.tapCount} cevap"
+                "OTOMATİK #${waiting.id} → ${optionLabel(waiting, index)} · $neden" +
+                    (if (retry) " · ${waiting.taps}. deneme" else "") +
+                    " · ${gecikme} ms" +
+                    (if (waiting.brightSince == 0L) " (kart ölçülemedi)" else "") +
+                    " · bu oturumda ${auto.tapCount} cevap" +
+                    // Dokunuşun kendi içindeki süreler: arşiv sorgusu, karede
+                    // şık kontrolü, jestin sistemce tamamlanması.
+                    " · iz[db=${dbBitti - isBasla} kare=${kareBitti - dbBitti} " +
+                    "jest=${jestBitti - kareBitti}]"
             )
             // Dokunduk; karar bir iki saniyede açılıp geçecek. Renk turunu
             // hemen başlatıyoruz ki cevabı kaçırmayalım.
             if (cur.detectAnswer) startVerdictBurst(waiting, screenW, screenH)
+        }
+    }
+
+    /**
+     * Dokunmadan hemen önce şu anki kareye bakar; dokunmamak için bir sebep
+     * varsa onu döndürür.
+     *
+     *  - Şık hapları bildiğimiz yerde çizili değil: uygulama değiştirilmiş,
+     *    kart kararmış ya da geçiş sürüyor. Pencere adı her zaman
+     *    okunamadığı için (bu cihazda geçici null'lar var) karenin kendisine
+     *    bakıyoruz.
+     *  - Şıklardan biri zaten seçilmiş (turkuaz, yeşil, kırmızı ya da basılı
+     *    sarı): soruyu sen cevapladın ya da ilk dokunuş tuttu. Bot ikinci
+     *    kez basmıyor; sen bastıysan soru artık senin.
+     *  - Ekran soru son okunduğundan beri değişti: sen erken cevapladıysan
+     *    oyun sonraki soruya geçmiş olabilir. Yeni sorunun hapları aynı
+     *    yerde durduğu için ilk iki kontrol bunu göremiyordu ve bot önceki
+     *    soru için seçtiği şıkka yeni soruda basıyordu. Soru yeniden
+     *    okununca imza tazeleniyor ve dokunuş gidiyor.
+     *
+     * Yalnızca hızlı yakalama açıkken bakılıyor: yavaş yolda ekran görüntüsü
+     * saniyede bir alınabildiği için bu kontrol dokunuşu bir saniye
+     * geciktirirdi.
+     */
+    private suspend fun dokunusEngeli(waiting: PendingAnswer, screenW: Int, screenH: Int): String? {
+        if (!fastCapture) return null
+        val kare = ProjectionService.grab() ?: return null
+        try {
+            if (!AnswerColorDetector.optionsRendered(kare, waiting.rects, screenW, screenH)) {
+                return "şıklar ekranda görünmüyor"
+            }
+            if (AnswerColorDetector.analyze(kare, waiting.rects, screenW, screenH).anyTouched()) {
+                if (waiting.taps == 0 && !waiting.elleSecildi) {
+                    waiting.elleSecildi = true
+                    log("ELLE #${waiting.id}: bot dokunmadan önce bir şık seçilmiş, bot bu soruya dokunmayacak")
+                }
+                return "şıklardan biri zaten seçilmiş"
+            }
+            val imza = frameSignature(kare)
+            val once = waiting.seenSig
+            if (imza != null && once != null && !sameFrame(imza, once)) {
+                return "ekran soru okunduğundan beri değişti"
+            }
+            return null
+        } finally {
+            kare.recycle()
         }
     }
 
@@ -497,24 +1552,349 @@ class CaptureAccessibilityService : AccessibilityService() {
         ocr: List<TextItem>,
         shot: Bitmap?,
         screenW: Int,
-        screenH: Int
+        screenH: Int,
+        refillLives: Boolean
     ) {
         if (nodes.isEmpty() && ocr.isEmpty()) return
         val shotW = shot?.takeIf { !it.isRecycled }?.width ?: screenW
         val shotH = shot?.takeIf { !it.isRecycled }?.height ?: screenH
-        val items = nodes + ocr.map {
-            it.copy(bounds = scaleRect(it.bounds, shotW, shotH, screenW, screenH))
-        }
+        // Satır ve kelime kutuları da ölçekleniyor: düğmenin yeri artık
+        // kelimelerden bulunabiliyor (bkz. AutoPlayer.buttonCandidates).
+        fun olcekle(t: TextItem): TextItem = t.copy(
+            bounds = scaleRect(t.bounds, shotW, shotH, screenW, screenH),
+            lines = t.lines.map { olcekle(it) }
+        )
+        val items = nodes + ocr.map { olcekle(it) }
         // "Atla"/"Devam" gibi yazılara ancak ekran iyice uzun süredir
         // kımıldamıyorsa dokunuruz; "Tekrar Oyna" için o kadar beklemeye gerek yok.
         val allowDismiss = SystemClock.uptimeMillis() - lastQuestionAt > AUTO_DISMISS_IDLE_MS
-        val pressed = auto.pressContinue(items, screenH, allowDismiss) ?: return
-        log("OTOMATİK: \"$pressed\" → yeni tur (${auto.restartCount}. kez)")
+        when (val sonuc = auto.pressContinue(items, screenH, allowDismiss, refillLives)) {
+            // Az önce basıldı, sonucu bekleniyor. Ekranı raporlamaya gerek yok.
+            AutoPlayer.Continue.Waiting -> return
+            // Basılacak bir şey yok: ekranda ne yazdığını bir kez günlüğe
+            // düşürüyoruz. Tur sonu ekranı oyundan oyuna değişiyor; hangi
+            // düğmenin tanınmadığını ancak böyle görebiliyoruz.
+            AutoPlayer.Continue.NotFound -> {
+                logIdleScreen(items)
+                return
+            }
+            is AutoPlayer.Continue.Pressed -> {
+                if (TurkishText.normalizeKey(sonuc.label) == "doldur") {
+                    log("OTOMATİK: can kalmadı → \"${sonuc.label}\" (4000 altın)")
+                } else {
+                    log("OTOMATİK: \"${sonuc.label}\" → yeni tur (${auto.restartCount}. kez)")
+                }
+                // Yeni tur birinci sorudan başlıyor; eski numara kilidi kalkmalı.
+                lockedNumber = null
+            }
+        }
         // Ekran değişecek; bir sonraki kare yeniden okunsun.
         lastFrameSig = null
         lastKey = null
         pendingAnswer = null
     }
+
+    /**
+     * Tur sonu ekranında tanıdık bir düğme bulunamadığında ekrandaki yazıları
+     * bir kez günlüğe yazar. Aynı ekran için tekrar tekrar yazmaz.
+     */
+    private fun logIdleScreen(items: List<TextItem>) {
+        // Satırlar ayrı ayrı yazılıyor ve uzun satırlar da görünüyor: düğme
+        // yazıları tek satıra birleşince (32 harf) eskiden 28 harf sınırına
+        // takılıp günlükten düşüyordu; ekranda düğme yokmuş gibi görünüyordu.
+        val labels = items
+            .flatMap { if (it.lines.size > 1) it.lines else listOf(it) }
+            .filter { it.text.trim().length in 2..48 }
+            .sortedBy { it.centerY }
+            .map { it.text.trim().replace('\n', ' ') }
+            .distinct()
+            .take(16)
+        if (labels.isEmpty()) return
+        val line = labels.joinToString(" | ")
+        if (line == lastIdleScreen) return
+        lastIdleScreen = line
+        log("tur sonu · tanınan düğme yok · ekranda: $line")
+    }
+
+    /**
+     * Bir şıkkı günlükte "C «Ayı»" biçiminde yazar.
+     *
+     * Sadece harf yazmak teşhisi imkânsız kılıyordu: şıklar her turda
+     * karıştığı için "arşiv C diyordu, doğrusu A" satırı, arşivin yanlış mı
+     * olduğunu yoksa dokunuşun mu kaydığını söylemiyordu. Metinle birlikte
+     * ikisi bir bakışta ayrılıyor.
+     */
+    private fun optionLabel(waiting: PendingAnswer, index: Int): String {
+        val harf = if (index in 0..3) ('A' + index).toString() else "?$index"
+        val metin = waiting.options.getOrNull(index) ?: return "$harf «?»"
+        return "$harf «${metin.take(28)}»"
+    }
+
+    /**
+     * Bir renk okuması karar sayılmadı — sebebini bir kez yazar.
+     *
+     * Atlanan kareler eskiden hiç görünmüyordu; günlükte "renk: YESIL" yazıp
+     * arkasından hiçbir şey olmaması "acaba kaçırdı mı" sorusunu cevapsız
+     * bırakıyordu.
+     */
+    private fun skipVerdict(
+        waiting: PendingAnswer,
+        neden: String,
+        a: AnswerColorDetector.Analysis
+    ) {
+        // Ayıklama anahtarı ölçümün KENDİSİNİ değil durumunu taşıyor.
+        // Eskiden satırın tamamı karşılaştırılıyordu; içindeki yüzdeler ve
+        // baskın renk her karede birkaç birim oynadığı için iki satır asla
+        // birebir aynı çıkmıyor, yani ayıklama hiç tutmuyordu: hızlı renk
+        // turu tek bir soruda altmışa yakın satır yazıyordu.
+        val key = "$neden · ${a.summary()}"
+        if (key == waiting.lastSkip) return
+        waiting.lastSkip = key
+        log("karar atlandı #${waiting.id}: $neden · ${a.detail()}")
+    }
+
+    /**
+     * Ekranda soru kartı var ama okuyamıyoruz.
+     *
+     * Bu durumda kayıt açılmadığı için "cevabı bilinmiyor" kontrolü de hiç
+     * çalışmıyordu: kullanıcı ne uyarı sesi duyuyor ne de bir dokunuş
+     * görüyordu — botun takıldığını ancak ekrana bakarak anlıyordu. Oysa
+     * tam olarak haber verilmesi gereken an burası.
+     *
+     * Yanlış alarmı önleyen üç koşul: red sebebi gerçekten "şıklar eksik"
+     * olacak (menü ekranları genelde başka sebeple düşüyor), bulunan şık
+     * adayları olacak, ve az önce gerçek bir soru görmüş olacağız — yani
+     * turun ortasındayız, lobide değil.
+     */
+    private fun noteUnreadable(s: Prefs.Settings) {
+        val eksik = QuestionParser.lastReject
+            ?.startsWith("şıklar henüz tamamlanmadı") == true &&
+            QuestionParser.lastPartial.size >= 3
+        val turOrtasi =
+            SystemClock.uptimeMillis() - lastQuestionAt < UNREADABLE_ROUND_MS
+        if (!eksik || !turOrtasi) {
+            unreadableSince = 0L
+            return
+        }
+        val now = SystemClock.uptimeMillis()
+        if (unreadableSince == 0L) {
+            unreadableSince = now
+            return
+        }
+        if (unreadableWarned || now - unreadableSince < UNREADABLE_WARN_MS) return
+        unreadableWarned = true
+        log(
+            "OKUNAMADI: ekranda soru var ama şıklar çıkarılamıyor · " +
+                (QuestionParser.lastReject ?: "?")
+        )
+        // Çift ötüş: bu "cevabını bilmiyorum" değil, "soruyu okuyamıyorum".
+        // İkisi aynı sesi çaldığı için arşivde kayıtlı bir soruda bile
+        // "bilmiyorum" diyor sanılıyordu.
+        if (s.unknownChime) Chime.playTwice(this)
+    }
+
+    /** Kapıda geri çevrilen okumayı, aynı karede OCR'sız yeniden kullanılmak üzere saklar. */
+    private fun okumayiBeklet(p: QuestionParser.Parsed, imza: IntArray?, kutu: Boolean) {
+        if (imza == null) return
+        bekleyenOkuma = p
+        bekleyenOkumaImza = imza
+        bekleyenOkumaAt = SystemClock.uptimeMillis()
+        bekleyenOkumaKutu = kutu
+    }
+
+    /**
+     * Ekranın yalnızca [ust]..[alt] bandını okur; kutular tam ekran
+     * koordinatlarına geri kaydırılır.
+     */
+    private suspend fun ocrBolgesi(shot: Bitmap, ust: Int, alt: Int): List<TextItem> {
+        val u = ust.coerceIn(0, shot.height - 2)
+        val a = alt.coerceIn(u + 2, shot.height)
+        if (u == 0 && a == shot.height) return OcrEngine.recognize(shot)
+        val kirp = runCatching { Bitmap.createBitmap(shot, 0, u, shot.width, a - u) }.getOrNull()
+            ?: return OcrEngine.recognize(shot)
+        return try {
+            OcrEngine.recognize(kirp).map { it.kaydir(u) }
+        } finally {
+            if (kirp !== shot) kirp.recycle()
+        }
+    }
+
+    /** Oyunun kabul ettiği şık görüldü: kimin bastığını ayırt eder (bkz. [PendingAnswer.secimGoruldu]). */
+    private fun secimGordu(w: PendingAnswer, secilen: Int) {
+        if (w.secimGoruldu == null) w.secimGoruldu = secilen
+        if (w.elleSecildi) return
+        val botunki = w.chosenIndex
+        when {
+            w.taps == 0 -> {
+                w.elleSecildi = true
+                log(
+                    "ELLE #${w.id} → ${optionLabel(w, secilen)} · şıkkı sen seçtin, " +
+                        "bot bu soruya dokunmayacak"
+                )
+            }
+            botunki != null && botunki != secilen -> {
+                w.elleSecildi = true
+                log(
+                    "ELLE #${w.id}: oyun ${optionLabel(w, secilen)} şıkkını aldı, " +
+                        "bot ${optionLabel(w, botunki)} demişti"
+                )
+            }
+        }
+    }
+
+    /**
+     * Bekleyen soru, kararı görülmeden ekrandan gitti.
+     *
+     * Soru bırakılıyor ve kilitler açılıyor: yeni soru baştan okunsun, bu
+     * soruya ait kutulara ve seçime bir daha bakılmasın. Aynı soru yanlışlıkla
+     * kapandı sayıldıysa bir sonraki okumada yeniden bekleyen soru oluyor.
+     */
+    private fun soruKapandi(w: PendingAnswer) {
+        if (pendingAnswer !== w) return
+        pendingAnswer = null
+        lastKey = null
+        lockedNumber = null
+        confirmKey = null
+        lastFrameSig = null
+        log("SORU KAPANDI #${w.id}: ekran geçişe girdi, karar görülmedi" + zamanlama(w))
+    }
+
+    /**
+     * Okunan bir soru "kart henüz çizilmedi" diye geri çevrildi.
+     *
+     * Solarak gelen kartta bu birkaç kare sürer ve normaldir; bu yüzden
+     * yalnızca aynı okuma [RENDER_WAIT_LOG_MS] boyunca takılı kalırsa ve soru
+     * başına bir kez yazılıyor.
+     */
+    private fun noteRenderWait(
+        p: QuestionParser.Parsed,
+        shot: Bitmap,
+        screenW: Int,
+        screenH: Int
+    ) {
+        val now = SystemClock.uptimeMillis()
+        if (p.key != renderWaitKey) {
+            renderWaitKey = p.key
+            renderWaitSince = now
+            renderWaitLogged = false
+            return
+        }
+        if (renderWaitLogged || now - renderWaitSince < RENDER_WAIT_LOG_MS) return
+        renderWaitLogged = true
+        log("kart oturmadı sayılıyor, dokunulmuyor · " + renderReport(p, shot, screenW, screenH))
+    }
+
+    // --- Teşhis izi ---------------------------------------------------------
+
+    /** Yoklama döngüsü yeni bir aşamaya geçti — bekçi takılmayı buradan görüyor. */
+    private fun pollAdim(ad: String) {
+        val now = SystemClock.uptimeMillis()
+        if (pollTakildiYazildi) {
+            pollTakildiYazildi = false
+            log("İZ YOKLAMA sürdü: $pollAsama ${now - pollAsamaAt}ms sonra bitti")
+        }
+        pollAsama = ad
+        pollAsamaAt = now
+    }
+
+    /**
+     * Yoklama döngüsü bir aşamada takıldı mı? Döngü soruyu gören tek şey
+     * olduğu için takılırsa hiçbir satır düşmüyordu; ana iş parçacığı
+     * meşgulken pencere sorgusu ("onplan_sorgu") en olası yer.
+     */
+    private fun yoklamaDenetle() {
+        if (!pollRunning.get() || pollTakildiYazildi || pollAsama == "-") return
+        val gecen = SystemClock.uptimeMillis() - pollAsamaAt
+        if (gecen < POLL_STUCK_MS) return
+        pollTakildiYazildi = true
+        log("İZ YOKLAMA TAKILDI ${gecen}ms aşama=$pollAsama")
+    }
+
+    /**
+     * Okunabilen yeni bir soruyu izler: ilk ne zaman okundu, kayda kadar
+     * kaç kez geri çevrildi. OCR her karede birkaç harf farklı okuduğu için
+     * parmak izi değil metin benzerliği kullanılıyor.
+     */
+    private fun okumaTakip(p: QuestionParser.Parsed) {
+        if (TurkishText.similarity(p.question, okumaSoru) >= OKUMA_AYNI_SORU) return
+        okumaSoru = p.question
+        okumaIlkAt = SystemClock.uptimeMillis()
+        okumaKapi = 0
+        okumaTeyit = 0
+    }
+
+    /**
+     * Yeni karşılaşmanın zaman çizelgesi. `karar→okuma`: önceki sorunun
+     * kararından bu sorunun ilk okunabildiği ana (geçiş + okuyamama);
+     * `okuma→kayıt`: ilk okumadan kayda (kart kapısı, teyit, veritabanı).
+     */
+    private fun okumaOzeti(id: Long, yol: String, kutu: Int): String {
+        val now = SystemClock.uptimeMillis()
+        val ilk = okumaIlkAt.takeIf { it > 0L } ?: now
+        val kararOkuma = if (lastAnsweredAt in 1L..ilk) "${ilk - lastAnsweredAt}ms" else "-"
+        return "İZ SORU #$id karar→okuma=$kararOkuma okuma→kayıt=${now - ilk}ms " +
+            "kapı=$okumaKapi teyit=$okumaTeyit yol=$yol kutu=$kutu"
+    }
+
+    /** CEVAP satırının sonuna: sorunun ekrana gelişinden itibaren olaylar. */
+    private fun zamanlama(w: PendingAnswer): String {
+        fun goreli(t: Long) = if (t > 0L) "+${t - w.bornAt}" else "-"
+        return " · zaman[kart=${goreli(w.brightSince)} dokunuş=${goreli(w.lastTapAt)} " +
+            "tepki=${goreli(w.ilkRenkAt)} karar=+${SystemClock.uptimeMillis() - w.bornAt} " +
+            "dokunuş_sayısı=${w.taps}]"
+    }
+
+    /** Hatanın kısa özeti: türü, mesajı ve bizim koddaki ilk üç kare. */
+    private fun hataOzeti(t: Throwable): String =
+        "${t.javaClass.simpleName}: ${t.message?.take(80)} @ " +
+            t.stackTrace.filter { it.className.startsWith("com.emre") }.take(3)
+                .joinToString(" < ") { "${it.fileName}:${it.lineNumber}" }
+
+    /** Kart ölçüsünün neden tutmadığı: şık başına baskın renk ve parlak örnek oranı. */
+    private fun renderReport(
+        p: QuestionParser.Parsed,
+        shot: Bitmap,
+        screenW: Int,
+        screenH: Int
+    ): String {
+        val a = AnswerColorDetector.analyze(shot, p.optionRects, screenW, screenH)
+        return "«${p.question.take(40)}» · renk ${a.colorSummary()} · parlak ${a.brightSummary()}"
+    }
+
+    /** Aynı sebep beş saniyede bir; günlüğü boğmadan "ne bekliyor" görünsün. */
+    private fun noteAutoIdle(neden: String) {
+        val now = SystemClock.uptimeMillis()
+        if (neden == lastAutoIdleReason && now - lastAutoIdleLogAt < AUTO_IDLE_LOG_GAP_MS) return
+        lastAutoIdleReason = neden
+        lastAutoIdleLogAt = now
+        log("otomatik: dokunmuyorum · $neden")
+    }
+
+    /** İki şık listesi aynı metinleri aynı sırada mı taşıyor? */
+    /**
+     * İki şık listesi aynı metinleri aynı sırada mı taşıyor?
+     *
+     * Katlanmış anahtarları çakışan şıklarda ("Öz / Toz / Oz / Töz") Türkçe
+     * harfler de karşılaştırılıyor. Eskiden yalnızca katlanmış anahtara
+     * bakılıyordu; şıklar karışsa bile bu dörtlü "sıra aynı" sayılıyor, metin
+     * yerinde kalıp kutular tazeleniyordu — "Töz"ün metni "Toz"un kutusuna
+     * düşüyordu.
+     */
+    private fun sameOrder(a: List<String>, b: List<String>): Boolean {
+        if (a.size != b.size) return false
+        val katli = a.map { TurkishText.normalizeKey(it) }
+        return a.indices.all { i ->
+            katli[i] == TurkishText.normalizeKey(b[i]) &&
+                (katli.count { it == katli[i] } == 1 ||
+                    TurkishText.distinctKey(a[i]) == TurkishText.distinctKey(b[i]))
+        }
+    }
+
+    /** Listeler yalnızca Türkçe harf farkıyla mı ayrılıyor (bkz. [sameOrder])? */
+    private fun yalnizcaHarfFarki(a: List<String>, b: List<String>): Boolean =
+        a.size == b.size && a.indices.all {
+            TurkishText.normalizeKey(a[it]) == TurkishText.normalizeKey(b[it])
+        }
 
     private fun scaleRect(r: Rect, fromW: Int, fromH: Int, toW: Int, toH: Int): Rect {
         if (fromW == toW && fromH == toH) return Rect(r)
@@ -546,11 +1926,37 @@ class CaptureAccessibilityService : AccessibilityService() {
         screenH: Int,
         timedOutHint: Boolean?
     ): Boolean {
+        val layout = waiting.layout
         val a = AnswerColorDetector.analyze(shot, waiting.rects, screenW, screenH)
+
+        // Şık kutuları çizildi mi? Ölçüm doğrudan parlaklığa bakıyor.
+        //
+        // İki incelik var. Birincisi: eskiden "renkli bir şık varsa kart
+        // hazırdır" diyorduk, ama korunmak istediğimiz şey zaten geçiş
+        // karesinin yanlışlıkla renkli okunmasıydı — kontrol kendi kendini
+        // iptal ediyordu. İkincisi: bir kez oturan kart geri "çizilmemiş"
+        // hâle dönmez. Karar açılınca kırmızıya dönen şık koyulaşıyor
+        // (184,152,168 gibi) ve eski kural o karede bayrağı sıfırlayıp
+        // beklemeyi baştan başlatıyordu.
+        if (waiting.brightSince == 0L && a.cardRendered(CARD_READY_MIN)) {
+            waiting.brightSince = SystemClock.uptimeMillis()
+        }
 
         // Renk deseni her değiştiğinde günlüğe düşüyor; kaçan cevapların
         // sebebini tahmin etmek yerine akışı görebilmek için.
         val summary = a.summary()
+        if (a.tints.any { it != AnswerColorDetector.Tint.NEUTRAL }) {
+            if (!waiting.tintSeen) waiting.ilkRenkAt = SystemClock.uptimeMillis()
+            waiting.tintSeen = true
+        }
+        // Oyunun kabul ettiği şık: kırmızı (yanlış seçildi) ya da, karar
+        // açılmadan önceki anda, turkuaz (seçildi). Karar yeşiliyle aynı
+        // karedeki turkuaz sayılmıyor: doğru şık yeşil ile turkuaz arasında
+        // gidip gelebiliyor. Kart çizilmeden önceki renkler de sayılmıyor.
+        if (waiting.brightSince > 0L) {
+            val secilen = a.wrongIndex ?: a.pendingIndex.takeIf { a.correctIndex == null }
+            if (secilen != null) secimGordu(waiting, secilen)
+        }
         if (summary != waiting.lastSummary && summary.contains(Regex("YESIL|turkuaz|KIRMIZI"))) {
             waiting.lastSummary = summary
             log("renk #${waiting.id}: $summary")
@@ -561,45 +1967,98 @@ class CaptureAccessibilityService : AccessibilityService() {
         // --- 1. Kararın yeşili göründü mü? -----------------------------------
         val correct = a.correctIndex
         if (correct != null) {
-            if (a.verdictCertain) {
-                // Kırmızı da var: karar kesin açılmış, bilememişsin.
-                repo.recordReveal(waiting.id, correct, userWasRight = false, countAsAttempt = attempt)
-                log("CEVAP #${waiting.id} → ${'A' + correct} · bilemedin")
-                finishAnswer(waiting.id)
-                return true
+            // Kart daha ekrana oturmadıysa bu bir karar değil, beliriş
+            // animasyonunun ortasından geçen bir karedir. Oyun kararı ancak
+            // birisi (sen ya da bot) dokunduktan sonra açıyor; soru belirir
+            // belirmez gelen "yeşil" fizikselen mümkün değil.
+            if (waiting.brightSince == 0L) {
+                skipVerdict(waiting, "kart henüz çizilmedi", a)
+                waiting.greenIndex = null
+                return false
             }
-            // Kırmızı yok: doğru bilmiş olabilirsin. Ama kırmızı senin şıkkında
-            // birkaç kare geç belirebileceği için kısa bir doğrulama payı var.
             val now = SystemClock.uptimeMillis()
             if (waiting.greenIndex != correct) {
                 waiting.greenIndex = correct
                 waiting.greenSince = now
                 return false
             }
-            if (now - waiting.greenSince < GREEN_CONFIRM_MS) return false
-            repo.recordReveal(waiting.id, correct, userWasRight = true, countAsAttempt = attempt)
-            log("CEVAP #${waiting.id} → ${'A' + correct} · bildin")
+            // Kırmızı varsa karar kesin açılmıştır, ama yine de tek kareye
+            // güvenmiyoruz: geçiş karelerinde bir şık yeşil bandına, bir
+            // başkası kırmızı bandına aynı anda düşebiliyor ve o tek kare
+            // "renk (kesin)" damgasıyla arşive yazılıyordu. En güçlü kanıt
+            // olduğu için sonraki doğru okumalar onu bir daha düzeltemiyor,
+            // bot da her turda aynı yanlış şıkka basmaya devam ediyordu.
+            val bekle = if (a.verdictCertain) CERTAIN_CONFIRM_MS else GREEN_CONFIRM_MS
+            if (now - waiting.greenSince < bekle) return false
+
+            val kesin = a.verdictCertain
+            record(
+                waiting, correct,
+                if (kesin) Repo.AnswerEvidence.CERTAIN else Repo.AnswerEvidence.GREEN,
+                userWasRight = !kesin, countAsAttempt = attempt, layout = layout
+            )
+            log(
+                "CEVAP #${waiting.id} → ${optionLabel(waiting, correct)} · " +
+                    (if (kesin) "bilemedin" else "bildin") + " · ${a.detail()}" +
+                    zamanlama(waiting)
+            )
+            // Hata listesine yalnızca gerçekten yanıldığımız tur giriyor.
+            //
+            // Kırmızı göründüyse kesin. Ama kırmızı her karede ölçülemiyor ve
+            // otomatik modda buna hiç ihtiyaç yok: bot hangi şıkka bastığını
+            // zaten biliyor, açılan yeşil başka bir şıksa yanılmıştır. Elle
+            // oynarken bastığın şıkkı yalnızca renkten öğrenebildiğimiz için
+            // orada kırmızı şart.
+            //
+            // Bu yalnızca listeyi besliyor; arşive ne yazıldığını
+            // değiştirmiyor.
+            //
+            // Bastığımız şık, oyunun kabul ettiği şık: kırmızı, yoksa karar
+            // öncesinde görülen seçim; ikisi de görülmediyse botun seçimi —
+            // ama yalnızca başkası seçmediyse. Eskiden doğrudan botun seçimi
+            // kullanılıyordu; sen A'ya erken basıp doğru bildiğinde bile bot
+            // C'ye bastığı için Hatalar'a "bastığımız C" yazılıyordu.
+            val basilan = a.wrongIndex ?: waiting.secimGoruldu
+                ?: waiting.chosenIndex.takeIf { waiting.autoTapped && !waiting.elleSecildi }
+            if (kesin || basilan != null && basilan != correct) {
+                noteMiss(waiting, basilan, correct, timedOut = false)
+            }
             finishAnswer(waiting.id)
             return true
         }
         waiting.greenIndex = null
 
         // --- 2. Süre dolmuş, ekran kararmış mı? ------------------------------
-        val dimmed = a.dimmedReveal
+        // Süre gerçekten dolduysa soru ekranda çoktandır duruyordur. Soru
+        // belirdikten hemen sonra gelen ölçüm şıkların beliriş animasyonudur;
+        // eskiden bunu süre dolmuş sanıp arşive yanlış cevap yazıyorduk.
+        val dimmed = a.dimmedReveal?.takeIf {
+            SystemClock.uptimeMillis() - waiting.bornAt >= MIN_TIMEOUT_MS
+        }
         if (dimmed != null) {
-            repo.recordReveal(
-                id = waiting.id,
-                correctIndex = dimmed,
-                userWasRight = false,
-                countAsAttempt = false,
-                source = "süre doldu"
+            record(waiting, dimmed, Repo.AnswerEvidence.TIMEOUT, false,
+                countAsAttempt = false, layout = layout)
+            log(
+                "CEVAP #${waiting.id} → ${optionLabel(waiting, dimmed)} · " +
+                    "süre doldu (denemeye sayılmadı) · ${a.colorSummary()}" + zamanlama(waiting)
             )
-            log("CEVAP #${waiting.id} → ${'A' + dimmed} · süre doldu (denemeye sayılmadı)")
+            noteMiss(waiting, chosen = null, correct = dimmed, timedOut = true)
             finishAnswer(waiting.id)
             return true
         }
 
-        // --- 3. Sadece turkuaz: dokundun, karar bekleniyor -------------------
+        // --- 3. Soru kapandı mı? ---------------------------------------------
+        // Dört şık da koyu mora döndüyse sorular arası geçiş başlamıştır:
+        // karar görülmeden soru gitti. Bekleyen soruyu burada bırakmazsak
+        // sonraki sorunun renkleri bu sorunun kararı sanılıyor (günlükte
+        // doğrusu 45 olan soruda "A yeşil, C kırmızı" okunmuştu) ve bot bu
+        // sorunun şıkkına yeni soruda basıyordu.
+        if (waiting.brightSince > 0L && a.gecisKaresi()) {
+            soruKapandi(waiting)
+            return false
+        }
+
+        // --- 4. Sadece turkuaz: dokundun, karar bekleniyor -------------------
         // Normalde turkuaz yarım saniyede yeşile ya da kırmızıya döner. Uzun
         // süre öyle kalıyorsa ölçümlerimizin dışında bir durum var demektir;
         // geri düşüş olarak yine doğru cevap kabul ediyoruz.
@@ -617,6 +2076,13 @@ class CaptureAccessibilityService : AccessibilityService() {
             waiting.pendingIndex = null
             return false
         }
+        // Dokunuşu bot yaptıysa bu geri düşüş geçersiz: rastgele seçilen bir
+        // şık, karar açılmadığı için doğru olmaz. Eskiden burası arşive
+        // rastgele cevabı doğru diye yazıyordu ve otomatik mod sonraki
+        // turlarda o yanlışa basmaya devam ediyordu — hata kendini besliyordu.
+        // Cevapsız kalmak, yanlış cevaptan iyidir.
+        if (waiting.autoTapped) return false
+
         val now = SystemClock.uptimeMillis()
         if (waiting.pendingIndex != pending) {
             waiting.pendingIndex = pending
@@ -624,16 +2090,127 @@ class CaptureAccessibilityService : AccessibilityService() {
             return false
         }
         if (now - waiting.pendingSince < VERDICT_CONFIRM_MS) return false
-        repo.recordReveal(waiting.id, pending, userWasRight = true, countAsAttempt = attempt)
-        log("CEVAP #${waiting.id} → ${'A' + pending} · bildin (turkuaz sabit kaldı)")
+        if (waiting.brightSince == 0L) {
+            skipVerdict(waiting, "kart henüz çizilmedi", a)
+            return false
+        }
+        record(waiting, pending, Repo.AnswerEvidence.TOUCH, true, attempt, layout)
+        log(
+            "CEVAP #${waiting.id} → ${optionLabel(waiting, pending)} · bildin (turkuaz sabit kaldı)" +
+                zamanlama(waiting)
+        )
         finishAnswer(waiting.id)
         return true
     }
 
+    /**
+     * Doğru cevabı kaydeder ve arşivle çelişiyorsa bunu günlüğe düşürür.
+     *
+     * Çelişki satırı kıymetli: otomatik mod arşivdeki cevaba bastığında
+     * oyun onu yanlış sayıyorsa, arşivdeki kayıt bozuktur. Bu satır olmadan
+     * hata sessizce sürüyordu.
+     */
+    private suspend fun record(
+        waiting: PendingAnswer,
+        index: Int,
+        evidence: Repo.AnswerEvidence,
+        userWasRight: Boolean,
+        countAsAttempt: Boolean,
+        /** Rengin okunduğu andaki şık yerleşimi. */
+        layout: Int = waiting.layout
+    ) {
+        // Renk okunduktan sonra şıklar karıştıysa, gördüğümüz yeşil kutu
+        // artık başka bir metne ait: o cevabı yazmak arşivi bozar.
+        if (waiting.layout != layout) {
+            log("atlandı #${waiting.id}: renk okunduktan sonra şıklar karıştı")
+            return
+        }
+        // Son emniyet: kutu sayısı ile metin sayısı tutmuyorsa hangi rengin
+        // hangi şıkka ait olduğunu bilmiyoruz demektir. Yanlış cevap yazmaktansa
+        // hiç yazmamak yeğ.
+        if (waiting.rects.size != waiting.options.size) {
+            log("atlandı #${waiting.id}: şık kutusu (${waiting.rects.size}) ve " +
+                "metin (${waiting.options.size}) sayısı tutmuyor")
+            return
+        }
+        waiting.knownIndex?.let { known ->
+            if (known != index) {
+                log(
+                    "ÇELİŞKİ #${waiting.id}: arşiv ${optionLabel(waiting, known)} diyordu, " +
+                        "oyun ${optionLabel(waiting, index)} dedi"
+                )
+            }
+        }
+        repo.recordReveal(
+            waiting.id, index, waiting.options,
+            userWasRight = userWasRight,
+            countAsAttempt = countAsAttempt,
+            evidence = evidence
+        )
+    }
+
+    /**
+     * "Bu oturumun hataları" listesine bir satır ekler.
+     *
+     * Aynı soru bir turda birkaç kez okunabiliyor; en üstteki satır aynı
+     * soruya ve aynı doğru cevaba aitse tekrarlanmıyor.
+     */
+    private fun noteMiss(
+        waiting: PendingAnswer,
+        chosen: Int?,
+        correct: Int,
+        timedOut: Boolean
+    ) {
+        val dogru = waiting.options.getOrNull(correct) ?: return
+        val varOlan = misses.value.firstOrNull()
+        if (varOlan?.questionId == waiting.id && varOlan.correct == dogru) return
+        addMiss(
+            Miss(
+                seq = missSeq.incrementAndGet(),
+                at = System.currentTimeMillis(),
+                questionId = waiting.id,
+                question = waiting.question,
+                chosen = chosen?.let { waiting.options.getOrNull(it) },
+                chosenLabel = chosen?.takeIf { it in 0..3 }?.let { ('A' + it).toString() },
+                correct = dogru,
+                correctLabel = if (correct in 0..3) ('A' + correct).toString() else "?",
+                byAuto = waiting.autoTapped && !waiting.elleSecildi,
+                timedOut = timedOut
+            )
+        )
+    }
+
+    /**
+     * Teşhis günlüğüne bir satır yazar.
+     *
+     * Burası göründüğünden çok daha sıcak bir yol: hızlı yakalama açıkken
+     * karar turu saniyede yirmi kare işliyor ve her karede satır düşebiliyor.
+     * Eski hâli her çağrıda (a) yeni bir `SimpleDateFormat` kuruyor,
+     * (b) `listOf(yeni) + eski` ile tüm listeyi kopyalıyor, (c) `take()` ile
+     * bir kez daha kopyalıyordu. Tampon dolduktan sonra — hızlı yakalamayla
+     * birkaç dakika, yani on soru civarı — her satır 4000 elemanlık iki
+     * kopya demekti; günlük büyüdükçe yazmak pahalılaşıyordu.
+     *
+     * Şimdi geçmiş bir halka tamponda duruyor (başa ekle, sondan at) ve
+     * akışa yalnızca ekranda görünen pencere veriliyor.
+     */
     private fun log(line: String) {
-        val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-            .format(java.util.Date())
-        scanLog.value = (listOf("$stamp  $line") + scanLog.value).take(LOG_LIMIT)
+        // Birikmiş iz grubu önce yazılsın ki satırlar zaman sırasını korusun.
+        izi.bosalt()
+        logHam(line)
+    }
+
+    /** Günlüğe doğrudan yazar; [TaramaIzi] kendi satırları için bunu kullanıyor. */
+    private fun logHam(line: String) {
+        var toplam = 0
+        val visible = synchronized(logLock) {
+            logLines.addFirst(logStamp.format(java.util.Date()) + "  " + line)
+            while (logLines.size > LOG_LIMIT) logLines.removeLast()
+            toplam = logLines.size
+            logLines.take(LOG_VISIBLE)
+        }
+        scanLog.value = visible
+        scanLogTotal.value = toplam
     }
 
     private fun finishAnswer(id: Long) {
@@ -644,6 +2221,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         pendingAnswer = null
         // Sonraki kare kararın rengini taşıyor; yeniden okunsun.
         lastFrameSig = null
+        lastAutoIdleReason = null
         showCountNotification()
     }
 
@@ -655,27 +2233,57 @@ class CaptureAccessibilityService : AccessibilityService() {
     private fun startVerdictBurst(waiting: PendingAnswer, screenW: Int, screenH: Int) {
         if (burstJob?.isActive == true) return
         val fast = fastCapture
+        // Dokunduktan sonra hiçbir renk kıpırdamıyorsa jest yutulmuş
+        // demektir. Turu sonuna kadar (3 sn) sürdürmek yeniden denemeyi de
+        // o kadar geciktiriyordu: tarama döngüsü tur bitene dek duruyor,
+        // AUTO_RETAP_MS'in 2,5 saniyesi hiç işlemiyordu. Renk görülmeden
+        // geçen kare sayısı sınırı dolunca turu erken bitiriyoruz.
+        val tapCountAtStart = waiting.taps
         burstJob = scope.launch {
-            repeat(if (fast) VERDICT_TRIES_FAST else VERDICT_TRIES_SLOW) {
-                if (pendingAnswer?.id != waiting.id) return@launch
-                if (fast) {
-                    delay(VERDICT_GAP_FAST_MS)
-                    // peek() yeniden kullanılan kareyi döndürür: hiç bellek
-                    // ayrılmaz, bu yüzden saniyede 20 kez bakmak ucuz.
-                    // Dönen Bitmap recycle EDİLMEZ.
-                    val bmp = ProjectionService.peek() ?: return@repeat
-                    val done = runCatching {
-                        evaluateAnswer(bmp, waiting, screenW, screenH, timedOutHint = null)
-                    }.getOrDefault(false)
-                    if (done) return@launch
-                } else {
-                    val bmp = captureScreen() ?: return@repeat
-                    val done = runCatching {
-                        evaluateAnswer(bmp, waiting, screenW, screenH, timedOutHint = null)
-                    }.getOrDefault(false)
-                    if (!bmp.isRecycled) bmp.recycle()
-                    if (done) return@launch
+            // Teşhis: tur kaç kare sürdü, nasıl bitti. Tur sürerken tarama
+            // bekliyor ("İZ burst" çıkışları yazılmıyor), süresi buradan.
+            val turBasla = SystemClock.uptimeMillis()
+            var tur = 0
+            var kareYok = 0
+            var sonuc = "bitti"
+            try {
+                var sessiz = 0
+                repeat(if (fast) VERDICT_TRIES_FAST else VERDICT_TRIES_SLOW) {
+                    tur++
+                    if (pendingAnswer?.id != waiting.id) { sonuc = "soru_degisti"; return@launch }
+                    if (tapCountAtStart > 0 && !waiting.tintSeen) {
+                        if (++sessiz >= SILENT_BURST_LIMIT) {
+                            sonuc = "sessiz"
+                            log("otomatik #${waiting.id}: dokunuşa tepki yok, yeniden denenecek")
+                            return@launch
+                        }
+                    } else {
+                        sessiz = 0
+                    }
+                    if (fast) {
+                        delay(VERDICT_GAP_FAST_MS)
+                        // peek() yeniden kullanılan kareyi döndürür: hiç bellek
+                        // ayrılmaz, bu yüzden saniyede 20 kez bakmak ucuz.
+                        // Dönen Bitmap recycle EDİLMEZ.
+                        val bmp = ProjectionService.peek() ?: run { kareYok++; return@repeat }
+                        val done = runCatching {
+                            evaluateAnswer(bmp, waiting, screenW, screenH, timedOutHint = null)
+                        }.getOrDefault(false)
+                        if (done) { sonuc = "karar"; return@launch }
+                    } else {
+                        val bmp = captureScreen() ?: run { kareYok++; return@repeat }
+                        val done = runCatching {
+                            evaluateAnswer(bmp, waiting, screenW, screenH, timedOutHint = null)
+                        }.getOrDefault(false)
+                        if (!bmp.isRecycled) bmp.recycle()
+                        if (done) { sonuc = "karar"; return@launch }
+                    }
                 }
+            } finally {
+                log(
+                    "İZ KARAR_TURU #${waiting.id} tur=$tur ${SystemClock.uptimeMillis() - turBasla}ms " +
+                        "sonuç=$sonuc kare_yok=$kareYok"
+                )
             }
         }
     }
@@ -757,6 +2365,122 @@ class CaptureAccessibilityService : AccessibilityService() {
             }
         }
 
+    /**
+     * Her şık kutusunun içinde ne yazdığını bulur.
+     *
+     * Önce tam ekran OCR'ından o kutunun **içine tam oturan** metinler
+     * aranıyor; kelime şıklarında bu tutuyor ve fazladan hiçbir okuma
+     * yapılmıyor. Bir metin bloğu birden çok kutuya taşıyorsa (ML Kit dört
+     * rakamı tek blokta birleştirdiğinde olan budur) hiçbirine yazılmıyor —
+     * o kutular yakın plandan okunuyor.
+     *
+     * Yakın plan okuma kutunun kendisini kırpıp büyütüyor: tek bir rakam,
+     * beyaz zemin, etrafında başka hiçbir şey yok. ML Kit'in tam ekranda
+     * düşürdüğü rakamı burada görmemesi için sebep kalmıyor.
+     */
+    private suspend fun optionTextsFromBoxes(
+        shot: Bitmap,
+        boxes: List<OptionBoxFinder.Box>,
+        ocr: List<TextItem>
+    ): List<TextItem> {
+        val rects = boxes.map { Rect(it.left, it.top, it.right, it.bottom) }
+        return rects.map { kutu ->
+            val pay = (kutu.height() * BOX_TEXT_SLACK).toInt()
+            val icerdekiler = ocr.filter { t ->
+                t.bounds.top >= kutu.top - pay && t.bounds.bottom <= kutu.bottom + pay &&
+                    t.centerX in kutu.left..kutu.right && t.centerY in kutu.top..kutu.bottom
+            }
+            var metin = icerdekiler.sortedBy { it.bounds.left }
+                .joinToString(" ") { it.text.replace('\n', ' ') }
+                .trim()
+            if (metin.isBlank()) metin = readBox(shot, kutu, BOX_SCALE)
+            if (metin.isBlank()) metin = readBox(shot, kutu, BOX_SCALE_RETRY)
+            TextItem(metin, Rect(kutu))
+        }
+    }
+
+    /** Tek bir şık kutusunu kırpıp büyüterek okur. */
+    private suspend fun readBox(shot: Bitmap, kutu: Rect, scale: Int): String {
+        val pay = (kutu.height() * BOX_CROP_INSET).toInt()
+        val left = (kutu.left + pay).coerceIn(0, shot.width - 2)
+        val top = (kutu.top + pay).coerceIn(0, shot.height - 2)
+        val right = (kutu.right - pay).coerceIn(left + 1, shot.width)
+        val bottom = (kutu.bottom - pay).coerceIn(top + 1, shot.height)
+        val crop = runCatching {
+            Bitmap.createBitmap(shot, left, top, right - left, bottom - top)
+        }.getOrNull() ?: return ""
+        val big = runCatching {
+            Bitmap.createScaledBitmap(crop, crop.width * scale, crop.height * scale, true)
+        }.getOrNull()
+        if (big == null) { crop.recycle(); return "" }
+        val items = runCatching { OcrEngine.recognize(big) }.getOrDefault(emptyList())
+        if (big !== crop) big.recycle()
+        crop.recycle()
+        return items.sortedBy { it.bounds.left }
+            .joinToString(" ") { it.text.replace('\n', ' ') }
+            .trim()
+    }
+
+    /**
+     * Ayrıştırma başarısız olduğunda o anın ekran görüntüsünü ve ham OCR
+     * dökümünü diske yazar.
+     *
+     * Bunu eklememizin sebebi: sayı şıklarındaki tıkanmayı on tur boyunca
+     * günlük satırlarından geriye doğru tahmin ederek aramak zorunda kaldık.
+     * ML Kit'in gerçekte ne döndürdüğünü, kutu ölçümünün neyi gördüğünü
+     * kimse görmüyordu. Artık başarısız kare diskte duruyor; eşikler ölçülen
+     * veriye göre ayarlanabiliyor.
+     *
+     * Dosyalar uygulamanın kendi klasöründe, en yeni [TESHIS_MAX] kare
+     * tutuluyor ve ayarlardan kapatılabiliyor.
+     */
+    private fun teshisKaydet(
+        shot: Bitmap,
+        ocr: List<TextItem>,
+        boxes: List<OptionBoxFinder.Box>,
+        sebep: String
+    ) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastTeshisAt < TESHIS_GAP_MS) return
+        lastTeshisAt = now
+        runCatching {
+            val dir = File(filesDir, "teshis").apply { mkdirs() }
+            // En eskiler silinir; klasör sınırsız büyümesin.
+            dir.listFiles()?.sortedBy { it.name }?.let { hepsi ->
+                val fazla = hepsi.size - TESHIS_MAX * 2
+                if (fazla > 0) hepsi.take(fazla).forEach { it.delete() }
+            }
+            val ad = "kare_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                .format(java.util.Date())
+            saveShotTo(shot, File(dir, "$ad.jpg"))
+            val sb = StringBuilder()
+            sb.append("sebep: ").append(sebep).append('\n')
+            sb.append("ekran: ").append(shot.width).append('x').append(shot.height).append('\n')
+            sb.append("şık kutusu: ").append(boxes.size).append('\n')
+            boxes.forEach {
+                sb.append("  kutu ").append(it.left).append(',').append(it.top)
+                    .append(' ').append(it.width).append('x').append(it.height).append('\n')
+            }
+            sb.append("OCR blokları: ").append(ocr.size).append('\n')
+            ocr.forEach {
+                sb.append("  [").append(it.bounds.left).append(',').append(it.bounds.top)
+                    .append(' ').append(it.bounds.width()).append('x').append(it.bounds.height())
+                    .append("] ").append(it.text.replace('\n', '|')).append('\n')
+            }
+            File(dir, "$ad.txt").writeText(sb.toString())
+        }
+    }
+
+    private fun saveShotTo(bmp: Bitmap, target: File) {
+        val maxW = 820
+        val scaled = if (bmp.width > maxW) {
+            val ratio = maxW.toFloat() / bmp.width
+            Bitmap.createScaledBitmap(bmp, maxW, (bmp.height * ratio).toInt(), true)
+        } else bmp
+        FileOutputStream(target).use { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }
+        if (scaled !== bmp) scaled.recycle()
+    }
+
     private fun saveShot(bmp: Bitmap, key: String): String? = runCatching {
         val dir = File(filesDir, "shots").apply { mkdirs() }
         val target = File(dir, "${key.take(24)}.jpg")
@@ -774,6 +2498,54 @@ class CaptureAccessibilityService : AccessibilityService() {
     }.getOrNull()
 
     /** Ekranın kaba bir gri tonlamalı özeti — kare karşılaştırması için. */
+    /**
+     * Şık şeridini kırpıp iki kat büyüterek yeniden okur; sonucu ekranın
+     * geri kalanındaki metinlerle birleştirip döndürür.
+     *
+     * Şerit dışındaki metinler (soru, sayaç) ilk okumadan olduğu gibi
+     * kalıyor; yalnızca şık bölgesi yakın plandan geliyor. Kutular
+     * büyütülmüş görüntüden gelip tam ekran ölçeğine geri çevriliyor —
+     * yoksa dokunuş iki kat aşağıya giderdi.
+     */
+    private suspend fun closeUpOptions(
+        shot: Bitmap,
+        s: Prefs.Settings,
+        scale: Int
+    ): List<TextItem>? {
+        val top = (s.optionsTop * shot.height).toInt().coerceIn(0, shot.height - 2)
+        val bottom = (s.optionsBottom * shot.height).toInt().coerceIn(top + 2, shot.height)
+        val crop = runCatching {
+            Bitmap.createBitmap(shot, 0, top, shot.width, bottom - top)
+        }.getOrNull() ?: return null
+        val big = runCatching {
+            Bitmap.createScaledBitmap(crop, crop.width * scale, crop.height * scale, true)
+        }.getOrNull()
+        if (big == null) { crop.recycle(); return null }
+        val items = runCatching { OcrEngine.recognize(big) }.getOrDefault(emptyList())
+        if (big !== crop) big.recycle()
+        crop.recycle()
+        if (items.isEmpty()) return null
+
+        // Kutular büyütülmüş görüntüden geliyor; tam ekran ölçeğine geri
+        // çevriliyor. Blok satırlarının kutuları da aynı dönüşümden
+        // geçmeli: ayrıştırıcı yığılmış blokları satır aralığına bakarak
+        // ayırıyor, satırlar eski ölçekte kalırsa o ölçüm anlamsız olur.
+        fun geriCevir(r: Rect) = Rect(
+            r.left / scale,
+            r.top / scale + top,
+            r.right / scale,
+            r.bottom / scale + top
+        )
+        val mapped = items.map { it ->
+            it.copy(
+                bounds = geriCevir(it.bounds),
+                lines = it.lines.map { line -> line.copy(bounds = geriCevir(line.bounds)) }
+            )
+        }
+        val disaridakiler = lastOcrItems.filter { it.centerY !in top..bottom }
+        return disaridakiler + mapped
+    }
+
     private fun frameSignature(bmp: Bitmap): IntArray? = runCatching {
         val small = Bitmap.createScaledBitmap(bmp, SIG_W, SIG_H, true)
         val px = IntArray(SIG_W * SIG_H)
@@ -843,7 +2615,9 @@ class CaptureAccessibilityService : AccessibilityService() {
             }
             parsed.category?.let { sb.append("Kategori: ").append(it).append('\n') }
         }
-        prefs.setDebugDump(sb.toString())
+        // Ayarlara değil belleğe: ayarlara yazmak her taramada diske yazıp
+        // bütün ayar dinleyicilerini (arayüz, servis) yeniden tetikliyordu.
+        sonTarama.value = sb.toString()
     }
 
     private fun showCountNotification() {
@@ -871,14 +2645,17 @@ class CaptureAccessibilityService : AccessibilityService() {
         pollJob?.cancel()
         burstJob?.cancel()
         autoJob?.cancel()
+        watchdogJob?.cancel()
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
         running.value = false
+        Chime.stop()
         pollJob?.cancel()
         burstJob?.cancel()
         autoJob?.cancel()
+        watchdogJob?.cancel()
         super.onDestroy()
     }
 
@@ -905,6 +2682,10 @@ class CaptureAccessibilityService : AccessibilityService() {
         /** Tur sonu ekranı kıpırdamıyor; orada metin tanıma aralığı. */
         private const val AUTO_IDLE_OCR_GAP_MS = 1200L
         /** Bu kadar turda hedef uygulama önplanda değilse yoklamayı bırak. */
+        /**
+         * Kaç ıskalamadan sonra yavaş bekleme kipine geçilir. Eskiden bu bir
+         * "vazgeç" sınırıydı; artık yalnızca tempo düşürüyor.
+         */
         private const val POLL_MISS_LIMIT = 3
         /**
          * Otomatik modda aynı sınır: reklam ya da sistem penceresi araya
@@ -912,23 +2693,44 @@ class CaptureAccessibilityService : AccessibilityService() {
          */
         private const val POLL_MISS_LIMIT_AUTO = 40
         /**
+         * Oyun önplanda değilken yoklama aralığı. Ekran okunmuyor, yalnızca
+         * etkin pencerenin hangi uygulamaya ait olduğu soruluyor.
+         */
+        private const val IDLE_POLL_MS = 2000L
+        /** Bekleme kipinde günlüğe ne sıklıkla "hâlâ bekliyorum" yazılsın. */
+        private const val IDLE_HEARTBEAT_MS = 10_000L
+        /**
+         * Oyun bu kadar süre önce önplanda doğrulandıysa, etkin pencere
+         * okunamasa bile hâlâ orada sayılıyor.
+         */
+        private const val FOREGROUND_GRACE_MS = 30_000L
+        /**
+         * Soru kartı bu kadar süredir okunamıyorsa haber ver. Şıklar teker
+         * teker belirirken bir iki saniye "eksik" görünmesi normal.
+         */
+        private const val UNREADABLE_WARN_MS = 4000L
+        /** Son gerçek soruyu bu kadar süre önce gördüysek hâlâ turdayız. */
+        private const val UNREADABLE_ROUND_MS = 30_000L
+        /**
          * Otomatik modda bu kadar süredir soru görülmüyorsa tur bitmiş
          * sayılır ve "Tekrar Oyna" düğmesi aranmaya başlanır. Cevap açılıp
          * sonraki sorunun gelmesi ~1,5 saniye sürdüğü için bunun üstünde.
          */
-        private const val AUTO_IDLE_MS = 3000L
+        private const val AUTO_IDLE_MS = 6000L
         /**
          * "Atla", "Devam", "Kapat" gibi yazılar soru ekranında da bulunabiliyor.
          * Onlara ancak bu kadar süredir hiç soru görülmediyse dokunuruz.
          */
-        private const val AUTO_DISMISS_IDLE_MS = 7000L
+        private const val AUTO_DISMISS_IDLE_MS = 12_000L
         /**
-         * Karar yoklama. Hızlı yolda ~120 ms'de bir, toplam ~3 saniye:
-         * senin seçimin dokunuştan ~0,1 sn, gerçek cevap ~0,5 sn sonra
-         * belirdiği için bu pencere ikisini de rahatça yakalıyor.
+         * Karar yoklama. Hızlı yolda 100 ms'de bir (saniyede 10 kare), toplam
+         * ~3 saniye. Eskiden 50 ms'deydi; karar yeşili ~1 saniye ekranda
+         * kalıyor ve onay süreleri (300 ms yeşil, 120 ms kırmızı) karede değil
+         * zamanda ölçülüyor, yani 10 kare kararı kaçırmadan işlemcinin
+         * yarısını geri veriyor.
          */
-        private const val VERDICT_TRIES_FAST = 60
-        private const val VERDICT_GAP_FAST_MS = 50L
+        private const val VERDICT_TRIES_FAST = 30
+        private const val VERDICT_GAP_FAST_MS = 100L
         /**
          * Kırmızı yoksa kararı onaylamadan önce beklenen süre. Senin
          * seçimin dokunuştan ~0,1 sn sonra beliriyor, gerçek karar ~0,5 sn
@@ -941,8 +2743,54 @@ class CaptureAccessibilityService : AccessibilityService() {
          * Doğru cevapta oyun seni bekletmeden geçtiği için kısa tutuldu.
          */
         private const val GREEN_CONFIRM_MS = 300L
+        /**
+         * Kırmızı da görüldüğünde beklenen doğrulama süresi.
+         *
+         * Kırmızı kararın açıldığını gösterdiği için yeşilden kısa; ama sıfır
+         * değil. Tek kareye güvendiğimizde, beliriş/kapanış animasyonunda bir
+         * şıkkın yeşil bandına başkasının kırmızı bandına aynı anda düştüğü
+         * kareler "renk (kesin)" damgasıyla arşive yazılıyordu — en güçlü
+         * kanıt olduğu için de bir daha düzelmiyordu. 50 ms'lik karelerde
+         * bu üç kare demek.
+         */
+        private const val CERTAIN_CONFIRM_MS = 120L
         /** Bu süre içinde aynı soruya ikinci kez cevap yazılmaz. */
         private const val ANSWER_COOLDOWN_MS = 20_000L
+        /** Otomatik modda bir soruya en fazla kaç kez dokunulur. */
+        private const val AUTO_MAX_TAPS = 3
+        /** Dokunuşa yanıt gelmezse bu kadar sonra yeniden denenir. */
+        private const val AUTO_RETAP_MS = 2500L
+        /**
+         * Dokunuştan sonra kaç kare renk değişimi görmezsek jestin yutulduğuna
+         * hükmedip renk turunu erken bitiriyoruz. 100 ms'lik karelerde ~1 sn.
+         */
+        private const val SILENT_BURST_LIMIT = 10
+        /**
+         * "Süre doldu" kararı için sorunun ekranda durması gereken en az süre.
+         * Oyunun sayacı bir dakikanın üstünde olduğu için bu eşik gerçek bir
+         * süre dolmasını hiçbir zaman kaçırmaz.
+         */
+        private const val MIN_TIMEOUT_MS = 20_000L
+        /**
+         * Şık kutusunun "çizildi" sayılması için en düşük parlaklık.
+         * Oturmuş şıklar bembeyaz (0.97); geçiş kareleri koyu mor.
+         */
+        private const val CARD_READY_MIN = 217
+        /**
+         * Kart bu kadar sürede oturmadıysa yine de dokun.
+         *
+         * Bu bir emniyet süresi, normal yol değil. Uzun süre "normal yol"
+         * sanıldı: kıpırdamayan kareler taramadan önce atlandığı için kartın
+         * oturduğu hiç ölçülemiyor, her cevap tam 4 saniye sürüyordu.
+         */
+        private const val CARD_READY_TIMEOUT_MS = 4000L
+        /**
+         * Numara kilidinin geçerli sayılması için soru metninin eski metne
+         * en az bu kadar benzemesi gerekir. Cevap animasyonu metni biraz
+         * bozabiliyor; bambaşka bir metin ise numarayı yanlış okuduğumuz
+         * anlamına gelir ve kilit açılır.
+         */
+        private const val LOCK_MIN_SIMILARITY = 0.5f
         private const val VERDICT_TRIES_SLOW = 5
         /** Kare imzası çözünürlüğü. */
         private const val SIG_W = 24
@@ -953,6 +2801,96 @@ class CaptureAccessibilityService : AccessibilityService() {
          * ancak ~3 birim değiştirir; eşik 4'te kalsaydı bu değişim kaçardı.
          */
         private const val FRAME_DIFF_LIMIT = 2
+        /**
+         * Bekleyen soru yokken kıpırdamayan ekranın yeniden okunma aralığı.
+         * Aynı ekranı tekrar okumak genelde aynı sonucu verir; ama ilk
+         * okumada bir şık kaçtıysa yakın plan denemesi ancak böyle sıraya
+         * giriyor, ve günlük en azından "hâlâ neden bekliyoruz"u gösteriyor.
+         */
+        private const val STATIC_RESCAN_MS = 1500L
+        /**
+         * Ekran bu kadar süredir kıpırdamıyorsa kart oturmuş sayılır, renk
+         * ölçüsü ne derse desin. Solma animasyonu bundan çok daha kısa.
+         */
+        private const val CARD_STATIC_MS = 1000L
+        /** "Kart oturmadı" kapısında bu kadar takılan okuma günlüğe yazılır. */
+        private const val RENDER_WAIT_LOG_MS = 1000L
+        /** Bekçinin tarama ve yoklamaya bakma aralığı. */
+        private const val WATCHDOG_MS = 1000L
+        /**
+         * Yoklama döngüsü tek bir aşamada bundan uzun kalırsa takılmış sayılır.
+         * En uzun olağan aşaması bekleme kipindeki 2 saniyelik uyku.
+         */
+        private const val POLL_STUCK_MS = 5000L
+        /** İki okuma "aynı soru" sayılsın diye soru metinlerinin en az benzerliği. */
+        private const val OKUMA_AYNI_SORU = 0.8f
+        /**
+         * Yeni soru teyit ya da kart kapısında bekliyorsa kıpırdamayan kare
+         * bu süre boyunca her turda yeniden okunuyor (bkz. STATIC_RESCAN_MS).
+         */
+        private const val ACIL_OKUMA_MS = 3000L
+        /**
+         * Okunmaya hazır hap görünmüyorken OCR aralığı. Tur sonu ekranı ve şık
+         * kutusu ölçülemeyen sorular bu aralıkla okunmaya devam ediyor.
+         */
+        private const val OCR_HAPSIZ_MS = 1500L
+        /**
+         * Haplar hazırken okunacak bölgenin ilk hapın üstüne taşan kısmı
+         * (ekran yüksekliğine oran): soru kartı ve sol üstteki soru numarası.
+         * Ölçülen ekranlarda numara ilk hapın 0,25-0,30 kadar üstünde.
+         */
+        private const val OCR_SORU_PAYI = 0.36f
+        /** Aynı "bir şık okunamadı" sonucu bu kadar gelince yer tutucuyla devam. */
+        private const val OKUNAMAYAN_KABUL = 2
+        /**
+         * Yakın plan OCR'dan önce ekranın en az bu kadar kıpırdamamış olması
+         * gerekiyor: şıklar teker teker belirirken 3/4 normaldir, o anda
+         * büyüterek okumak boşuna işlemci harcar.
+         */
+        private const val CLOSEUP_AFTER_MS = 700L
+        /** İlk yakın plan denemesinin büyütme oranı; sonraki denemeler artırır. */
+        private const val CLOSEUP_SCALE = 2
+        /**
+         * Aynı kare için en fazla kaç yakın plan denemesi (2x, 3x, 4x).
+         * Daha fazlası hem belleği hem süreyi boşa harcıyor.
+         */
+        private const val CLOSEUP_MAX_TRIES = 3
+        /**
+         * Denemeler tükendikten sonra bütçenin tazelenmesi için geçmesi
+         * gereken süre. Aynı kareyi aynı ölçekle yeniden okumak boşuna,
+         * ama soru ekranda dururken temelli pes etmek daha kötü.
+         */
+        private const val CLOSEUP_RETRY_MS = 4000L
+        /**
+         * Şık metni bu kadar kısaysa sayı şıkkı sayılır. En uzun gerçek
+         * örnekler "165", "1500", "23,5" — dördü de sığıyor.
+         */
+        private const val NUMERIC_OPTION_MAX_LEN = 5
+
+        /**
+         * Bir metnin şık kutusuna ait sayılması için kutunun dışına
+         * taşabileceği pay (kutu yüksekliğine oran).
+         *
+         * Küçük tutuluyor: dört rakamı tek blokta birleştiren bir OCR
+         * bloğu bu payı aşar ve hiçbir kutuya yazılmaz — o kutular yakın
+         * plandan okunur. Pay büyük olsaydı birleşmiş blok dört kutunun
+         * dördüne birden aynı metni yazardı.
+         */
+        private const val BOX_TEXT_SLACK = 0.15f
+        /** Şık kutusu yakın plandan okunurken kullanılan büyütme. */
+        private const val BOX_SCALE = 3
+        /** İlk okuma boş dönerse denenen büyütme. */
+        private const val BOX_SCALE_RETRY = 5
+        /** Kırpma payı: hapın yuvarlak köşeleri metne karışmasın. */
+        private const val BOX_CROP_INSET = 0.12f
+
+        /** Diskte tutulan teşhis karesi sayısı. */
+        private const val TESHIS_MAX = 20
+        /** İki teşhis karesi arasındaki en kısa süre. */
+        private const val TESHIS_GAP_MS = 6_000L
+        /** Soru görmeyeli bu kadar olduysa bot neden beklediğini yazsın. */
+        private const val AUTO_IDLE_LOG_AFTER_MS = 3000L
+        private const val AUTO_IDLE_LOG_GAP_MS = 5000L
 
         /** Arayüzün servisin açık olup olmadığını görmesi için. */
         val running = MutableStateFlow(false)
@@ -962,7 +2900,68 @@ class CaptureAccessibilityService : AccessibilityService() {
          * Tek bir kareyi gösteren döküm, "hangi soru neden kaçtı" sorusunu
          * yanıtlamaya yetmiyordu; bu liste zaman içindeki akışı veriyor.
          */
-        const val LOG_LIMIT = 80
+        /**
+         * Bellekte tutulan satır sayısı.
+         *
+         * Arayüzde bunun yalnızca ilk [LOG_VISIBLE] satırı gösteriliyor; asıl
+         * yığın burada duruyor. Bir sorunu fark ettiğinde onu doğuran satırlar
+         * çoktan ekrandan kaymış oluyor — "Paylaş" düğmesi geçmişin tamamını
+         * dışarı veriyor.
+         */
+        const val LOG_LIMIT = 10_000
+        /** Teşhis ekranında gösterilen satır sayısı. */
+        const val LOG_VISIBLE = 80
+
+        private val logLock = Any()
+        /** Geçmişin tamamı, yenisi başta. Yazma [logLock] altında. */
+        private val logLines = ArrayDeque<String>()
+        /** Tek örnek; her satırda yenisini kurmak çağrının kendisinden pahalıydı. */
+        private val logStamp =
+            java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault())
+
+        /**
+         * Arayüzün gördüğü pencere — yalnızca son [LOG_VISIBLE] satır.
+         *
+         * Geçmişin tamamı akışta taşınmıyor: her satırda binlerce elemanlık
+         * bir liste kopyalamak, günlük doldukça yazmayı gözle görülür biçimde
+         * yavaşlatıyordu. Dışa aktarma [logSnapshot] ile tamamını alıyor.
+         */
         val scanLog = MutableStateFlow<List<String>>(emptyList())
+
+        /** Son taramanın dökümü — Teşhis ekranının "Son tarama" bölümü. */
+        val sonTarama = MutableStateFlow("")
+
+        /** Hata listesinde tutulan en fazla satır sayısı. */
+        const val MISS_LIMIT = 300
+
+        /**
+         * Bu oturumun hataları, yenisi başta.
+         *
+         * Uygulama kapanınca sıfırlanıyor: bu bir arşiv değil, "az önce ne
+         * oldu" defteri. Sorunun kendisi ve doğru cevabı zaten arşivde;
+         * burada olup arşivde olmayan tek bilgi **bizim neye bastığımız.**
+         */
+        val misses = MutableStateFlow<List<Miss>>(emptyList())
+
+        fun clearMisses() { misses.value = emptyList() }
+
+        /** Liste anahtarı; zaman damgası aynı milisaniyede çakışabiliyor. */
+        private val missSeq = java.util.concurrent.atomic.AtomicLong(0)
+
+        private fun addMiss(m: Miss) {
+            misses.value = (listOf(m) + misses.value).take(MISS_LIMIT)
+        }
+
+        /** Halka tamponda tutulan toplam satır sayısı (arayüz başlığı için). */
+        val scanLogTotal = MutableStateFlow(0)
+
+        /** Geçmişin tamamı — "Paylaş" düğmesi bunu dışarı veriyor. */
+        fun logSnapshot(): List<String> = synchronized(logLock) { logLines.toList() }
+
+        fun clearLog() {
+            synchronized(logLock) { logLines.clear() }
+            scanLog.value = emptyList()
+            scanLogTotal.value = 0
+        }
     }
 }

@@ -25,11 +25,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.emre.bilbakalim.arsiv.capture.CaptureAccessibilityService
 
 @Composable
 fun DebugScreen(vm: ArsivViewModel, onBack: () -> Unit) {
     val s by vm.settings.collectAsState()
     val history by vm.scanLog.collectAsState()
+    val historyTotal by vm.scanLogTotal.collectAsState()
+    val sonTarama by vm.sonTarama.collectAsState()
     val context = LocalContext.current
 
     Scaffold(topBar = { ArsivTopBar("Teşhis", onBack = onBack) }) { pad ->
@@ -39,10 +42,14 @@ fun DebugScreen(vm: ArsivViewModel, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                SectionCard("Tarama geçmişi (${history.size})") {
+                // Akış zaten yalnızca pencereyi taşıyor; toplam ayrı geliyor.
+                val visible = history
+                SectionCard("Tarama geçmişi (${visible.size} / $historyTotal)") {
                     Text(
-                        "Her tarama tek satır. Bir tur oynayıp buraya bakarsan hangi " +
-                            "sorunun neden kaçtığı satır satır görünür.",
+                        "Her tarama tek satır. Burada son ${CaptureAccessibilityService.LOG_VISIBLE} " +
+                            "satır görünüyor; arkada ${CaptureAccessibilityService.LOG_LIMIT} satıra " +
+                            "kadar tutuluyor ve \"Paylaş\" hepsini dışarı verir. Bir sorunu fark " +
+                            "ettiğinde onu doğuran satırlar çoktan ekrandan kaymış oluyor.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -65,7 +72,7 @@ fun DebugScreen(vm: ArsivViewModel, onBack: () -> Unit) {
                         )
                     } else {
                         Text(
-                            history.joinToString("\n"),
+                            visible.joinToString("\n"),
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
                             lineHeight = 16.sp,
@@ -94,7 +101,7 @@ fun DebugScreen(vm: ArsivViewModel, onBack: () -> Unit) {
             }
             item {
                 SectionCard("Son tarama") {
-                    val dump = s.lastDebugDump.ifBlank { "Henüz tarama yapılmadı." }
+                    val dump = sonTarama.ifBlank { "Henüz tarama yapılmadı." }
                     Text(
                         dump,
                         fontFamily = FontFamily.Monospace,

@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.core.app.NotificationCompat
@@ -40,6 +41,11 @@ class ProjectionService : Service() {
 
     private val handler = Handler(Looper.getMainLooper())
 
+    /** En son ne zaman GERÇEKTEN yeni bir kare alındı. */
+    @Volatile private var lastImageAt = 0L
+    /** Üst üste kaç kez kare alınamadı (hata fırlatarak). */
+    @Volatile private var acquireFails = 0
+
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             Log.i(TAG, "Ekran yakalama durduruldu")
@@ -61,6 +67,13 @@ class ProjectionService : Service() {
             return START_NOT_STICKY
         }
 
+        // Servis zaten kuruluyken ikinci kez başlatılırsa (izin penceresinden
+        // dönüş, sistemin yeniden teslimi) eskisini bırakmadan yenisini kurmak
+        // ekranı kimsenin okumadığı bir okuyucuya aynalayan ölü bir sanal ekran
+        // bırakıyordu: ölü ekran çizilmeye devam ediyor, işlemciyi boş yere
+        // yiyordu.
+        if (projection != null || reader != null || virtualDisplay != null) teardown()
+
         try {
             val mgr = getSystemService(MediaProjectionManager::class.java)
             val mp = mgr.getMediaProjection(code, data) ?: run { stopSelf(); return START_NOT_STICKY }
@@ -72,12 +85,14 @@ class ProjectionService : Service() {
             h = size.second
             val dpi = resources.displayMetrics.densityDpi
 
-            reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
+            reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, IMAGE_BUFFERS)
             virtualDisplay = mp.createVirtualDisplay(
                 "SoruArsiviEkran", w, h, dpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 reader!!.surface, null, handler
             )
+            lastImageAt = SystemClock.uptimeMillis()
+            acquireFails = 0
             instance = this
             running.value = true
             Log.i(TAG, "Ekran yakalama hazir: ${w}x$h")
@@ -123,9 +138,25 @@ class ProjectionService : Service() {
      */
     @Synchronized
     private fun readFrame(copy: Boolean): Bitmap? {
+        checkStall()
         val r = reader ?: return null
-        val image = try { r.acquireLatestImage() } catch (_: Throwable) { null }
+        val image = try {
+            r.acquireLatestImage()
+        } catch (t: Throwable) {
+            // Bu hata eskiden sessizce yutuluyordu ve sonucu ağırdı: okuyucu
+            // bozulduğunda (tampon tükenmesi, yansıtmanın sistemce kesilmesi)
+            // aşağıdaki `hasFrame` dalı sonsuza kadar EN SON kareyi döndürmeye
+            // devam ediyor. Uygulama donmuş bir görüntüyü saniyede onlarca kez
+            // tarıyor, hiçbir renk değişmediği için karar turları hep sonuna
+            // kadar işliyor, OCR aynı kareyi tekrar tekrar okuyor — dışarıdan
+            // "birden yavaşladı" diye görünen tablo tam olarak bu. Kullanıcının
+            // hızlı yakalamayı kapatıp açması da işe bu yüzden yarıyordu.
+            if (acquireFails++ == 0) Log.w(TAG, "Kare alinamadi: ${t.message}")
+            null
+        }
         if (image != null) {
+            acquireFails = 0
+            lastImageAt = SystemClock.uptimeMillis()
             try {
                 val plane = image.planes[0]
                 val buffer = plane.buffer
@@ -165,6 +196,56 @@ class ProjectionService : Service() {
         return if (copy) frame.copy(Bitmap.Config.ARGB_8888, false) else frame
     }
 
+    /**
+     * Akış ölmüş mü diye bakar; ölmüşse boru hattını kendi kendine yeniler.
+     *
+     * Kullanıcının elle yaptığı "kapat–aç" ile aynı şey, ama izin penceresi
+     * olmadan: MediaProjection izni yerinde duruyor, yalnızca ona bağlı
+     * okuyucu ve sanal ekran yeniden kuruluyor.
+     */
+    private fun checkStall() {
+        if (projection == null) return
+        val now = SystemClock.uptimeMillis()
+        val neden = when {
+            acquireFails >= ACQUIRE_FAIL_LIMIT -> "okuyucu $acquireFails kez hata verdi"
+            lastImageAt != 0L && now - lastImageAt >= STALL_LIMIT_MS ->
+                "${(now - lastImageAt) / 1000} sn yeni kare yok"
+            else -> return
+        }
+        restartPipeline(neden)
+    }
+
+    private fun restartPipeline(neden: String) {
+        val mp = projection ?: return
+        Log.w(TAG, "Kare akisi yenileniyor: $neden")
+        runCatching { virtualDisplay?.release() }
+        runCatching { reader?.close() }
+        virtualDisplay = null
+        reader = null
+        // Eski kare artık bir şey anlatmıyor: yenisi gelene kadar null dönelim
+        // ki çağıran taraf donmuş görüntüyü "ekran değişmedi" sanmasın.
+        hasFrame = false
+        acquireFails = 0
+        lastImageAt = SystemClock.uptimeMillis()
+        val ok = runCatching {
+            val dpi = resources.displayMetrics.densityDpi
+            val r = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, IMAGE_BUFFERS)
+            virtualDisplay = mp.createVirtualDisplay(
+                "SoruArsiviEkran", w, h, dpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                r.surface, null, handler
+            )
+            reader = r
+        }.isSuccess
+        if (ok) {
+            restartCount++
+        } else {
+            Log.e(TAG, "Kare akisi yenilenemedi, hizli yakalama kapaniyor")
+            teardown()
+            stopSelf()
+        }
+    }
+
     private fun teardown() {
         runCatching { paddedFrame?.recycle() }
         runCatching { exactFrame?.recycle() }
@@ -192,6 +273,35 @@ class ProjectionService : Service() {
     companion object {
         private const val TAG = "SoruArsivi/Projection"
         private const val NOTIF_ID = 42
+        /**
+         * Okuyucunun tampon sayısı.
+         *
+         * `acquireLatestImage()` en az 2 istiyor, ama 2'de üreticiye (sanal
+         * ekranı çizen taraf) hiç boş tampon kalmıyor: biz okuyana kadar
+         * yeni kare üretilemiyor. Üçüncü tampon, iki okuma arasında her
+         * zaman taze bir kare hazır olmasını sağlıyor — karar penceresini
+         * yakalamak tam da buna bağlı. Maliyeti bir ekran dolusu tampon.
+         */
+        private const val IMAGE_BUFFERS = 3
+        /**
+         * Bu kadar süredir yeni kare gelmiyorsa akış ölmüş sayılır.
+         *
+         * Oyun ekranında sayaç sürekli döndüğü için normalde iki kare
+         * arası milisaniyelerle ölçülür; 15 saniyelik sessizlik gerçekten
+         * duran bir ekran ya da kopmuş bir boru hattı demektir. İkisinde de
+         * yeniden kurmanın zararı yok: duran ekranda yeni sanal ekran
+         * hemen bir kare çiziyor.
+         */
+        private const val STALL_LIMIT_MS = 15_000L
+        /** Üst üste bu kadar hatadan sonra okuyucu bozuk sayılır. */
+        private const val ACQUIRE_FAIL_LIMIT = 5
+
+        /**
+         * Kare akışının kaç kez kendi kendine yenilendiği. Teşhis günlüğü
+         * bunu izliyor: "yavaşladı" şikâyetinin sebebi buysa artık görünür.
+         */
+        @Volatile var restartCount = 0
+            private set
         const val EXTRA_CODE = "sonuc_kodu"
         const val EXTRA_DATA = "sonuc_verisi"
 
@@ -201,6 +311,16 @@ class ProjectionService : Service() {
         val running = MutableStateFlow(false)
 
         val isRunning: Boolean get() = instance != null
+
+        /**
+         * Son gerçek karenin yaşı (ms); hızlı yakalama kapalıysa -1.
+         *
+         * Ekran kıpırdamadığında sistem yeni kare üretmediği için yaş büyür;
+         * bu olağan. Teşhiste anlamlı olan, ekran değişirken de büyümesi:
+         * kare akışı kopmuş demektir.
+         */
+        fun kareYasiMs(): Long =
+            instance?.let { SystemClock.uptimeMillis() - it.lastImageAt } ?: -1L
 
         /** Bağımsız kopya — OCR ve kaydetme gibi asenkron işler için. */
         fun grab(): Bitmap? = instance?.readFrame(copy = true)

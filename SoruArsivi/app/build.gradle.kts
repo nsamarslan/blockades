@@ -1,8 +1,36 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+}
+
+/**
+ * Sabit imza anahtari.
+ *
+ * Android bir uygulamanin ustune ancak **ayni anahtarla** imzalanmis bir
+ * APK'yi kurdurur. Varsayilan debug anahtari her makinede ayri ayri
+ * uretiliyor ve GitHub Actions her calismada sifirdan bir sanal makine
+ * actigi icin her derleme farkli imzalaniyordu; sonuc olarak her yeni APK
+ * "mevcut paketle cakisiyor" deyip kurulmuyor, uygulamayi silmek gerekiyor,
+ * arsiv de siliniyordu.
+ *
+ * Ayrintilar ve kendi anahtarini uretme adimlari: keystore/signing.properties
+ */
+val signingProps = Properties().apply {
+    val f = rootProject.file("keystore/signing.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val hasSigningKey = signingProps.getProperty("storeFile")
+    ?.let { rootProject.file(it).exists() } == true
+
+if (!hasSigningKey) {
+    logger.warn(
+        "UYARI: keystore/signing.properties bulunamadi. APK varsayilan debug " +
+            "anahtariyla imzalanacak; telefondaki mevcut kurulumun uzerine kurulamaz."
+    )
 }
 
 android {
@@ -13,19 +41,34 @@ android {
         applicationId = "com.emre.bilbakalim.arsiv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "2.0"
+        versionCode = 26
+        versionName = "3.5"
     }
+
+    signingConfigs {
+        if (hasSigningKey) {
+            create("ortak") {
+                storeFile = rootProject.file(signingProps.getProperty("storeFile"))
+                storePassword = signingProps.getProperty("storePassword")
+                keyAlias = signingProps.getProperty("keyAlias")
+                keyPassword = signingProps.getProperty("keyPassword")
+            }
+        }
+    }
+
+    // Debug ve release ayni anahtarla imzalanir; boylece hangisini kurmus
+    // olursan ol digerine gecebilirsin.
+    val ortakImza = signingConfigs.findByName("ortak") ?: signingConfigs.getByName("debug")
 
     buildTypes {
         debug {
             isMinifyEnabled = false
+            signingConfig = ortakImza
         }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Debug anahtarıyla imzalanır ki APK telefona doğrudan kurulabilsin.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = ortakImza
         }
     }
 
@@ -70,4 +113,9 @@ dependencies {
     ksp(libs.androidx.room.compiler)
 
     implementation(libs.mlkit.text.recognition)
+
+    testImplementation(libs.junit)
+    // org.json Android çatısının parçası ve birim testlerde boş taklidi
+    // hata fırlatıyor; testlerde gerçeğini kullanıyoruz.
+    testImplementation(libs.json.jvm)
 }

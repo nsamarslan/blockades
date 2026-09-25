@@ -65,8 +65,24 @@ object TurkishText {
     }
 
     /** Karşılaştırma için sadeleştirilmiş anahtar: sadece harf ve rakam. */
-    fun normalizeKey(s: String): String =
-        fold(lower(s)).replace(Regex("[^a-z0-9]"), "")
+    fun normalizeKey(s: String): String = fold(lower(s)).replace(HARF_RAKAM_DISI, "")
+
+    // Düzenli ifadeler bir kez derleniyor. Eskiden her çağrıda yeniden
+    // derleniyordu; tekrar denetimi bu iki fonksiyonu arşivin her satırı
+    // için çağırdığından, bilinmeyen her soruda binlerce derleme demekti.
+    private val HARF_RAKAM_DISI = Regex("[^a-z0-9]")
+    private val KELIME_AYRACI = Regex("[^a-z0-9]+")
+
+    /**
+     * Metni normalleştirilmiş kelimelere ayırır.
+     *
+     * normalizeKey boşlukları da sildiği için kelime sınırlarını kaybediyor;
+     * "…ölçütlerindendir" ile "…ölçütlerinden değildir" karakter dizisi
+     * olarak neredeyse aynı görünüyor. Kelime listesiyle bakıldığında ise
+     * son kelimeler açıkça farklı.
+     */
+    fun words(s: String): List<String> =
+        fold(lower(s)).split(KELIME_AYRACI).filter { it.isNotEmpty() }
 
     /** Soru metninden kararlı bir parmak izi üretir. */
     fun fingerprint(question: String, options: List<String>): String {
@@ -95,9 +111,10 @@ object TurkishText {
      * 0.0 - 1.0 arası benzerlik. OCR bir iki harfi yanlış okuduğunda
      * parmak izi tutmaz; bu yüzden ikinci bir güvenlik ağı olarak kullanılır.
      */
-    fun similarity(a: String, b: String): Float {
-        val x = normalizeKey(a)
-        val y = normalizeKey(b)
+    fun similarity(a: String, b: String): Float = similarityOfKeys(normalizeKey(a), normalizeKey(b))
+
+    /** [similarity]'nin zaten [normalizeKey]'den geçmiş anahtarlar için olanı. */
+    fun similarityOfKeys(x: String, y: String): Float {
         if (x.isEmpty() && y.isEmpty()) return 1f
         if (x.isEmpty() || y.isEmpty()) return 0f
         if (x == y) return 1f
@@ -125,27 +142,55 @@ object TurkishText {
     private val LEADING_NUMBER = Regex("^\\d{1,3}\\s*[.)\\-]\\s*")
     private val LEADING_CHROME = Regex(
         "^(süre\\s*bitti|sure\\s*bitti|süre\\s*doldu|zaman\\s*doldu|muhteşem|muhtesem|" +
-            "biraz\\s*daha\\s*gayret|tebrikler|harika|bravo|doğru\\s*cevap)\\s*[!.,:;]*\\s*"
+            "biraz\\s*daha\\s*gayret|tebrikler|harika|bravo|doğru\\s*cevap|kombo|combo|" +
+            "seri|süper|super|mükemmel|mukemmel|aferin|çok\\s*yaklaştın|cok\\s*yaklastin)" +
+            "\\s*[!.,:;x×]*\\s*\\d*\\s*"
     )
 
     /**
-     * Soru metninin başına yapışmış arayüz parçalarını söker.
+     * Doğru cevaptan sonra ekrana düşen puan balonu: "+5", "+10", "-5".
      *
-     * Soru numarası ("17.") ve "Süre Bitti" gibi uyarılar soru kartının
-     * üstünde duruyor; OCR bunları bazen soruyla aynı blokta döndürüyor ve
-     * süzgeçlerden kaçıp metne yapışıyorlar. Aynı soru bir kez temiz bir kez
-     * bu fazlalıkla okununca iki ayrı kayıt oluşuyordu.
+     * Metnin iki ucunda da aranıyor çünkü OCR bunu soruyla **aynı blokta**
+     * döndürebiliyor: arşivde "…gezegen hangisidir? +5" diye kaydedilmiş
+     * sorular bundan. Parça bazlı süzgeç bunu hiç göremiyor, metnin
+     * kendisinden sökmek gerekiyor.
+     *
+     * Sondaki kural işaretten önceki karaktere bakıyor: rakamsa dokunmuyor.
+     * Yoksa "Sonuç kaçtır: 2 + 2" sorusunun sonundaki toplama da puan
+     * balonu sanılıp kesiliyordu.
      */
-    fun stripLeadingChrome(s: String): String {
+    private val SCORE_BADGE_END =
+        Regex("(?<=[^0-9\\s])[\\s(]*[+\\-±]\\s*\\d{1,4}\\s*[)!.,:;]*\\s*\$")
+    private val SCORE_BADGE_START = Regex("^\\s*[+\\-±]\\s*\\d{1,4}\\s*[!.,:;]*\\s*")
+
+    /**
+     * Soru metnine yapışmış arayüz parçalarını iki uçtan da söker.
+     *
+     * Soru numarası ("17."), "Süre Bitti" / "KOMBO" gibi banner'lar ve doğru
+     * cevaptan sonra düşen "+5" puan balonu soru kartının üstünde ya da
+     * üzerinde duruyor; OCR bunları soruyla **aynı blokta** döndürebiliyor,
+     * yani parça bazlı süzgeçler göremiyor. Temizlenmezse aynı soru bir kez
+     * temiz bir kez bu fazlalıkla okunup iki ayrı kayıt oluyor — arşivde
+     * "KOMBO Türkiye'nin…" ve "…hangisidir? +5" diye duran kayıtlar bundan.
+     */
+    fun stripQuestionChrome(s: String): String {
         var t = s.trim()
         var guard = 0
-        while (guard++ < 6) {
+        while (guard++ < 8) {
+            val before = t
             val low = lower(t)
+
             var cut = 0
             LEADING_NUMBER.find(low)?.let { if (it.range.first == 0) cut = it.range.last + 1 }
             if (cut == 0) LEADING_CHROME.find(low)?.let { if (it.range.first == 0) cut = it.range.last + 1 }
-            if (cut == 0) break
-            t = t.substring(cut).trim()
+            if (cut == 0) SCORE_BADGE_START.find(low)?.let { if (it.range.first == 0) cut = it.range.last + 1 }
+            if (cut > 0) t = t.substring(cut).trim()
+
+            // Sondaki puan balonu. Soru işaretinden sonra geldiği için
+            // metnin anlamını bozmadan kesilebiliyor.
+            t = SCORE_BADGE_END.replace(t, "").trim()
+
+            if (t == before) break
         }
         return t
     }
@@ -169,6 +214,52 @@ object TurkishText {
         return sig
     }
 
+    private val DIGITS_ONLY = Regex("\\d+")
+
+    /**
+     * İki şık metni "aynı şık" sayılır mı?
+     *
+     * Birebir eşitlik yetmiyor: OCR aynı şıkkın sonundaki harfi düşürebiliyor
+     * ("Fransa" yerine "Frans"). Bu yüzden dört harften uzun kelimelerde tek
+     * harflik fark hoş görülüyor.
+     *
+     * Sayı şıklarında ise tek harf farkı gerçek bir fark: "82" ile "92" ayrı
+     * cevaplar. Orada birebir eşitlik aranıyor.
+     */
+    fun sameOptionText(a: String, b: String): Boolean =
+        sameOptionKey(normalizeKey(a), normalizeKey(b))
+
+    /** [sameOptionText]'in zaten [normalizeKey]'den geçmiş anahtarlar için olanı. */
+    fun sameOptionKey(x: String, y: String): Boolean {
+        if (x == y) return x.isNotEmpty()
+        if (DIGITS_ONLY.matches(x) || DIGITS_ONLY.matches(y)) return false
+        if (minOf(x.length, y.length) < 4) return false
+        if (kotlin.math.abs(x.length - y.length) > 1) return false
+        return levenshtein(x, y) <= 1
+    }
+
+    /**
+     * İki şık listesi (sıraları değişmiş olabilir) aynı dörtlü mü?
+     *
+     * Sıra her turda değiştiği için birebir eşleştirme yapılıyor: soldaki her
+     * şıkkın sağda kendine ait bir karşılığı olmalı, aynı karşılık iki kez
+     * kullanılamaz.
+     */
+    fun optionsNearlyMatch(a: List<String>, b: List<String>): Boolean =
+        optionKeysNearlyMatch(a.map { normalizeKey(it) }, b.map { normalizeKey(it) })
+
+    /** [optionsNearlyMatch]'in [normalizeKey]'den geçmiş anahtarlar için olanı. */
+    fun optionKeysNearlyMatch(a: List<String>, b: List<String>): Boolean {
+        if (a.size < 4 || a.size != b.size) return false
+        val kalan = b.toMutableList()
+        for (o in a) {
+            val i = kalan.indexOfFirst { sameOptionKey(o, it) }
+            if (i < 0) return false
+            kalan.removeAt(i)
+        }
+        return true
+    }
+
     /** Metinde arayüz uyarısı geçiyor mu — iki kayıttan temiz olanı seçmek için. */
     fun hasChromePhrase(s: String): Boolean {
         val low = lower(s)
@@ -176,9 +267,113 @@ object TurkishText {
             "biraz daha gayret").any { low.contains(it) }
     }
 
-    /** "A) Platon", "1. Platon", "- Platon" gibi baştaki şık işaretlerini atar. */
-    fun stripOptionPrefix(s: String): String =
-        s.replace(Regex("^\\s*[(\\[]?\\s*([A-Da-dEeĞğ]|[1-5])\\s*[).\\]:\\-–]\\s+"), "").trim()
+    /**
+     * Bir şık metninin listedeki sırasını bulur.
+     *
+     * Şıkların sırası her turda değişiyor. Bu yüzden "doğru cevap 2. şık"
+     * bilgisi tek başına işe yaramaz; hangi *metnin* doğru olduğunu bilip
+     * onu o anki listede aramak gerekir. Kayıttaki metinle ekrandaki metin
+     * arasında OCR kaynaklı bir iki harf farkı olabileceği için, birebir
+     * eşleşme bulunamazsa en yakın şık kabul edilir.
+     *
+     * Hiçbir şık yeterince benzemiyorsa null döner — yanlış şıkka basmaktansa
+     * bilmediğimizi söylemek yeğdir.
+     */
+    fun matchIndex(options: List<String>, text: String?): Int? {
+        if (text.isNullOrBlank() || options.isEmpty()) return null
+
+        // Birebir eşleşme, sıkıdan gevşeğe dört anahtarla. Bir kademede tek
+        // şık tutuyorsa o; birden çok şık tutuyorsa şıklar o kademede ayırt
+        // edilemiyor demektir — daha gevşek kademe de ayıramaz: null.
+        //
+        //  1. Türkçe harfleri ve simgeleri koruyan anahtar. "Töz" ile "Toz",
+        //     "Öz" ile "Oz" ancak burada ayrılıyor. Eskiden ilk kademe
+        //     harfleri katlıyordu (ö→o) ve İLK eşleşeni döndürüyordu: "Öz /
+        //     Toz / Oz / Töz" sorusunda cevap "Töz" iken bot "Toz"a basıyor,
+        //     arşive de "Toz" yazılıyordu. Kırmızı görülüp düzeltilmeye
+        //     çalışıldığında aynı eşleştirme yine "Toz"u buluyordu.
+        //  2. Türkçe harfleri koruyan ama noktalama ve boşluğu atan anahtar
+        //     ("Töz." ile "Töz").
+        //  3. Harfleri katlanmış, simgeli anahtar. "Satış fiyatı > Maliyet"
+        //     ile "Satış fiyatı < Maliyet"i ayırıyor (normalizeKey simgeleri
+        //     siliyor).
+        //  4. normalizeKey: yalnızca harf-rakam, katlanmış.
+        for (anahtar in ESLESME_KADEMELERI) {
+            val k = anahtar(text)
+            if (k.isEmpty()) continue
+            val tutan = options.indices.filter { anahtar(options[it]) == k }
+            if (tutan.size == 1) return tutan[0]
+            if (tutan.size > 1) return null
+        }
+        if (normalizeKey(text).isEmpty()) return null
+
+        // 5. Bulanık benzerlik (OCR harf hataları için).
+        var best = -1
+        var bestSim = 0f
+        options.forEachIndexed { i, o ->
+            val sim = similarity(o, text)
+            if (sim > bestSim) {
+                bestSim = sim
+                best = i
+            }
+        }
+        if (best < 0 || bestSim < OPTION_MATCH_MIN) return null
+        // En iyi adayla aynı anahtarı taşıyan bir başkası varsa belirsiz.
+        val bestKey = normalizeKey(options[best])
+        return if (options.count { normalizeKey(it) == bestKey } > 1) null else best
+    }
+
+    /**
+     * Türkçe harfleri koruyan, yalnızca harf-rakamdan oluşan anahtar.
+     *
+     * [normalizeKey] "ö"yü "o"ya indirdiği için "Töz" ile "Toz"u aynı sayıyor;
+     * tekrar denetimi için doğru (OCR noktaları düşürebiliyor), ama iki şık
+     * yalnızca bu harflerle ayrılıyorsa hangisine basılacağına bununla
+     * karar verilmeli.
+     */
+    fun distinctKey(s: String): String = lower(s).filter { it.isLetterOrDigit() }
+
+    /** Boşluk ve büyük-küçük dışında her şeyi koruyan yumuşak anahtar. */
+    private fun softKey(s: String): String =
+        fold(lower(s)).trim().replace(BOSLUKLAR, " ")
+
+    /** [softKey]'in Türkçe harfleri katlamayan hâli. */
+    private fun strictKey(s: String): String = lower(s).trim().replace(BOSLUKLAR, " ")
+
+    private val BOSLUKLAR = Regex("\\s+")
+
+    private val ESLESME_KADEMELERI: List<(String) -> String> =
+        listOf(::strictKey, ::distinctKey, ::softKey, ::normalizeKey)
+
+    /** Şık eşleşmesi için en düşük benzerlik. */
+    private const val OPTION_MATCH_MIN = 0.85f
+
+    /**
+     * "A) Platon", "B. Platon", "1) Platon" gibi baştaki şık işaretlerini atar.
+     *
+     * Rakamdan sonra gelen **nokta** bilerek işaret sayılmıyor: Türkçede
+     * sıra sayısı böyle yazılır ("1. Dönem", "2. Mahmut", "3. Selim").
+     * Eskiden sayılıyordu ve "1. Dönem / 4. Dönem / 2. Dönem / 3. Dönem"
+     * şıkları arşive dört kez "Dönem" diye yazılmıştı: şıklar birbirinden
+     * ayırt edilemiyor, doğru cevap hiçbir zaman kaydedilemiyordu. Rakam
+     * yalnızca ")" ya da "]" ile kapanıyorsa işarettir.
+     */
+    fun stripOptionPrefix(s: String): String = s.replace(OPTION_PREFIX, "").trim()
+
+    private val OPTION_PREFIX =
+        Regex("^\\s*[(\\[]?\\s*(?:[A-Da-dEeĞğ]\\s*[).\\]:\\-–]|[1-5]\\s*[)\\]])\\s+")
+
+    /**
+     * Eski kural: rakamdan sonraki noktayı da işaret sayıyordu.
+     *
+     * Yalnızca o kuralın bozduğu kayıtları tanıyıp onarmak için duruyor
+     * (bkz. `Repo.siraSayisiOnarimi`); yeni hiçbir okumada kullanılmıyor.
+     */
+    internal fun stripOptionPrefixLegacy(s: String): String =
+        s.replace(LEGACY_OPTION_PREFIX, "").trim()
+
+    private val LEGACY_OPTION_PREFIX =
+        Regex("^\\s*[(\\[]?\\s*([A-Da-dEeĞğ]|[1-5])\\s*[).\\]:\\-–]\\s+")
 
     /**
      * Metnin gerçekten bir soru cümlesi olup olmadığına karar verir.

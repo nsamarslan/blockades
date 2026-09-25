@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Refresh
@@ -39,6 +40,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.emre.bilbakalim.arsiv.data.Repo
+import com.emre.bilbakalim.arsiv.util.Exporters
 
 @Composable
 fun SettingsScreen(
@@ -50,6 +55,27 @@ fun SettingsScreen(
     val context = LocalContext.current
     val s by vm.settings.collectAsState()
     var confirmWipe by remember { mutableStateOf(false) }
+    var backupMessage by remember { mutableStateOf<String?>(null) }
+
+    // Kullanıcının seçtiği yedek dosyası. Dosya yöneticileri JSON'u bazen
+    // "application/octet-stream" diye etiketlediği için tür süzgeci koymuyoruz;
+    // yanlış dosya seçilirse zaten anlaşılır bir hata veriyoruz.
+    val pickBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        vm.importFrom(context, uri) { result ->
+            backupMessage = when (result) {
+                is Repo.ImportResult.Ok -> buildString {
+                    append(result.added).append(" yeni soru eklendi.\n")
+                    append(result.merged).append(" kayıt tamamlandı (eksik cevap, şık, kategori).\n")
+                    append(result.skipped).append(" kayıtta değişiklik yoktu.\n\n")
+                    append("Dosyadaki toplam kayıt: ").append(result.total)
+                }
+                is Repo.ImportResult.Failed -> "İçe aktarılamadı: ${result.reason}"
+            }
+        }
+    }
 
     Scaffold(topBar = { ArsivTopBar("Ayarlar", onBack = onBack) }) { pad ->
         LazyColumn(
@@ -88,9 +114,9 @@ fun SettingsScreen(
                     )
                     SettingSwitch(
                         "Otomatik oyna",
-                        "Soru ekrana gelince şıklardan biri rastgele seçilip dokunulur, " +
-                            "tur bitince \"Tekrar Oyna\" benzeri düğmeye basılır. Böylece " +
-                            "oyunun soru havuzu başında beklemeden arşivlenir.",
+                        "Soru ekrana gelince bir şıkka dokunulur, tur bitince " +
+                            "\"Tekrar Oyna\" benzeri düğmeye basılır. Böylece oyunun " +
+                            "soru havuzu başında beklemeden arşivlenir.",
                         s.autoPlay
                     ) { vm.setAutoPlay(it) }
 
@@ -102,12 +128,30 @@ fun SettingsScreen(
                         ) { vm.setAutoRestart(it) }
 
                         SettingSwitch(
-                            "Cevabı bilinen sorularda doğru şıkka bas",
-                            "Arşivde cevabı olan bir soru yeniden çıkarsa rastgele değil " +
-                                "doğru şık seçilir. Oyunda daha uzun kalırsın, tur başına " +
-                                "daha çok yeni soru görürsün. Kapalıyken seçim hep rastgeledir.",
+                            "Can bitince doldur",
+                            "\"Can Kalmadı\" penceresi çıkınca \"Doldur\"a basar " +
+                                "(4000 altın). Kapalıysa pencerede bekler.",
+                            s.autoRefillLives
+                        ) { vm.setAutoRefillLives(it) }
+
+                        SettingSwitch(
+                            "Bilinen cevabı kullan",
+                            "Soru arşivde varsa ve cevabı biliniyorsa doğru şıkka basılır; " +
+                                "bilinmiyorsa rastgele seçilir. Şıklar her turda karıştığı " +
+                                "için doğru şık sırasına göre değil metnine göre bulunur. " +
+                                "Kapatırsan seçim her zaman rastgele olur.",
                             s.autoUseKnownAnswer
                         ) { vm.setAutoUseKnownAnswer(it) }
+
+                        SettingSwitch(
+                            "Cevap bilinmiyorsa rastgele bas",
+                            "Açıkken bilmediği soruda da bir şıkka dokunur; oyun " +
+                                "akmaya devam eder ve doğru cevap oyunun tepkisinden " +
+                                "öğrenilir. Kapatırsan o soruda hiç dokunmaz, kararı " +
+                                "sana bırakır — sen cevapladığında doğrusu yine arşive " +
+                                "yazılır ama yanlış bir tahminle tur harcanmaz.",
+                            s.autoRandomWhenUnknown
+                        ) { vm.setAutoRandomWhenUnknown(it) }
 
                         Spacer(Modifier.height(8.dp))
                         Text(
@@ -115,16 +159,20 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Text(
-                            "Şıklar ekrana teker teker geliyor. Çok kısa tutarsan soru " +
-                                "dört şık tamamlanmadan cevaplanır; çok uzun tutarsan süre dolar.",
+                            "Bekleme, sorunun okunduğu andan değil şık kutularının " +
+                                "ekrana oturduğu andan başlar; yani bu süreyi kısmak " +
+                                "yarım çizilmiş bir karta dokunma riski yaratmaz. " +
+                                "600-900 ms çoğu cihazda rahat çalışıyor. Daha da " +
+                                "kısaltırsan oyunun dokunuşu yutma ihtimali artar; " +
+                                "bot o zaman yeniden deniyor ve net bir kazanç kalmıyor.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Slider(
                             value = s.autoAnswerDelayMs.toFloat(),
                             onValueChange = { vm.setAutoAnswerDelay(it.toLong()) },
-                            valueRange = 300f..3000f,
-                            steps = 26
+                            valueRange = 200f..3000f,
+                            steps = 27
                         )
                         Text(
                             "Not: otomatik mod ekrana dokunmak için erişilebilirlik " +
@@ -134,11 +182,43 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+
+                    // Bilerek otomatik blokunun dışında: ses manuel modda da
+                    // çalışıyor, oyunu kendin oynarken de "bu soru bizde yok"
+                    // bilgisini veriyor.
+                    SettingSwitch(
+                        "Cevabı bilinmeyen soruda uyarı sesi",
+                        "Telefonun bildirim sesi çalar; manuel modda da çalışır, " +
+                            "telefon sessizdeyse duyulmaz. İki ayrı uyarı var:\n" +
+                            "• Tek ötüş — soru okundu ama cevabı arşivde yok " +
+                            "(ya da kayıttaki cevap ekrandaki şıklara uymuyor).\n" +
+                            "• Çift ötüş — ekranda soru var ama şıklar okunamıyor. " +
+                            "Bu durumda soru arşivde kayıtlı bile olabilir; sorun " +
+                            "arşivde değil okumada.",
+                        s.unknownChime
+                    ) { vm.setUnknownChime(it) }
                 }
             }
 
             item {
                 SectionCard("Okuma yöntemi") {
+                    SettingSwitch(
+                        "Şık kutularını ekrandan ölç",
+                        "Şıkların kaç tane olduğunu ve nerede durduğunu yazıdan değil, " +
+                            "ekrandaki parlak hapların kendisinden bulur; her hap ayrı " +
+                            "okunur. Şıkları sayı olan sorular (\"1\", \"3\", \"4\") ancak " +
+                            "böyle okunabiliyor. Kapatırsan eski yönteme dönülür.",
+                        s.findOptionBoxes
+                    ) { vm.setFindOptionBoxes(it) }
+
+                    SettingSwitch(
+                        "Okunamayan kareyi teşhis için sakla",
+                        "Şıklar okunamadığında o anın görüntüsü ve ham OCR dökümü " +
+                            "uygulamanın klasörüne yazılır (en son 20 kare). Arıza " +
+                            "tekrarlarsa sebebi tahmin etmek yerine bakılabiliyor.",
+                        s.saveFailedFrames
+                    ) { vm.setSaveFailedFrames(it) }
+
                     SettingSwitch(
                         "Metin okunamazsa OCR'a düş",
                         "Uygulama yazıyı normal metin olarak vermiyorsa ekran görüntüsü alınıp " +
@@ -306,6 +386,45 @@ fun SettingsScreen(
             }
 
             item {
+                SectionCard("Yedekleme", Icons.Default.Backup) {
+                    Text(
+                        "Arşivi JSON olarak dışa aktarıp saklayabilir, sonra buradan " +
+                            "geri yükleyebilirsin. Uygulamayı silip yeniden kurman " +
+                            "gerektiğinde sorularını böyle taşırsın.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "İçe aktarma hiçbir şeyi silmez: aynı soru arşivde zaten varsa " +
+                            "yalnızca eksikleri tamamlanır. Aynı dosyayı iki kez almanın " +
+                            "zararı yok.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                vm.export(context, Exporters.Format.JSON) { file ->
+                                    if (file == null) {
+                                        backupMessage = "Dışa aktarılacak kayıt yok."
+                                    } else {
+                                        Exporters.share(context, file, Exporters.Format.JSON)
+                                    }
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Dışa aktar") }
+                        Button(
+                            onClick = { pickBackup.launch(arrayOf("*/*")) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("İçe aktar") }
+                    }
+                }
+            }
+
+            item {
                 SectionCard("Tehlikeli bölge") {
                     Button(
                         onClick = { confirmWipe = true },
@@ -321,6 +440,17 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    backupMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { backupMessage = null },
+            title = { Text("Yedekleme") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = { backupMessage = null }) { Text("Tamam") }
+            }
+        )
     }
 
     if (confirmWipe) {

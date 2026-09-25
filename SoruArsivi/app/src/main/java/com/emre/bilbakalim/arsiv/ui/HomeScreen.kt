@@ -62,6 +62,7 @@ fun HomeScreen(
     onOpenList: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDebug: () -> Unit,
+    onOpenMisses: () -> Unit,
     onPickApp: () -> Unit,
     onOpenDetail: (Long) -> Unit
 ) {
@@ -72,6 +73,7 @@ fun HomeScreen(
     val categories by vm.categories.collectAsState()
     val recent by vm.recent.collectAsState()
     val fastOn by vm.fastCaptureOn.collectAsState()
+    val misses by vm.misses.collectAsState()
 
     // Sistem ayarlarından dönünce durumu tazele.
     var a11yOn by remember { mutableStateOf(ArsivViewModel.accessibilityEnabled(context)) }
@@ -188,8 +190,9 @@ fun HomeScreen(
                             )
                             Text(
                                 if (settings.autoPlay)
-                                    "Uygulama şıklardan birini rastgele seçip basıyor, " +
-                                        "tur bitince \"Tekrar Oyna\"ya dokunuyor."
+                                    "Cevabı arşivde olan soruda doğru şıkka, olmayanda " +
+                                        "rastgele birine basıyor; tur bitince " +
+                                        "\"Tekrar Oyna\"ya dokunuyor."
                                 else "Oyunu sen oynuyorsun; uygulama sadece okuyup kaydediyor.",
                                 style = MaterialTheme.typography.bodySmall
                             )
@@ -306,6 +309,28 @@ fun HomeScreen(
                         Icon(Icons.AutoMirrored.Filled.List, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text("Arşivi aç")
+                    }
+                }
+            }
+
+            // ---- Bu oturumun hataları -------------------------------------
+            item {
+                SectionCard("Hatalar") {
+                    Text(
+                        if (misses.isEmpty())
+                            "Bu oturumda bildiremediğimiz soru yok."
+                        else
+                            "Bu oturumda ${misses.size} soru bildirilemedi. " +
+                                "Neye bastığımız ve doğrusunun ne olduğu listede.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(onClick = onOpenMisses, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            if (misses.isEmpty()) "Hataları aç"
+                            else "Hataları aç (${misses.size})"
+                        )
                     }
                 }
             }

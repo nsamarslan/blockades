@@ -13,6 +13,11 @@ class Prefs private constructor(context: Context) {
 
     private val sp: SharedPreferences =
         context.applicationContext.getSharedPreferences("ayarlar", Context.MODE_PRIVATE)
+            .also {
+                // Teşhis dökümü eskiden burada tutuluyordu ve her taramada
+                // yazılıyordu; artık bellekte. Diskte kalan son döküm siliniyor.
+                if (it.contains(K_DEBUG)) it.edit().remove(K_DEBUG).apply()
+            }
 
     private val _state = MutableStateFlow(read())
     val state: StateFlow<Settings> = _state
@@ -39,9 +44,33 @@ class Prefs private constructor(context: Context) {
         val questionBottom: Float = 0.55f,
         /** Şıkların aranacağı bölge. */
         val optionsTop: Float = 0.45f,
-        val optionsBottom: Float = 0.97f,
+        /**
+         * Alt sınır ekranın en dibine kadar inmiyor: orada joker düğmeleri
+         * ve bedelleri duruyor ("50/50", "x2", "200") ve bunlar şık sanılıp
+         * arşive gerçek şıkların yerine kaydediliyordu.
+         */
+        val optionsBottom: Float = 0.90f,
         /** Bu değerin altındaki ayrıştırmalar kaydedilmez. */
         val minConfidence: Float = 0.45f,
+        /**
+         * Şık kutularını ekrandan piksel olarak bul.
+         *
+         * Açıkken "kaç şık var ve nerede" sorusu OCR'a hiç sorulmaz; şıkların
+         * çizildiği parlak haplar doğrudan ölçülür ve her hap ayrı ayrı
+         * okunur. Şıkları sayı olan sorularda ML Kit tek başına duran bir
+         * rakamı çoğu zaman döndürmediği için soru hiç okunamıyordu; bu
+         * ölçüm o bağı kopartıyor. Kapatılırsa eski (metin tabanlı) yola
+         * dönülür.
+         */
+        val findOptionBoxes: Boolean = true,
+        /**
+         * Şıkları okuyamadığı kareyi ekran görüntüsü + ham OCR dökümü olarak
+         * sakla.
+         *
+         * Teşhis için: arıza tekrarladığında ML Kit'in gerçekte ne
+         * döndürdüğüne ve kutu ölçümünün neyi gördüğüne bakılabiliyor.
+         */
+        val saveFailedFrames: Boolean = true,
         /** Sadece gerçekten soru cümlesine benzeyen metinleri kaydet. */
         val requireQuestionShape: Boolean = true,
         /** Dört şıkkın tamamı görünmeden kaydetme (şıklar teker teker beliriyor). */
@@ -56,10 +85,33 @@ class Prefs private constructor(context: Context) {
         val autoAnswerDelayMs: Long = 900L,
         /** Tur bitince "Tekrar Oyna" benzeri düğmeye bas. */
         val autoRestart: Boolean = true,
-        /** Cevabı arşivde olan sorularda rastgele değil doğru şıkka bas. */
-        val autoUseKnownAnswer: Boolean = false,
-        /** Teşhis ekranı için son ham yakalama dökümü. */
-        val lastDebugDump: String = "",
+        /**
+         * Can bitince "Can Kalmadı" penceresinde "Doldur"a bas (4000 altın).
+         * Açık değilse bot o pencerede bekler; arkadaki düğmelere basmaz.
+         */
+        val autoRefillLives: Boolean = true,
+        /**
+         * Cevabı arşivde olan sorularda rastgele değil doğru şıkka bas.
+         * Kapatılırsa seçim her zaman rastgele olur.
+         */
+        val autoUseKnownAnswer: Boolean = true,
+        /**
+         * Cevabı bilinmeyen soruda otomatik mod ne yapsın?
+         *
+         * true  : rastgele bir şıkka basar (oyun akmaya devam eder, cevap
+         *         oyunun kendi tepkisinden öğrenilir).
+         * false : hiç dokunmaz, kararı sana bırakır. Havuzu doldururken
+         *         işe yarıyor: bilmediği soruyu sen cevaplayınca doğrusu
+         *         yine arşive yazılır, ama yanlış bir tahminle tur harcanmaz.
+         */
+        val autoRandomWhenUnknown: Boolean = true,
+        /**
+         * Cevabı arşivde bulunamayan soruda bildirim sesi çal.
+         *
+         * Manuel modda da çalışır: ekrana bakmadan "bu soru bizde yok"
+         * bilgisini almanın tek yolu.
+         */
+        val unknownChime: Boolean = false,
         /** Bilgilendirme ekranı gösterildi mi. */
         val onboarded: Boolean = false
     )
@@ -76,15 +128,19 @@ class Prefs private constructor(context: Context) {
         questionTop = sp.getFloat(K_Q_TOP, 0.08f),
         questionBottom = sp.getFloat(K_Q_BOTTOM, 0.55f),
         optionsTop = sp.getFloat(K_O_TOP, 0.45f),
-        optionsBottom = sp.getFloat(K_O_BOTTOM, 0.97f),
+        optionsBottom = sp.getFloat(K_O_BOTTOM, 0.90f),
         minConfidence = sp.getFloat(K_MIN_CONF, 0.45f),
+        findOptionBoxes = sp.getBoolean(K_BOXES, true),
+        saveFailedFrames = sp.getBoolean(K_FAIL_FRAMES, true),
         requireQuestionShape = sp.getBoolean(K_REQ_Q, true),
         requireFourOptions = sp.getBoolean(K_REQ_4, true),
         autoPlay = sp.getBoolean(K_AUTO_PLAY, false),
         autoAnswerDelayMs = sp.getLong(K_AUTO_DELAY, 900L),
         autoRestart = sp.getBoolean(K_AUTO_RESTART, true),
-        autoUseKnownAnswer = sp.getBoolean(K_AUTO_KNOWN, false),
-        lastDebugDump = sp.getString(K_DEBUG, "") ?: "",
+        autoRefillLives = sp.getBoolean(K_AUTO_REFILL, true),
+        autoUseKnownAnswer = sp.getBoolean(K_AUTO_KNOWN, true),
+        autoRandomWhenUnknown = sp.getBoolean(K_AUTO_RANDOM_UNKNOWN, true),
+        unknownChime = sp.getBoolean(K_UNKNOWN_CHIME, false),
         onboarded = sp.getBoolean(K_ONBOARDED, false)
     )
 
@@ -102,21 +158,25 @@ class Prefs private constructor(context: Context) {
     fun setDetectAnswer(v: Boolean) = commit { putBoolean(K_DETECT_ANSWER, v) }
     fun setSaveScreenshots(v: Boolean) = commit { putBoolean(K_SHOTS, v) }
     fun setMinConfidence(v: Float) = commit { putFloat(K_MIN_CONF, v) }
+    fun setFindOptionBoxes(v: Boolean) = commit { putBoolean(K_BOXES, v) }
+    fun setSaveFailedFrames(v: Boolean) = commit { putBoolean(K_FAIL_FRAMES, v) }
     fun setRequireQuestionShape(v: Boolean) = commit { putBoolean(K_REQ_Q, v) }
     fun setRequireFourOptions(v: Boolean) = commit { putBoolean(K_REQ_4, v) }
     fun setAutoPlay(v: Boolean) = commit { putBoolean(K_AUTO_PLAY, v) }
     fun setAutoAnswerDelay(ms: Long) = commit { putLong(K_AUTO_DELAY, ms.coerceIn(200L, 5000L)) }
     fun setAutoRestart(v: Boolean) = commit { putBoolean(K_AUTO_RESTART, v) }
+    fun setAutoRefillLives(v: Boolean) = commit { putBoolean(K_AUTO_REFILL, v) }
     fun setAutoUseKnownAnswer(v: Boolean) = commit { putBoolean(K_AUTO_KNOWN, v) }
+    fun setAutoRandomWhenUnknown(v: Boolean) = commit { putBoolean(K_AUTO_RANDOM_UNKNOWN, v) }
+    fun setUnknownChime(v: Boolean) = commit { putBoolean(K_UNKNOWN_CHIME, v) }
     fun setOnboarded(v: Boolean) = commit { putBoolean(K_ONBOARDED, v) }
-    fun setDebugDump(v: String) = commit { putString(K_DEBUG, v) }
 
     fun setRegions(qTop: Float, qBottom: Float, oTop: Float, oBottom: Float) = commit {
         putFloat(K_Q_TOP, qTop); putFloat(K_Q_BOTTOM, qBottom)
         putFloat(K_O_TOP, oTop); putFloat(K_O_BOTTOM, oBottom)
     }
 
-    fun resetRegions() = setRegions(0.08f, 0.55f, 0.45f, 0.97f)
+    fun resetRegions() = setRegions(0.08f, 0.55f, 0.45f, 0.90f)
 
     companion object {
         private const val K_TARGETS = "hedef_paketler"
@@ -132,12 +192,17 @@ class Prefs private constructor(context: Context) {
         private const val K_O_TOP = "sik_ust"
         private const val K_O_BOTTOM = "sik_alt"
         private const val K_MIN_CONF = "min_guven"
+        private const val K_BOXES = "sik_kutusu_olcumu"
+        private const val K_FAIL_FRAMES = "teshis_kareleri"
         private const val K_REQ_Q = "soru_sekli_zorunlu"
         private const val K_REQ_4 = "dort_sik_zorunlu"
         private const val K_AUTO_PLAY = "otomatik_mod"
         private const val K_AUTO_DELAY = "otomatik_gecikme"
         private const val K_AUTO_RESTART = "otomatik_yeniden_basla"
+        private const val K_AUTO_REFILL = "otomatik_can_doldur"
         private const val K_AUTO_KNOWN = "otomatik_bilinen_cevap"
+        private const val K_AUTO_RANDOM_UNKNOWN = "otomatik_bilinmeyende_rastgele"
+        private const val K_UNKNOWN_CHIME = "bilinmeyen_uyari_sesi"
         private const val K_DEBUG = "teshis_dokumu"
         private const val K_ONBOARDED = "tanitim_goruldu"
 

@@ -37,20 +37,6 @@ class AutoPlayer(
     private val log: (String) -> Unit
 ) {
 
-    /**
-     * Dokunulmuş son karşılaşmanın kimliği — aynı soruya iki kez basmamak için.
-     *
-     * Soru kimliği değil **karşılaşma** kimliği tutuluyor: aynı soru sonraki
-     * turlarda yeniden çıktığında veritabanı kimliği aynı olur, ama o yeni bir
-     * karşılaşmadır ve yeniden cevaplanması gerekir.
-     */
-    @Volatile var answeredToken = -1L
-        private set
-
-    /** Dokunmayı deneyip beceremediğimiz karşılaşma ve kaç kez denendiği. */
-    @Volatile private var attemptToken = -1L
-    @Volatile private var attempts = 0
-
     // "Tekrar oyna" düğmesi yoklaması: aynı düğmeye üst üste basıp
     // duran bir döngüye girmemek için sayaç tutuyoruz.
     @Volatile private var lastButtonAt = 0L
@@ -76,50 +62,48 @@ class AutoPlayer(
 
     /** Mod kapatıldığında ya da servis düştüğünde her şeyi unut. */
     fun reset() {
-        answeredToken = -1L
-        attemptToken = -1L
-        attempts = 0
         noteQuestion()
     }
 
     /**
-     * Şıklardan birine dokunur ve seçilen şıkkın sırasını döndürür.
+     * Hangi şıkka dokunulacağına karar verir.
      *
-     * [token] bu karşılaşmayı ayırt eder; aynı karşılaşmaya ikinci kez
-     * dokunulmaz. [knownCorrect] verilmişse (arşivde cevabı olan bir soruysa
-     * ve ayarlardan açıksa) doğru şıkka basılır, yoksa seçim rastgeledir.
-     *
-     * Dokunuş birkaç kez üst üste başarısız olursa bu karşılaşmadan vazgeçilir:
-     * süre dolunca oyun doğru cevabı zaten açıyor, uygulama da onu okuyor.
+     * [knownCorrect] verilmişse (soru arşivde var, cevabı biliniyor ve ayar
+     * açık) o şık seçilir; yoksa seçim rastgeledir.
      */
-    suspend fun answer(token: Long, rects: List<Rect>, knownCorrect: Int?): Int? {
-        if (rects.size < 2 || token == answeredToken) return null
+    fun pickOption(count: Int, knownCorrect: Int?): Int =
+        knownCorrect?.takeIf { it in 0 until count } ?: Random.nextInt(count)
 
-        if (token != attemptToken) {
-            attemptToken = token
-            attempts = 0
-        }
-        if (attempts >= MAX_TAP_ATTEMPTS) {
-            answeredToken = token
-            return null
-        }
-        attempts++
+    /**
+     * Verilen şıkka dokunur.
+     *
+     * [longPress] yeniden denemelerde açılıyor: oyun kısa dokunuşu bazen
+     * yutuyor, biraz daha uzun basmak onu aşıyor.
+     */
+    suspend fun tapOption(rects: List<Rect>, index: Int, longPress: Boolean): Boolean {
+        val r = rects.getOrNull(index) ?: return false
+        val ok = tap(r.centerX(), r.centerY(), longPress)
+        if (ok) tapCount++ else Log.w(TAG, "Şıkka dokunulamadı (${'A' + index})")
+        return ok
+    }
 
-        val index = knownCorrect?.takeIf { it in rects.indices } ?: Random.nextInt(rects.size)
-        val r = rects[index]
-        if (!tap(r.centerX(), r.centerY())) {
-            Log.w(TAG, "Şıkka dokunulamadı (${'A' + index}, deneme $attempts)")
-            if (attempts >= MAX_TAP_ATTEMPTS) answeredToken = token
-            return null
-        }
-        answeredToken = token
-        tapCount++
-        return index
+    /** [pressContinue] sonucu. */
+    sealed interface Continue {
+        /** Basıldı. */
+        data class Pressed(val label: String) : Continue
+        /** Tanıdık bir düğme yok — çağıran taraf ekranı raporlayabilir. */
+        data object NotFound : Continue
+        /**
+         * Düğme var ama az önce basıldı ya da işe yaramadığı için ara
+         * verildi. "Bulunamadı" ile karıştırılmamalı: teşhis günlüğü
+         * eskiden bu durumda da "tanınan düğme yok" yazıyor ve ekranda
+         * duran düğmeyi görmüyormuşuz gibi gösteriyordu.
+         */
+        data object Waiting : Continue
     }
 
     /**
      * Ekranda soru yokken "Tekrar Oyna" benzeri bir düğme arar ve basar.
-     * Bastığı düğmenin metnini döndürür.
      *
      * [items] ekran koordinatlarında olmalıdır (OCR kutuları önceden
      * ölçeklenmiş halde gelir). [allowDismiss] yalnızca ekran uzun süredir
@@ -130,21 +114,40 @@ class AutoPlayer(
     suspend fun pressContinue(
         items: List<TextItem>,
         screenH: Int,
-        allowDismiss: Boolean
-    ): String? {
+        allowDismiss: Boolean,
+        refillLives: Boolean
+    ): Continue {
+        val adaylar = buttonCandidates(items)
+        // "Can Kalmadı" penceresi: arkasındaki "Tekrar Oyna" soluk da olsa
+        // okunuyor ve bot ona basıyordu; oysa pencere kapanmadan hiçbir şey
+        // olmuyor. Ya "Doldur"a basılıyor ya da beklenip hiçbir şeye
+        // dokunulmuyor.
+        val target = if (adaylar.any { TurkishText.normalizeKey(it.text).contains(CAN_KALMADI) }) {
+            if (!refillLives) {
+                logOnce("otomatik: can kalmadı, doldurma kapalı (ayar) · bekliyorum")
+                return Continue.Waiting
+            }
+            findRefill(adaylar, screenH) ?: run {
+                logOnce("otomatik: can kalmadı ama \"Doldur\" okunamadı · bekliyorum")
+                return Continue.Waiting
+            }
+        } else {
+            // Önce düğmeyi arıyoruz: "bulunamadı" ile "bekliyoruz" ayrımı ancak
+            // böyle doğru kurulur.
+            findButton(adaylar, screenH, allowDismiss) ?: return Continue.NotFound
+        }
+
         val now = SystemClock.uptimeMillis()
-        if (now < blockedUntil || now - lastButtonAt < BUTTON_GAP_MS) return null
+        if (now < blockedUntil || now - lastButtonAt < BUTTON_GAP_MS) return Continue.Waiting
 
-        val target = findButton(items, screenH, allowDismiss) ?: return null
         val key = TurkishText.normalizeKey(target.text)
-
         if (key == lastButtonKey) {
             sameButtonCount++
             if (sameButtonCount > SAME_BUTTON_LIMIT) {
                 blockedUntil = now + BUTTON_COOLDOWN_MS
                 sameButtonCount = 0
                 log("otomatik: \"${target.text}\" işe yaramadı, ${BUTTON_COOLDOWN_MS / 1000} sn ara veriliyor")
-                return null
+                return Continue.Waiting
             }
         } else {
             lastButtonKey = key
@@ -152,12 +155,36 @@ class AutoPlayer(
         }
 
         lastButtonAt = now
-        if (!tap(target.bounds.centerX(), target.bounds.centerY())) return null
+        if (!tap(target.bounds.centerX(), target.bounds.centerY(), longPress = false)) {
+            return Continue.Waiting
+        }
         restartCount++
-        return target.text
+        return Continue.Pressed(target.text)
     }
 
     // -----------------------------------------------------------------------
+
+    @Volatile private var sonUyari: String? = null
+    @Volatile private var sonUyariAt = 0L
+
+    /** Aynı uyarıyı 30 saniyede bir yazar. */
+    private fun logOnce(satir: String) {
+        val now = SystemClock.uptimeMillis()
+        if (satir == sonUyari && now - sonUyariAt < BUTTON_COOLDOWN_MS) return
+        sonUyari = satir
+        sonUyariAt = now
+        log(satir)
+    }
+
+    /** "Can Kalmadı" penceresindeki "Doldur" düğmesi. */
+    private fun findRefill(adaylar: List<TextItem>, screenH: Int): TextItem? =
+        adaylar.filter { ekranda(it, screenH) }
+            .filter { TurkishText.normalizeKey(it.text) == DOLDUR }
+            .maxByOrNull { it.centerY }
+
+    private fun ekranda(item: TextItem, screenH: Int): Boolean =
+        item.bounds.bottom >= screenH * 0.05f && item.bounds.top <= screenH * 0.98f &&
+            item.bounds.width() > 0 && item.bounds.height() > 0
 
     /**
      * Ekrandaki metinler arasından basılacak düğmeyi seçer.
@@ -176,12 +203,10 @@ class AutoPlayer(
     ): TextItem? {
         var best: TextItem? = null
         var bestScore = 0
-        val minScore = if (allowDismiss) 1 else 3
+        val minScore = if (allowDismiss) 2 else 3
         for (item in items) {
             // Durum çubuğu ve gezinme çubuğu bölgesine hiç dokunma.
-            if (item.bounds.bottom < screenH * 0.05f) continue
-            if (item.bounds.top > screenH * 0.98f) continue
-            if (item.bounds.width() <= 0 || item.bounds.height() <= 0) continue
+            if (!ekranda(item, screenH)) continue
 
             val score = buttonScore(item.text)
             if (score < minScore) continue
@@ -195,15 +220,6 @@ class AutoPlayer(
         return best
     }
 
-    private fun buttonScore(text: String): Int {
-        val k = TurkishText.normalizeKey(text)
-        if (k.length < 2 || k.length > 28) return 0
-        if (PLAY_AGAIN.any { it == k }) return 4
-        if (k.length <= 20 && PLAY_AGAIN.any { k.contains(it) }) return 3
-        if (DISMISS.any { it == k }) return 2
-        if (k.length <= 14 && DISMISS.any { k.contains(it) }) return 1
-        return 0
-    }
 
     /**
      * Ekrana tek bir dokunuş gönderir.
@@ -213,7 +229,7 @@ class AutoPlayer(
      * çağrı ana iş parçacığından yapılmalı ve sonuç geri çağrısı gelmezse
      * (nadiren oluyor) sonsuza kadar beklememek için zaman aşımı gerekiyor.
      */
-    private suspend fun tap(x: Int, y: Int): Boolean {
+    private suspend fun tap(x: Int, y: Int, longPress: Boolean): Boolean {
         val (w, h) = ProjectionService.screenSize(service)
         val px = x.coerceIn(1, (w - 2).coerceAtLeast(1)).toFloat()
         val py = y.coerceIn(1, (h - 2).coerceAtLeast(1)).toFloat()
@@ -223,7 +239,12 @@ class AutoPlayer(
                 suspendCancellableCoroutine<Boolean> { cont ->
                     val path = Path().apply { moveTo(px, py) }
                     val gesture = GestureDescription.Builder()
-                        .addStroke(GestureDescription.StrokeDescription(path, 0L, TAP_DURATION_MS))
+                        .addStroke(
+                            GestureDescription.StrokeDescription(
+                                path, 0L,
+                                if (longPress) LONG_TAP_DURATION_MS else TAP_DURATION_MS
+                            )
+                        )
                         .build()
                     val callback = object : AccessibilityService.GestureResultCallback() {
                         override fun onCompleted(d: GestureDescription?) {
@@ -250,12 +271,134 @@ class AutoPlayer(
     companion object {
         private const val TAG = "SoruArsivi/Auto"
 
+        /**
+         * Düğme adayları: OCR bloğu, satırları ve kısa satırların ardışık
+         * kelime dizileri.
+         *
+         * Neden kelimeler: tur sonu ekranında alttaki düğme yazıları aynı
+         * hizada durduğu için OCR "Ana Menü" ile "Tekrar Oyna"yı tek satıra
+         * birleştiriyor. Bot o satırı "Tekrar Oyna" sanıp satırın **ortasına**,
+         * yani iki düğmenin arasına basıyordu. Kelime dizisi "Tekrar Oyna"
+         * birebir eşleştiği için satırın kendisinden yüksek puan alıyor ve
+         * dokunuş doğru düğmenin yazısına gidiyor.
+         *
+         * Kelime dizileri yalnızca kısa satırlardan çıkarılıyor: uzun bir
+         * cümlenin içindeki "devam et" gibi bir parça düğme sanılmasın.
+         */
+        internal fun buttonCandidates(items: List<TextItem>): List<TextItem> {
+            val out = ArrayList<TextItem>(items.size * 3)
+            for (item in items) {
+                out.add(item)
+                for (line in item.lines) {
+                    if (line.text != item.text) out.add(line)
+                    val words = line.lines
+                    if (words.size < 2) continue
+                    // Satır, kelimeler arasındaki geniş boşluklardan
+                    // parçalara bölünüyor: yan yana duran düğmelerin yazıları
+                    // ("Kategoriler   Ana Menü   Tekrar Oyna") bazen tek
+                    // satıra birleşiyor ve satır uzun olduğu için aşağıdaki
+                    // kelime dizileri hiç çıkarılmıyordu — tur sonunda hiçbir
+                    // şeye basılmadı. Düğmeler arasındaki boşluk kelime
+                    // arasındaki boşluktan çok daha geniş; her parça ayrı bir
+                    // düğme yazısı gibi ele alınıyor.
+                    val parcalar = bosluklaBol(
+                        IntArray(words.size) { words[it].bounds.left },
+                        IntArray(words.size) { words[it].bounds.right },
+                        IntArray(words.size) { words[it].bounds.height() }
+                    )
+                    for (parca in parcalar) {
+                        val pw = words.subList(parca.first, parca.last + 1)
+                        if (parcalar.size > 1) out.add(birlestir(pw))
+                        val metin = pw.joinToString(" ") { it.text }
+                        if (metin.length > RUN_LINE_MAX_LEN || pw.size < 2) continue
+                        for (i in pw.indices) {
+                            for (j in i until minOf(pw.size, i + RUN_MAX_WORDS)) {
+                                if (i == 0 && j == pw.lastIndex) continue // parçanın kendisi
+                                out.add(birlestir(pw.subList(i, j + 1)))
+                            }
+                        }
+                    }
+                }
+            }
+            return out
+        }
+
+        private fun birlestir(run: List<TextItem>): TextItem = TextItem(
+            run.joinToString(" ") { it.text },
+            Rect(
+                run.minOf { it.bounds.left },
+                run.minOf { it.bounds.top },
+                run.maxOf { it.bounds.right },
+                run.maxOf { it.bounds.bottom }
+            )
+        )
+
+        /**
+         * Bir satırın kelimelerini, aralarındaki boşluk kelime yüksekliğinin
+         * [PARCA_BOSLUK_ORANI] katından genişse ayrı parçalara böler.
+         * Kelimeler soldan sağa sıralı gelmeli. Dönen aralıklar kelime
+         * indisleridir. `Rect` birim testte çalışmadığı için düz sayılarla.
+         */
+        internal fun bosluklaBol(sol: IntArray, sag: IntArray, yukseklik: IntArray): List<IntRange> {
+            if (sol.isEmpty()) return emptyList()
+            val h = yukseklik.sorted()[yukseklik.size / 2].coerceAtLeast(1)
+            val out = ArrayList<IntRange>()
+            var bas = 0
+            for (i in 1 until sol.size) {
+                if (sol[i] - sag[i - 1] > h * PARCA_BOSLUK_ORANI) {
+                    out.add(bas until i)
+                    bas = i
+                }
+            }
+            out.add(bas until sol.size)
+            return out
+        }
+
+        /** Kelime yüksekliğinin bu katından geniş boşluk, iki ayrı düğme demek. */
+        private const val PARCA_BOSLUK_ORANI = 1.5f
+
+        /** Kelime dizisi çıkarılacak satırın en fazla uzunluğu (düğme yazısı gibi kısa). */
+        private const val RUN_LINE_MAX_LEN = 28
+        /** Bir kelime dizisindeki en fazla kelime. */
+        private const val RUN_MAX_WORDS = 4
+        /** "Can Kalmadı" (son harfi okunmasa da). */
+        private const val CAN_KALMADI = "cankalmad"
+        private const val DOLDUR = "doldur"
+
+        /**
+         * Bir yazının "tur başlat / pencereyi kapat" düğmesi olma puanı.
+         * Companion'da duruyor ki servis örneği olmadan test edilebilsin.
+         */
+        internal fun buttonScore(text: String): Int {
+            val k = TurkishText.normalizeKey(text)
+            if (k.length < 2 || k.length > 28) return 0
+            if (PLAY_AGAIN.any { it == k }) return 4
+            // Tek harflik OCR hatası: "Tekrar Oyna" bir dakika boyunca
+            // "Tekrar Oynd" okundu ve tur sonu ekranında hiçbir şeye
+            // basılmadı. Yalnızca uzun yazılarda: kısa yazılarda tek harf
+            // başka bir kelime demek.
+            if (PLAY_AGAIN.any { it.length >= FUZZY_MIN_LEN && TurkishText.sameOptionKey(k, it) }) return 3
+            // Parça eşleşmesi yalnızca baş ya da sonda: "En Çok Oynananlar"
+            // normalize edilince "encokoynananlar" oluyor ve içinde "oyna"
+            // geçtiği için bot lobide o listeye basıp turu geciktiriyordu.
+            // "tekraroyna", "hemenoyna", "oynamayadevam" yine eşleşiyor.
+            if (k.length <= 20 && PLAY_AGAIN.any { k.startsWith(it) || k.endsWith(it) }) return 3
+            // Kapatma yazılarında yalnızca birebir eşleşme kabul ediliyor.
+            // Parça eşleşmesi "Tümünü kapat" düğmesini de yakalıyordu: bot son
+            // kullanılanlar ekranında ona basıp oyunu tamamen kapatmıştı.
+            if (DISMISS.any { it == k }) return 2
+            return 0
+        }
+
+        /** Tek harflik hatanın hoş görüldüğü en kısa düğme yazısı. */
+        private const val FUZZY_MIN_LEN = 8
+
         /** Dokunuşun ekranda kaldığı süre. */
         private const val TAP_DURATION_MS = 80L
+        /** Yeniden denemede daha uzun basılır. */
+        private const val LONG_TAP_DURATION_MS = 160L
         /** Geri çağrı gelmezse bu kadar sonra vazgeç. */
         private const val TAP_TIMEOUT_MS = 1500L
-        /** Aynı soruya en fazla kaç kez dokunmayı dene. */
-        private const val MAX_TAP_ATTEMPTS = 3
         /** İki düğme dokunuşu arasındaki en az süre. */
         private const val BUTTON_GAP_MS = 1600L
         /** Aynı düğmeye üst üste bu kadar basıp sonuç alamazsak ara veririz. */

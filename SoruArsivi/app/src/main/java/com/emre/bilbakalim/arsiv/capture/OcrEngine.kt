@@ -37,7 +37,27 @@ object OcrEngine {
                         for (block in text.textBlocks) {
                             val b: Rect = block.boundingBox ?: continue
                             val t = block.text.trim()
-                            if (t.isNotEmpty()) out.add(TextItem(t, Rect(b), clickable = false))
+                            if (t.isEmpty()) continue
+                            // Satırlar da taşınıyor: ML Kit alt alta duran
+                            // kısa şıkları tek bloğa toplayabiliyor ve o
+                            // bloğu ancak satırlarına ayırarak şıklara
+                            // geri çevirebiliyoruz.
+                            val lines = block.lines.mapNotNull { line ->
+                                val lb = line.boundingBox ?: return@mapNotNull null
+                                val lt = line.text.trim()
+                                if (lt.isEmpty()) return@mapNotNull null
+                                // Satırın kelimeleri de taşınıyor: tur sonu
+                                // ekranında alttaki düğme yazıları ("Ana Menü",
+                                // "Tekrar Oyna") tek satıra birleşiyor ve
+                                // düğmenin yeri ancak kelimelerden bulunuyor.
+                                val kelimeler = line.elements.mapNotNull { el ->
+                                    val eb = el.boundingBox ?: return@mapNotNull null
+                                    val et = el.text.trim()
+                                    if (et.isEmpty()) null else TextItem(et, Rect(eb))
+                                }
+                                TextItem(lt, Rect(lb), clickable = false, lines = kelimeler)
+                            }
+                            out.add(TextItem(t, Rect(b), clickable = false, lines = lines))
                         }
                         if (cont.isActive) cont.resume(out)
                     }

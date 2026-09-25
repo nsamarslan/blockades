@@ -1,11 +1,15 @@
 package com.emre.bilbakalim.arsiv.ui
 
 import android.app.Application
+import android.content.ClipData
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Drawable
+import android.net.Uri
 import android.provider.Settings
+import android.widget.Toast
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.emre.bilbakalim.arsiv.capture.CaptureAccessibilityService
@@ -17,6 +21,9 @@ import com.emre.bilbakalim.arsiv.data.QuestionEntity
 import com.emre.bilbakalim.arsiv.data.Repo
 import com.emre.bilbakalim.arsiv.util.Exporters
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,22 +62,64 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     /** Son taramaların tek satırlık özeti (Teşhis ekranı). */
     val scanLog: StateFlow<List<String>> = CaptureAccessibilityService.scanLog
 
-    fun clearScanLog() { CaptureAccessibilityService.scanLog.value = emptyList() }
+    /** Arkada tutulan toplam satır sayısı — akış yalnızca pencereyi taşıyor. */
+    val scanLogTotal: StateFlow<Int> = CaptureAccessibilityService.scanLogTotal
 
-    /** Tarama geçmişini düz metin olarak paylaşır — tanı için dışarı aktarmak kolay olsun. */
+    /** Son taramanın dökümü (Teşhis ekranı, "Son tarama"). */
+    val sonTarama: StateFlow<String> = CaptureAccessibilityService.sonTarama
+
+    fun clearScanLog() = CaptureAccessibilityService.clearLog()
+
+    /** Bu oturumda bildiremediğimiz sorular (Hatalar ekranı). */
+    val misses: StateFlow<List<CaptureAccessibilityService.Miss>> =
+        CaptureAccessibilityService.misses
+
+    fun clearMisses() = CaptureAccessibilityService.clearMisses()
+
+    /**
+     * Tarama geçmişini **dosya olarak** paylaşır.
+     *
+     * Eskiden metin, paylaşım niyetinin içine (EXTRA_TEXT) konuyordu. Niyet
+     * süreçler arasında ~1 MB'lık bir tampondan geçiyor ve metin orada
+     * karakter başına iki bayt tutuyor: günlük birkaç bin satıra ulaşınca
+     * startActivity TransactionTooLargeException fırlatıyor, runCatching onu
+     * yutuyor ve düğme hiçbir şey yapmıyormuş gibi görünüyordu. "Temizle"den
+     * sonra yeniden çalışmasının sebebi günlüğün küçülmesiydi. Dosya
+     * niyetin içinden geçmiyor; yalnızca adresi geçiyor.
+     */
     fun shareScanLog(context: Context) {
-        val text = scanLog.value.joinToString("\n").ifBlank { "Kayıt yok." }
-        runCatching {
-            context.startActivity(
-                Intent.createChooser(
-                    Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_SUBJECT, "Soru Arşivi — tarama geçmişi")
-                        putExtra(Intent.EXTRA_TEXT, text)
-                    },
-                    "Tarama geçmişini paylaş"
-                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
+        viewModelScope.launch {
+            val file = withContext(Dispatchers.IO) {
+                runCatching {
+                    val text = CaptureAccessibilityService.logSnapshot()
+                        .joinToString("\n").ifBlank { "Kayıt yok." }
+                    val dir = File(context.cacheDir, "teshis").apply { mkdirs() }
+                    // Önceki paylaşımların dosyaları birikmesin.
+                    dir.listFiles()?.forEach { it.delete() }
+                    val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                    File(dir, "tarama_gecmisi_$stamp.txt").apply { writeText(text, Charsets.UTF_8) }
+                }.getOrNull()
+            }
+            val ok = file != null && runCatching {
+                val uri = FileProvider.getUriForFile(
+                    context, "${context.packageName}.fileprovider", file
+                )
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "Soru Arşivi — tarama geçmişi")
+                    // Okuma izni seçici ekranından hedef uygulamaya ancak
+                    // ClipData üzerinden geçiyor.
+                    clipData = ClipData.newRawUri(file.name, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(
+                    Intent.createChooser(send, "Tarama geçmişini paylaş")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }.isSuccess
+            // Artık sessizce yutulmuyor: paylaşım açılmadıysa bunu gör.
+            if (!ok) Toast.makeText(context, "Tarama geçmişi paylaşılamadı", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -96,12 +145,17 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setDetectAnswer(v: Boolean) = prefs.setDetectAnswer(v)
     fun setSaveScreenshots(v: Boolean) = prefs.setSaveScreenshots(v)
     fun setMinConfidence(v: Float) = prefs.setMinConfidence(v)
+    fun setFindOptionBoxes(v: Boolean) = prefs.setFindOptionBoxes(v)
+    fun setSaveFailedFrames(v: Boolean) = prefs.setSaveFailedFrames(v)
     fun setRequireQuestionShape(v: Boolean) = prefs.setRequireQuestionShape(v)
     fun setRequireFourOptions(v: Boolean) = prefs.setRequireFourOptions(v)
     fun setAutoPlay(v: Boolean) = prefs.setAutoPlay(v)
     fun setAutoAnswerDelay(ms: Long) = prefs.setAutoAnswerDelay(ms)
     fun setAutoRestart(v: Boolean) = prefs.setAutoRestart(v)
+    fun setAutoRefillLives(v: Boolean) = prefs.setAutoRefillLives(v)
     fun setAutoUseKnownAnswer(v: Boolean) = prefs.setAutoUseKnownAnswer(v)
+    fun setAutoRandomWhenUnknown(v: Boolean) = prefs.setAutoRandomWhenUnknown(v)
+    fun setUnknownChime(v: Boolean) = prefs.setUnknownChime(v)
     fun setOnboarded(v: Boolean) = prefs.setOnboarded(v)
     fun setRegions(qt: Float, qb: Float, ot: Float, ob: Float) = prefs.setRegions(qt, qb, ot, ob)
     fun resetRegions() = prefs.resetRegions()
@@ -109,6 +163,32 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun updateQuestion(q: QuestionEntity) = viewModelScope.launch { repo.updateManual(q) }
     fun deleteQuestion(id: Long) = viewModelScope.launch { repo.delete(id) }
     fun deleteAll() = viewModelScope.launch { repo.deleteAll() }
+
+    /**
+     * Seçilen dosyadaki yedeği arşive katar.
+     *
+     * Dosya kullanıcının seçtiği herhangi bir yerde olabilir (indirilenler,
+     * bulut sürücüsü, mesajlaşma uygulaması); bu yüzden yolu değil içerik
+     * çözücüyü kullanıyoruz.
+     */
+    fun importFrom(context: Context, uri: Uri, onDone: (Repo.ImportResult) -> Unit) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                val text = runCatching {
+                    context.contentResolver.openInputStream(uri)?.use {
+                        it.readBytes().toString(Charsets.UTF_8)
+                    }
+                }.getOrNull()
+                when {
+                    text == null -> Repo.ImportResult.Failed("Dosya açılamadı")
+                    text.isBlank() -> Repo.ImportResult.Failed("Dosya boş")
+                    else -> runCatching { repo.importJson(text) }
+                        .getOrElse { Repo.ImportResult.Failed(it.message ?: "Okunamadı") }
+                }
+            }
+            onDone(result)
+        }
+    }
 
     fun export(context: Context, format: Exporters.Format, onDone: (File?) -> Unit) {
         viewModelScope.launch {

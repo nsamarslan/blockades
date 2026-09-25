@@ -2,6 +2,7 @@ package com.emre.bilbakalim.arsiv.data
 
 import android.content.Context
 import android.util.Log
+import com.emre.bilbakalim.arsiv.util.Importers
 import com.emre.bilbakalim.arsiv.util.TurkishText
 import kotlinx.coroutines.flow.Flow
 
@@ -47,73 +48,87 @@ class Repo private constructor(context: Context) {
 
         dao.byFingerprint(fp)?.let { return SaveResult.Duplicate(it.id) }
 
-        // Bulanık kontrol: son 300 kayıtla karşılaştır.
+        // Bulanık kontrol: son kayıtlar + cevabı eksik olan bütün kayıtlar.
         //
-        // İki ayrı kusuru birden yakalıyoruz:
-        //  1. OCR bir iki harfi yanlış okudu  -> benzerlik ölçüsü
-        //  2. Soru ekrana yazılırken yarım yakalandı ("...kaç" / "...kaç adettir?")
-        //     ya da üstüne "Süre Bitti" gibi bir kelime bindi -> kapsama ölçüsü
-        // İkincisi olmadan aynı soru iki ayrı kayıt olarak duruyordu.
-        val newKey = TurkishText.normalizeKey(q)
-        val newOptKey = opts.map { TurkishText.normalizeKey(it) }.sorted().joinToString("|")
-        val newNeg = TurkishText.negationSignature(q)
-
-        for (old in dao.recent(300)) {
-            // Olumsuzluk farkı varsa hiçbir benzerlik ölçüsü bunları
-            // birleştiremez — zıt anlamlı iki ayrı sorudur.
-            if (TurkishText.negationSignature(old.questionText) != newNeg) continue
-
-            val oldKey = TurkishText.normalizeKey(old.questionText)
-            val sim = TurkishText.similarity(old.questionText, q)
-
-            val optionsMatch = opts.size >= 3 && old.options.size == opts.size &&
-                old.options.map { TurkishText.normalizeKey(it) }.sorted()
-                    .joinToString("|") == newOptKey
-
-            // Yarım yakalanmış okuma ("…kaç" ile "…kaç adettir?"). Bir sorunun
-            // metninin başka bir soruda geçmesi onu aynı soru yapmaz; bu yüzden
-            // hem uzunluklar birbirine çok yakın olmalı hem de ya şıklar birebir
-            // aynı olmalı ya da fark çok küçük olmalı.
-            val lengthRatio = minOf(oldKey.length, newKey.length).toFloat() /
-                maxOf(oldKey.length, newKey.length).coerceAtLeast(1)
-            val contained = oldKey.length >= 12 && newKey.length >= 12 &&
-                (newKey.contains(oldKey) || oldKey.contains(newKey)) &&
-                (optionsMatch && lengthRatio >= 0.60f || lengthRatio >= 0.85f)
-
-            // Dört şıkkın tamamı birebir aynıysa neredeyse kesinlikle aynı
-            // sorudur. Metnin başına "17. Süre Bitti" gibi bir fazlalık
-            // yapışıp üstüne bir de OCR harf hatası olunca ne kapsama ne
-            // benzerlik tutuyordu; şıklar bu ikisini de kurtarıyor.
-            // Dört şık birebir aynı olsa bile metinler birbirinden çok
-            // farklıysa ayrı sorulardır ("Hangisi X'tir?" / "Hangisi X
-            // değildir?" aynı şıkları paylaşabiliyor). Bu yüzden eşik yüksek.
-            val sameOptions = optionsMatch && sim >= 0.80f
-
-            if (contained || sameOptions || sim >= 0.92f) {
-                if (!old.edited) {
-                    // Hangi metin daha temiz? Arayüz uyarısı içermeyen kazanır;
-                    // ikisi de temizse daha uzun olanı alırız.
-                    val oldDirty = TurkishText.hasChromePhrase(old.questionText)
-                    val newDirty = TurkishText.hasChromePhrase(q)
-                    val takeNew = when {
-                        oldDirty && !newDirty -> true
-                        !oldDirty && newDirty -> false
-                        else -> q.length > old.questionText.length
+        // İkincisi olmadan arşiv birkaç yüz soruyu geçtiğinde şu oluyordu:
+        // aylar önce yakalanmış ama cevabı kaçmış bir soru yeniden çıkıyor,
+        // OCR bir harfi farklı okuduğu için parmak izi tutmuyor, eski satır
+        // da pencerenin dışında kaldığı için bulunamıyor — ikinci bir satır
+        // açılıyor ve cevap ona yazılıyor. Eski satır sonsuza kadar "cevabı
+        // eksik" olarak duruyordu. Artık o satır bulunup doldurulacak.
+        //
+        val sorgu = TekrarSorgusu(q, opts)
+        val hit = tekrarAdaylari().firstOrNull { sorgu.matches(it) }
+        val old = hit?.let { dao.byId(it.id) }
+        if (old != null) {
+            if (!old.edited) {
+                // Eski şık işareti kuralı sıra sayılarını siliyordu ("1. Dönem"
+                // → "Dönem"); o kayıtlar kendiliğinden düzelmiyordu, çünkü
+                // şıklar yalnızca liste kısaysa tamamlanıyor. Ekrandaki okuma
+                // bozulmanın tam karşılığıysa şıklar ondan yeniden yazılıyor.
+                siraSayisiOnarimi(old.options, old.correctText, opts)?.let { onarim ->
+                    val onarilmis = old.copy(
+                        optionA = opts.getOrNull(0),
+                        optionB = opts.getOrNull(1),
+                        optionC = opts.getOrNull(2),
+                        optionD = opts.getOrNull(3),
+                        correctIndex = onarim.dogru,
+                        answerSource = if (onarim.dogru == null) null else old.answerSource,
+                        fingerprint = fp
+                    )
+                    if (runCatching { dao.update(onarilmis) }.isFailure) {
+                        runCatching { dao.update(onarilmis.copy(fingerprint = old.fingerprint)) }
                     }
-                    if (takeNew && q != old.questionText) dao.replaceText(old.id, q)
-                    if (old.options.size < opts.size) {
-                        dao.update(
-                            old.copy(
-                                optionA = opts.getOrNull(0) ?: old.optionA,
-                                optionB = opts.getOrNull(1) ?: old.optionB,
-                                optionC = opts.getOrNull(2) ?: old.optionC,
-                                optionD = opts.getOrNull(3) ?: old.optionD
-                            )
-                        )
-                    }
+                    adaylariUnut()
+                    Log.i(TAG, "#${old.id} şıkları sıra sayılarıyla onarıldı")
+                    return SaveResult.Duplicate(old.id)
                 }
-                return SaveResult.Duplicate(old.id)
+                // Hangi metin daha temiz? Arayüz uyarısı içermeyen kazanır;
+                // ikisi de temizse daha uzun olanı alırız.
+                val oldDirty = TurkishText.hasChromePhrase(old.questionText)
+                val newDirty = TurkishText.hasChromePhrase(q)
+                val takeNew = when {
+                    oldDirty && !newDirty -> true
+                    !oldDirty && newDirty -> false
+                    else -> q.length > old.questionText.length
+                }
+                if (takeNew && q != old.questionText) {
+                    dao.replaceText(old.id, q)
+                    adaylariUnut()
+                }
+                if (old.options.size < opts.size) {
+                    // Eksik şıklar tamamlanıyor — ama yeni liste o anki
+                    // ekranın sırasıyla geliyor. Kayıtta zaten bir doğru
+                    // cevap varsa sırası kayabilir; bu yüzden metnini
+                    // tutup yeni listede yeniden arıyoruz. Yoksa doğru
+                    // cevap sessizce yanlış şıkkı göstermeye başlıyordu.
+                    val merged = old.copy(
+                        optionA = opts.getOrNull(0) ?: old.optionA,
+                        optionB = opts.getOrNull(1) ?: old.optionB,
+                        optionC = opts.getOrNull(2) ?: old.optionC,
+                        optionD = opts.getOrNull(3) ?: old.optionD
+                    )
+                    // Metin bulunamazsa eski SIRAYA düşmek yasak: o sıra
+                    // eski (kısa) listeye aitti, yeni listede bambaşka bir
+                    // şıkkı gösterir. Kayıtlı cevap böyle sessizce başka bir
+                    // şıkka kayıyor ve otomatik mod ondan sonra hep ona
+                    // basıyordu. Bulunamıyorsa cevabı boşaltıyoruz; bir
+                    // sonraki karşılaşmada renk okuması yeniden öğretir.
+                    val remapped = TurkishText.matchIndex(merged.options, old.correctText)
+                    if (remapped == null && old.correctIndex != null) {
+                        Log.w(TAG, "Şıklar tamamlandı ama #${old.id} cevabı " +
+                            "«${old.correctText}» yeni listede yok; cevap boşaltıldı")
+                    }
+                    dao.update(
+                        merged.copy(
+                            correctIndex = remapped,
+                            answerSource = if (remapped == null) null else merged.answerSource
+                        )
+                    )
+                    adaylariUnut()
+                }
             }
+            return SaveResult.Duplicate(old.id)
         }
 
         val entity = QuestionEntity(
@@ -130,11 +145,104 @@ class Repo private constructor(context: Context) {
         )
         val id = dao.insertIgnore(entity)
         return if (id > 0) {
+            // En yeni kayıt önde: veritabanı sorgusunun sırası da bu.
+            adaylar?.let { adaylar = listOf(TekrarAdayi(id, q, opts)) + it }
             Log.i(TAG, "Yeni soru kaydedildi #$id: ${q.take(50)}")
             SaveResult.Inserted(id)
         } else {
             SaveResult.Duplicate(dao.byFingerprint(fp)?.id ?: -1L)
         }
+    }
+
+
+    /**
+     * Tekrar denetiminin karşılaştırdığı arşiv, önceden hesaplanmış hâliyle.
+     *
+     * Her yeni okuma arşivin tamamıyla karşılaştırılıyor; eskiden bunun için
+     * her seferinde tüm satırlar veritabanından okunup metinleri yeniden
+     * işleniyordu (bkz. [TekrarAdayi]). Liste ilk ihtiyaçta kuruluyor, yeni
+     * kayıt başına ekleniyor; metni ya da şıkları değiştiren her yazımda
+     * atılıyor ve bir sonraki ihtiyaçta yeniden kuruluyor. Sıra
+     * veritabanındakiyle aynı: en yeni kayıt önde.
+     */
+    @Volatile private var adaylar: List<TekrarAdayi>? = null
+
+    private suspend fun tekrarAdaylari(): List<TekrarAdayi> =
+        adaylar ?: dao.dedupCandidates(DEDUP_POOL).map { TekrarAdayi(it) }.also { adaylar = it }
+
+    /** Metni ya da şıkları değişen bir yazımdan sonra: önbellek yeniden kurulsun. */
+    private fun adaylariUnut() {
+        adaylar = null
+    }
+
+    // --- İçe aktarma ---------------------------------------------------------
+
+    sealed interface ImportResult {
+        /** [total] dosyadaki okunabilir satır sayısı. */
+        data class Ok(
+            val total: Int,
+            val added: Int,
+            val merged: Int,
+            val skipped: Int
+        ) : ImportResult
+
+        data class Failed(val reason: String) : ImportResult
+    }
+
+    /**
+     * JSON yedeğini arşive katar.
+     *
+     * Var olanın üstüne yazmaz, ekler: aynı soru zaten arşivdeyse yalnızca
+     * eksikleri tamamlanır (bilinmeyen cevap, eksik şık, boş kategori).
+     * Sayaçlarda büyük olan alındığı için aynı dosyayı iki kez içe aktarmak
+     * hiçbir şeyi bozmaz — ikinci seferde her şey "değişmedi" diye geçer.
+     */
+    suspend fun importJson(text: String): ImportResult {
+        val rows = try {
+            Importers.parse(text)
+        } catch (e: IllegalArgumentException) {
+            return ImportResult.Failed(e.message ?: "Dosya okunamadı")
+        }
+        if (rows.isEmpty()) return ImportResult.Failed("Dosyada okunabilir soru yok")
+
+        var added = 0
+        var merged = 0
+        var skipped = 0
+
+        for (row in rows) {
+            val incoming = Importers.toEntity(row)
+            // İçe aktarma her satırda arşivi değiştirebildiği için önbelleği
+            // kullanmıyor; her satır güncel arşivle karşılaştırılıyor.
+            val existing = dao.byFingerprint(incoming.fingerprint)
+                ?: TekrarSorgusu(row.question, row.options).let { sorgu ->
+                    dao.dedupCandidates(DEDUP_POOL).firstOrNull { sorgu.matches(TekrarAdayi(it)) }
+                        ?.let { dao.byId(it.id) }
+                }
+
+            if (existing == null) {
+                if (dao.insertIgnore(incoming) > 0) added++ else skipped++
+                continue
+            }
+
+            val updated = Importers.merge(existing, row)
+            if (updated == existing) {
+                skipped++
+                continue
+            }
+            // Şıklar tamamlandıysa parmak izi de değişir; o parmak izi başka
+            // bir satırda duruyorsa tekil indeks yazmayı reddeder. Böyle bir
+            // durumda kaydı eski parmak iziyle güncelliyoruz: birleşmenin
+            // geri kalanı yine de kazanç.
+            val ok = runCatching { dao.update(updated) }.isSuccess
+            if (!ok) {
+                runCatching { dao.update(updated.copy(fingerprint = existing.fingerprint)) }
+            }
+            merged++
+        }
+
+        adaylariUnut()
+        Log.i(TAG, "İçe aktarma: $added yeni, $merged birleşti, $skipped değişmedi")
+        return ImportResult.Ok(rows.size, added, merged, skipped)
     }
 
     /**
@@ -152,29 +260,237 @@ class Repo private constructor(context: Context) {
      * Cevap açıldığında çağrılır. Doğru cevabı işler ve — süre dolmadıysa —
      * bunu bir "deneme" olarak sayıp doğru bilip bilmediğini kaydeder.
      * Böylece soru başına "kaç kez çıktı, kaçında bildin" çıkarılabiliyor.
+     *
+     * [correctIndex] **ekrandaki** sıradır, kayıttaki değil. Oyun şıkları her
+     * turda karıştırdığı için bu iki sıra birbirini tutmaz: ilk karşılaşmada
+     * 1. sırada duran şık ikinci karşılaşmada 3. sırada olabilir. Bu yüzden
+     * sırayı değil, o sıradaki **metni** alıp kayıttaki listede arıyoruz.
+     * [screenOptions] boş geçilirse (ya da eşleşme bulunamazsa) sıra olduğu
+     * gibi kullanılır; bu yalnızca ilk kayıtta güvenlidir, orada iki liste
+     * zaten aynıdır.
+     *
+     * Cevabı ilk karşılaşmada yakalayamamış olsak bile bu çağrı sonraki
+     * karşılaşmada aynı satırı doldurur; soru bir daha "cevabı eksik"
+     * görünmez.
      */
     suspend fun recordReveal(
         id: Long,
         correctIndex: Int,
+        screenOptions: List<String> = emptyList(),
         userWasRight: Boolean,
         countAsAttempt: Boolean,
-        source: String = "renk"
+        evidence: AnswerEvidence = AnswerEvidence.GREEN
     ) {
         if (correctIndex !in 0..3) return
         val row = dao.byId(id) ?: return
-        if (!row.edited) dao.setCorrect(id, correctIndex, source)
+
+        // Zayıf bir okuma, güçlü kanıtla yazılmış bir cevabın üstüne yazmasın.
+        // Kayıtta zaten cevap varsa ve elimizdeki kanıt daha zayıfsa
+        // dokunmuyoruz; sayaçlar yine de işleniyor, çünkü karşılaşma gerçek.
+        val keepStored = shouldKeepStored(row.correctIndex, row.answerSource, evidence)
+
+        // Ekrandaki doğru şıkkın METNİNİ arşivdeki listede ara.
+        //
+        // Kritik: burada sıraya düşmek yasak. Oyun şıkları her turda
+        // karıştırdığı için, ekrandaki 2. şık ile kayıttaki 2. şık aynı
+        // şey değildir. Metin eşleşmiyorsa cevap yazmıyoruz — bir sonraki
+        // karşılaşmada zaten yeniden okunacak; yanlış cevap yazıp otomatik
+        // modun her turda o yanlışa basmasına sebep olmaktan iyidir.
+        //
+        // screenOptions boş bırakılırsa (eski çağrılar) sıra olduğu gibi
+        // kullanılır; bu yalnızca ilk kayıtta güvenlidir, orada iki liste
+        // zaten aynıdır.
+        val stored: Int = if (screenOptions.isEmpty()) {
+            correctIndex
+        } else {
+            val screenText = screenOptions.getOrNull(correctIndex)
+            if (screenText.isNullOrBlank()) {
+                Log.w(TAG, "Cevap #$id yazılamadı: ekranda ${correctIndex}. şıkkın metni yok")
+                return
+            }
+            TurkishText.matchIndex(row.options, screenText) ?: run {
+                Log.w(
+                    TAG,
+                    "Cevap #$id yazılamadı: «${screenText.take(40)}» arşivde bulunamadı"
+                )
+                return
+            }
+        }
+        if (stored !in row.options.indices) {
+            Log.w(TAG, "Cevap #$id yazılamadı: şık listesi tutmuyor")
+            return
+        }
+
+        if (!row.edited && !keepStored) dao.setCorrect(id, stored, evidence.label)
         if (countAsAttempt) dao.recordAttempt(id, if (userWasRight) 1 else 0)
-        Log.i(TAG, "Cevap #$id -> ${'A' + correctIndex}, kullanıcı ${if (userWasRight) "bildi" else "bilemedi"}")
+        Log.i(TAG, "Cevap #$id -> ${'A' + stored}, kullanıcı ${if (userWasRight) "bildi" else "bilemedi"}")
     }
 
-    suspend fun updateManual(q: QuestionEntity) = dao.update(q.copy(edited = true))
-    suspend fun delete(id: Long) = dao.delete(id)
-    suspend fun deleteAll() = dao.deleteAll()
+    /**
+     * Doğru cevabı ne kadar sağlam bir gözlemden öğrendik.
+     *
+     * Buna ihtiyaç duymamızın sebebi: zayıf bir okuma, daha önce kesin
+     * gözlemle yazılmış doğru cevabın üstüne yazabiliyordu. Arşive bir kez
+     * yanlış cevap girdiğinde otomatik mod her turda ona basmaya devam
+     * ettiği için hata kendini besliyor.
+     */
+    enum class AnswerEvidence(val label: String, val strength: Int) {
+        /** Kırmızı da görüldü: yeşil olan kesinlikle doğru cevaptır. */
+        CERTAIN("renk (kesin)", 3),
+        /** Yalnızca karar yeşili görüldü, kırmızı yok. */
+        GREEN("renk", 2),
+        /** Süre doldu, ekran karardı, ayrışan şık işaretlendi. */
+        TIMEOUT("süre doldu", 2),
+        /**
+         * Dokunulan şık karar açılmadan öylece kaldı. En zayıf kanıt:
+         * "dokunduğuna göre doğrusunu biliyordun" varsayımına dayanıyor.
+         */
+        TOUCH("dokunuş", 1)
+    }
+
+
+
+    /**
+     * [siraSayisiOnarimi] sonucu: kayıt onarılacak. [dogru] doğru cevabın
+     * ekrandaki yeni sırası; bilinmiyorsa ya da belirsizse null.
+     */
+    internal data class Onarim(val dogru: Int?)
+
+    /** [knownAnswerOnScreen] sonucu. */
+    sealed interface KnownAnswer {
+        /** Arşivdeki doğru cevap ekranda bu sırada duruyor. */
+        data class OnScreen(val index: Int) : KnownAnswer
+        /**
+         * Arşivde cevap var ama ekrandaki şıkların hiçbirine benzemiyor.
+         *
+         * "Arşivde cevap yok" ile karıştırılmamalı: bu bir arıza işareti —
+         * ya OCR şıkları bozuk okumuş ya da kayıttaki metin ekrandakinden
+         * gerçekten farklı. İkisi de tek satır günlükle ayırt edilebilsin
+         * diye ayrı duruyor; yoksa bot sessizce rastgeleye düşüyor ve
+         * "neden bilinen cevaba basmadı" sorusunun izi kalmıyor.
+         */
+        data class Unmatched(val text: String?) : KnownAnswer
+        /** Soru arşivde yok ya da cevabı henüz bilinmiyor. */
+        data object None : KnownAnswer
+    }
+
+    /**
+     * Arşivdeki doğru cevabın **o anki ekrandaki** sırası.
+     *
+     * Otomatik mod bunu kullanıyor: soruyu daha önce görmüşsek rastgele
+     * seçmek yerine doğru şıkka basıyoruz. Şıklar her turda karıştığı için
+     * kayıttaki sıra doğrudan kullanılamaz — kayıttaki doğru cevabın
+     * **metnini** alıp ekrandaki listede arıyoruz.
+     */
+    suspend fun knownAnswerOnScreen(id: Long, screenOptions: List<String>): KnownAnswer {
+        val row = dao.byId(id) ?: return KnownAnswer.None
+        if (row.correctIndex == null) return KnownAnswer.None
+
+        // Kayıtlı sıra, kaydın kendi şık listesinin dışını gösteriyorsa
+        // metni de çıkaramayız; bu bozuk bir satırdır.
+        val text = row.correctText ?: return KnownAnswer.Unmatched(null)
+
+        val index = TurkishText.matchIndex(screenOptions, text)
+        return if (index != null) KnownAnswer.OnScreen(index) else KnownAnswer.Unmatched(text)
+    }
+
+    /**
+     * Bu parmak izi arşivde var mı?
+     *
+     * Yakalama tarafı bunu "ikinci okumayı beklemeye gerek var mı" sorusunu
+     * yanıtlamak için kullanıyor: parmak izi soru metni ve sıralanmış
+     * şıklardan hesaplandığı için, bozuk bir OCR okuması daha önce
+     * kaydedilmiş bir kaydın izini birebir üretemez.
+     */
+    suspend fun isKnownFingerprint(fp: String): Boolean = dao.byFingerprint(fp) != null
+
+    suspend fun updateManual(q: QuestionEntity) {
+        dao.update(q.copy(edited = true))
+        adaylariUnut()
+    }
+    suspend fun delete(id: Long) {
+        dao.delete(id)
+        adaylariUnut()
+    }
+    suspend fun deleteAll() {
+        dao.deleteAll()
+        adaylariUnut()
+    }
     suspend fun byId(id: Long) = dao.byId(id)
     suspend fun allForExport() = dao.allForExport()
 
     companion object {
         private const val TAG = "SoruArsivi/Repo"
+
+        /**
+         * Kayıttaki cevap korunsun mu, yoksa yeni gözlem üstüne yazsın mı?
+         *
+         * Zayıf bir okuma, daha sağlam bir gözlemle yazılmış cevabın üstüne
+         * yazmamalı. Arşive bir kez yanlış cevap girdiğinde otomatik mod her
+         * turda ona basmaya devam ettiği için hata kendini besliyor.
+         *
+         * Eşit güçte gözlem üstüne yazabiliyor: bozuk eski kayıtların yeni
+         * karşılaşmalarda kendiliğinden düzelmesi buna bağlı.
+         */
+        internal fun shouldKeepStored(
+            storedIndex: Int?,
+            storedSource: String?,
+            incoming: AnswerEvidence
+        ): Boolean = storedIndex != null && incoming.strength < strengthOf(storedSource)
+
+        /**
+         * Eski şık işareti kuralının bozduğu bir kaydı tanır.
+         *
+         * O kural "1. Dönem"deki "1."i şık işareti sanıp siliyordu; arşivde
+         * dört şıkkı da "Dönem" olan sorular bundan. Böyle bir kayıt yeniden
+         * okunduğunda bulanık eşleşme onu buluyor ama şıklar yalnızca liste
+         * kısaysa tamamlandığı için bozuk hâli kalıcıydı: şıklar ayırt
+         * edilemediğinden doğru cevap da hiçbir zaman yazılamıyordu.
+         *
+         * Onarım dar tutuldu: kayıttaki şıklar, ekrandaki şıkların eski
+         * kuraldan geçmiş hâliyle **birebir** aynı olmalı (sırası önemsiz)
+         * ve ekrandaki şıklar birbirinden ayırt edilebilmeli.
+         *
+         * @return onarım gerekmiyorsa null.
+         */
+        internal fun siraSayisiOnarimi(
+            stored: List<String>,
+            storedCorrect: String?,
+            fresh: List<String>
+        ): Onarim? {
+            if (stored.size != fresh.size || fresh.size < 2) return null
+            val yeni = fresh.map { TurkishText.normalizeKey(it) }
+            if (yeni.toSet().size != yeni.size) return null
+            val eski = stored.map { TurkishText.normalizeKey(it) }.sorted()
+            if (eski == yeni.sorted()) return null
+            val eskiKuralla = fresh.map {
+                TurkishText.normalizeKey(TurkishText.stripOptionPrefixLegacy(it))
+            }
+            if (eski != eskiKuralla.sorted()) return null
+
+            // Kayıttaki cevabın metni eski kuraldan geçmiş hâliyle aranıyor;
+            // "Dönem" dört şıkta birden geçtiği için orada cevap belirsiz
+            // kalır ve boşaltılır — bir sonraki renk okuması yeniden öğretir.
+            val dogru = storedCorrect?.let { TurkishText.normalizeKey(it) }
+                ?: return Onarim(null)
+            return Onarim(eskiKuralla.indices.filter { eskiKuralla[it] == dogru }.singleOrNull())
+        }
+
+        private fun strengthOf(source: String?): Int = when (source) {
+            AnswerEvidence.CERTAIN.label -> AnswerEvidence.CERTAIN.strength
+            AnswerEvidence.GREEN.label -> AnswerEvidence.GREEN.strength
+            AnswerEvidence.TIMEOUT.label -> AnswerEvidence.TIMEOUT.strength
+            AnswerEvidence.TOUCH.label -> AnswerEvidence.TOUCH.strength
+            Importers.ANSWER_SOURCE -> AnswerEvidence.TOUCH.strength
+            else -> 0
+        }
+        /**
+         * Bulanık tekrar kontrolünün karşılaştırdığı kayıt sayısı.
+         *
+         * Tüm arşivi kapsayacak kadar büyük: pencere dar olduğunda OCR'ın bir
+         * harfi yanlış okuduğu her soru ikinci bir kayıt açıyordu.
+         */
+        private const val DEDUP_POOL = 20_000
         @Volatile private var INSTANCE: Repo? = null
         fun get(context: Context): Repo =
             INSTANCE ?: synchronized(this) { INSTANCE ?: Repo(context).also { INSTANCE = it } }
