@@ -142,6 +142,8 @@ object OptionBoxFinder {
     /**
      * Taranan bant — ayarlardaki şık bölgesinden **bağımsız**.
      *
+     * Elle bir şık bölgesi seçilmişse ([Bant]) bunun yerine o kullanılıyor.
+     *
      * Sabit oranlara bağlamak bir arıza kaynağıydı: soru üç satır olunca
      * şıklar aşağı kayıyor ve dördüncü hap `optionsBottom` (%90) sınırının
      * altında kalıyordu. Geometri zaten kendi kendini doğruluyor — aynı
@@ -151,21 +153,45 @@ object OptionBoxFinder {
     private const val SCAN_TOP = 0.28f
     private const val SCAN_BOTTOM = 0.99f
 
+    /**
+     * Elle seçilmiş bandın dört yanına eklenen pay (ekran boyuna oran).
+     * Kenara dayanan kutu kırpılmış sayılıp atıldığı için, hapların hemen
+     * kenarından çizilmiş bir dikdörtgen de çalışsın.
+     */
+    private const val BANT_PAY = 0.03f
+
     // ---------------------------------------------------------------------
+
+    /**
+     * Elle seçilmiş şık bölgesi (Ekranı ayarla), ekran görüntüsünün
+     * pikselleriyle.
+     */
+    data class Bant(val sol: Int, val ust: Int, val sag: Int, val alt: Int)
 
     /**
      * Şık kutularını bulur. Bulamazsa boş liste döner ve çağıran taraf eski
      * (metin tabanlı) yola düşer — yani bu ölçüm hiçbir şeyi bozamaz, yalnızca
      * işe yaradığında devreye girer.
+     *
+     * [bant] verilmişse yalnızca o dikdörtgen (biraz payla) taranıyor ve
+     * genişlik ölçüleri ekranın değil **bandın** genişliğine göre alınıyor.
+     * Telefonda haplar ekranın ~%75'i; yatay tutulan bir tablette oyun
+     * ekranın ortasında dar bir sütunda kalıyor ve haplar ekran genişliğinin
+     * %45 eşiğine hiç ulaşmıyor. Yükseklik ölçüleri ekrana göre kalıyor.
      */
-    fun find(bitmap: Bitmap): List<Box> {
+    fun find(bitmap: Bitmap, bant: Bant? = null): List<Box> {
         val w = bitmap.width
         val h = bitmap.height
         if (w < 16 || h < 16) { lastReason = "ekran görüntüsü çok küçük"; return emptyList() }
 
-        val from = (SCAN_TOP * h).toInt().coerceIn(0, h - 2)
-        val to = (SCAN_BOTTOM * h).toInt().coerceIn(from + 2, h)
-        val step = (w / COL_SAMPLES).coerceAtLeast(1)
+        val payY = (BANT_PAY * h).toInt()
+        val payX = (BANT_PAY * w).toInt()
+        val from = (bant?.let { it.ust - payY } ?: (SCAN_TOP * h).toInt()).coerceIn(0, h - 2)
+        val to = (bant?.let { it.alt + payY } ?: (SCAN_BOTTOM * h).toInt()).coerceIn(from + 2, h)
+        val x0 = (bant?.let { it.sol - payX } ?: 0).coerceIn(0, w - 2)
+        val x1 = (bant?.let { it.sag + payX } ?: w).coerceIn(x0 + 2, w)
+        val genislik = x1 - x0
+        val step = (genislik / COL_SAMPLES).coerceAtLeast(1)
 
         val buf = IntArray(w)
         val rows = ArrayList<Row>((to - from) / ROW_STEP + 1)
@@ -173,12 +199,12 @@ object OptionBoxFinder {
         while (y < to) {
             runCatching { bitmap.getPixels(buf, 0, w, 0, y, w, 1) }
                 .onFailure { lastReason = "piksel okunamadı"; return emptyList() }
-            rows.add(measure(y, buf, w, step))
+            rows.add(measure(y, buf, x1, step, x0))
             y += ROW_STEP
         }
 
-        val hapSatiri = rows.count { isBoxRow(it, w) }
-        val hepsi = boxesOf(rows, w, h)
+        val hapSatiri = rows.count { isBoxRow(it, genislik) }
+        val hepsi = boxesOf(rows, genislik, h)
         // Tarama penceresinin kenarına dayanan kutu kırpılmış demektir;
         // yüksekliği güvenilmez olduğu için ölçüye alınmaz.
         val boxes = hepsi.filter { it.top > from && it.bottom < to }
@@ -214,13 +240,13 @@ object OptionBoxFinder {
         return if (h < 0f) h + 360f else h
     }
 
-    /** Tek bir satırın hap piksellerini sayar. */
-    internal fun measure(y: Int, px: IntArray, width: Int, step: Int): Row {
+    /** Tek bir satırın [from]..[width] aralığındaki hap piksellerini sayar. */
+    internal fun measure(y: Int, px: IntArray, width: Int, step: Int, from: Int = 0): Row {
         var hits = 0
         var seen = 0
         var left = -1
         var right = -1
-        var x = 0
+        var x = from
         while (x < width) {
             val c = px[x]
             seen++

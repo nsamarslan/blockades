@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [QuestionEntity::class], version = 2, exportSchema = true)
+@Database(entities = [QuestionEntity::class], version = 3, exportSchema = true)
 abstract class ArsivDatabase : RoomDatabase() {
 
     abstract fun questionDao(): QuestionDao
@@ -21,6 +21,17 @@ abstract class ArsivDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Sürüm 3: şıkların piksel imzaları (sembol şıkları ayırt etmek için).
+         * Yalnızca boş bir sütun ekleniyor; mevcut kayıtlar olduğu gibi kalıyor,
+         * imzalar sorular yeniden görüldükçe doluyor.
+         */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE questions ADD COLUMN optionSigs TEXT")
+            }
+        }
+
         @Volatile private var INSTANCE: ArsivDatabase? = null
 
         fun get(context: Context): ArsivDatabase =
@@ -29,7 +40,7 @@ abstract class ArsivDatabase : RoomDatabase() {
                     context.applicationContext,
                     ArsivDatabase::class.java,
                     "soru_arsivi.db"
-                ).addMigrations(MIGRATION_1_2).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { INSTANCE = it }
             }
     }
 }

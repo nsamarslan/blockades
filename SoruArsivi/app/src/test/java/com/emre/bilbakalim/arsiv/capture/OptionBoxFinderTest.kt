@@ -311,4 +311,41 @@ class OptionBoxFinderTest {
         assertEquals(1, boxes.size)
         assertTrue(boxes[0].bottom <= 1386)
     }
+
+    // --- Elle seçilmiş şık bandı (Ekranı ayarla) ---------------------------
+
+    @Test
+    fun `yatay tablette haplar ancak bandin genisligine gore bulunur`() {
+        // 2560x1600 yatay tablet: oyun ortada dar bir sütunda, haplar
+        // x1030-1530 (ekranın %20'si). Ekran genişliğine göre hap satırı
+        // sayılmıyor; seçilen bandın (x960-1600) genişliğine göre sayılıyor.
+        val rows = ArrayList<OptionBoxFinder.Row>()
+        var y = 0
+        while (y < 1600) {
+            val hap = listOf(760..860, 900..1000, 1040..1140, 1180..1280).any { y in it }
+            // Doluluk bandın örnek sütunlarına göre: hap bandın ~%80'i.
+            rows.add(if (hap) row(y, 0.78f, 1030, 1530) else row(y, 0f, -1, -1))
+            y += OptionBoxFinder.ROW_STEP
+        }
+        assertTrue(OptionBoxFinder.boxesOf(rows, screenW = 2560, screenH = 1600).isEmpty())
+        val boxes = OptionBoxFinder.boxesOf(rows, screenW = 1600 - 960, screenH = 1600)
+        assertEquals(4, OptionBoxFinder.selectRun(boxes).size)
+    }
+
+    @Test
+    fun `satir olcumu bandin disina bakmaz`() {
+        // Bandın solunda beyaz bir panel var; ölçüme girmemeli.
+        val w = 1000
+        val px = IntArray(w) { x ->
+            when (x) {
+                in 0 until 300 -> 0xFFFFFFFF.toInt()
+                in 400 until 900 -> 0xFFF8F8F8.toInt()
+                else -> 0xFF482898.toInt()
+            }
+        }
+        val r = OptionBoxFinder.measure(0, px, width = 950, step = 1, from = 350)
+        assertEquals(400, r.left)
+        assertEquals(899, r.right)
+        assertEquals(500f / 600f, r.fill, 0.01f)
+    }
 }

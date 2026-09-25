@@ -316,6 +316,13 @@ class CaptureAccessibilityService : AccessibilityService() {
         /** Arşivin doğru cevap dediği şıkkın ekrandaki sırası, biliniyorsa. */
         var knownIndex: Int? = null,
         /**
+         * Şıkların piksel imzaları, [options] ile aynı sırada (bkz.
+         * [SikImzasi]). Metni aynı okunan sembol şıklarda (∨ ∧ > hepsi «V»)
+         * hangi şıkkın doğru olduğu ancak bununla bulunuyor. [options]
+         * değiştiğinde birlikte tazelenmeli.
+         */
+        var imzalar: List<String?>? = null,
+        /**
          * Şık kutuları ne zamandan beri çizilmiş durumda (0 = henüz değil).
          *
          * Soru kartı ekrana solarak geliyor ve bu sırada şıklar yerlerine
@@ -797,11 +804,23 @@ class CaptureAccessibilityService : AccessibilityService() {
         var haplarHazir = false
         if (shot != null && s.findOptionBoxes && tekrarOkuma == null) {
             iz.adim("kutu")
-            kutular = OptionBoxFinder.find(shot)
+            // Şık bölgesi elle seçilmişse önce orada. Bulunamazsa bütün ekran:
+            // yanlış çizilmiş bir dikdörtgen yakalamayı tümden durdurmasın.
+            val bant = s.sikBolgesi?.let { b ->
+                OptionBoxFinder.Bant(
+                    (b.sol * shot.width).toInt(), (b.ust * shot.height).toInt(),
+                    (b.sag * shot.width).toInt(), (b.alt * shot.height).toInt()
+                )
+            }
+            kutular = OptionBoxFinder.find(shot, bant)
+            if (kutular.isEmpty() && bant != null) kutular = OptionBoxFinder.find(shot)
             haplarHazir = kutular.size >= 4 && !AnswerColorDetector.analyze(
                 shot, kutular.map { Rect(it.left, it.top, it.right, it.bottom) },
                 shot.width, shot.height
             ).anyTouched()
+            iz.adim("ayar_karesi")
+            ayarKaresiniSakla(shot, kutular.size >= 3)
+            iz.adim("kutu")
             if (kutular.size >= 3 && sonKutuSayisi != kutular.size) {
                 // Ölçüm her karede aynı sonucu verdiği sürece sessiz;
                 // yalnızca kutu sayısı değiştiğinde günlüğe düşüyor.
@@ -836,7 +855,9 @@ class CaptureAccessibilityService : AccessibilityService() {
             // üstteki altın/yıldız/ilerleme şeridi ve alttaki jokerler hem
             // süreyi uzatıyor hem ayrıştırıcıya gürültü taşıyordu.
             ocrItems = if (haplarHazir) {
-                val ust = (kutular.first().top - OCR_SORU_PAYI * shot.height).toInt()
+                // Soru bölgesi elle seçilmişse onun üstünden (numara dahil).
+                val ust = s.soruBolgesi?.let { ((it.ust - OCR_BOLGE_PAYI) * shot.height).toInt() }
+                    ?: (kutular.first().top - OCR_SORU_PAYI * shot.height).toInt()
                 val alt = kutular.last().bottom + (0.01f * shot.height).toInt()
                 ocrBolgesi(shot, ust, alt)
             } else OcrEngine.recognize(shot)
@@ -1067,6 +1088,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                         // Sıra değişti. Metinle kutu birlikte güncelleniyor.
                         waiting.options = p.options
                         waiting.rects = p.optionRects
+                        waiting.imzalar = if (yol == "kutu") sikImzalari(shot, p.optionRects, screenW, screenH) else null
                         // Konuma bağlı bütün durum artık geçersiz: hangi
                         // kutunun yeşil olduğu, hangisine basıldığı, kaç
                         // saniyedir beklenildiği — hepsi yeniden okunmalı.
@@ -1178,6 +1200,11 @@ class CaptureAccessibilityService : AccessibilityService() {
             shotPath = shot?.let { saveShot(it, p.key) }
         }
 
+        // Şıkların piksel imzaları: yalnızca kutu yolunda, çünkü ancak orada
+        // elimizdeki dikdörtgen hapın kendisi (metin yolunda yazının sınırı).
+        iz.adim("sik_imza")
+        val imzalar = if (yol == "kutu") sikImzalari(shot, p.optionRects, screenW, screenH) else null
+
         iz.adim("db")
         val result = repo.save(
             question = p.question,
@@ -1185,7 +1212,8 @@ class CaptureAccessibilityService : AccessibilityService() {
             category = category,
             source = source,
             confidence = p.confidence,
-            screenshotPath = shotPath
+            screenshotPath = shotPath,
+            optionSigs = imzalar
         )
         val savedId = when (result) {
             is Repo.SaveResult.Inserted -> result.id
@@ -1253,7 +1281,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 // beklemeden çalıyor.
                 val bilinen = if (result is Repo.SaveResult.Inserted) Repo.KnownAnswer.None
                 else runCatching {
-                    repo.knownAnswerOnScreen(savedId, p.options)
+                    repo.knownAnswerOnScreen(savedId, p.options, imzalar)
                 }.getOrDefault(Repo.KnownAnswer.None)
                 if (bilinen !is Repo.KnownAnswer.OnScreen) {
                     log("BİLİNMİYOR #$savedId: cevap arşivde bulunamadı")
@@ -1294,6 +1322,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 pendingAnswer = PendingAnswer(savedId, p.question, p.optionRects, p.options).apply {
                     if (shot != null) brightSince = now
                     seenSig = buKareImza
+                    this.imzalar = imzalar
                 }
             }
         }
@@ -1396,7 +1425,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             // birine dokunuyoruz. Kayıttaki sıra değil, kayıttaki doğru
             // cevabın o anki ekrandaki sırası aranıyor: şıklar karışıyor.
             val lookup = if (cur.autoUseKnownAnswer) {
-                runCatching { repo.knownAnswerOnScreen(waiting.id, waiting.options) }
+                runCatching { repo.knownAnswerOnScreen(waiting.id, waiting.options, waiting.imzalar) }
                     .getOrDefault(Repo.KnownAnswer.None)
             } else Repo.KnownAnswer.None
 
@@ -1480,7 +1509,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             // Neden rastgele seçtiğimizi de yazıyoruz: "yeni soru" ile
             // "arşivde cevap var ama bulunamadı" bambaşka iki durum.
             val neden = when (lookup) {
-                is Repo.KnownAnswer.OnScreen -> "bilinen cevap"
+                is Repo.KnownAnswer.OnScreen -> if (lookup.imzayla) "bilinen cevap (piksel imzasıyla)" else "bilinen cevap"
                 is Repo.KnownAnswer.Unmatched -> "rastgele (eşleşmedi)"
                 Repo.KnownAnswer.None ->
                     if (cur.autoUseKnownAnswer) "rastgele (cevabı bilinmiyor)" else "rastgele"
@@ -1907,6 +1936,32 @@ class CaptureAccessibilityService : AccessibilityService() {
             TurkishText.normalizeKey(a[it]) == TurkishText.normalizeKey(b[it])
         }
 
+    /**
+     * Şık haplarının içindeki yazının piksel imzaları (bkz. [SikImzasi]).
+     *
+     * Kutular ekran koordinatında geliyor, kare kendi ölçeğinde; önce
+     * çevriliyor. Hapın yuvarlak uçları (yükseklik kadar) ve üst-alt kenarı
+     * kırpılıyor, geriye yalnızca beyaz zemin ve yazı kalıyor.
+     */
+    private fun sikImzalari(shot: Bitmap?, rects: List<Rect>, screenW: Int, screenH: Int): List<String?>? {
+        if (shot == null || shot.isRecycled || rects.isEmpty()) return null
+        return rects.map { r ->
+            val k = scaleRect(r, screenW, screenH, shot.width, shot.height)
+            val payX = k.height() / 2
+            val payY = (k.height() * IMZA_DIKEY_PAY).toInt()
+            val left = (k.left + payX).coerceIn(0, shot.width - 1)
+            val right = (k.right - payX).coerceIn(left + 1, shot.width)
+            val top = (k.top + payY).coerceIn(0, shot.height - 1)
+            val bottom = (k.bottom - payY).coerceIn(top + 1, shot.height)
+            val w = right - left
+            val h = bottom - top
+            if (w < 4 || h < 4) return@map null
+            val px = IntArray(w * h)
+            if (runCatching { shot.getPixels(px, 0, w, left, top, w, h) }.isFailure) return@map null
+            SikImzasi.hesapla(px, w, h)
+        }
+    }
+
     private fun scaleRect(r: Rect, fromW: Int, fromH: Int, toW: Int, toH: Int): Rect {
         if (fromW == toW && fromH == toH) return Rect(r)
         val sx = toW.toFloat() / fromW.coerceAtLeast(1)
@@ -2156,7 +2211,8 @@ class CaptureAccessibilityService : AccessibilityService() {
             waiting.id, index, waiting.options,
             userWasRight = userWasRight,
             countAsAttempt = countAsAttempt,
-            evidence = evidence
+            evidence = evidence,
+            screenSigs = waiting.imzalar
         )
     }
 
@@ -2480,6 +2536,35 @@ class CaptureAccessibilityService : AccessibilityService() {
                     .append("] ").append(it.text.replace('\n', '|')).append('\n')
             }
             File(dir, "$ad.txt").writeText(sb.toString())
+        }
+    }
+
+    @Volatile private var ayarKaresiAt = 0L
+    @Volatile private var ayarSoruKaresiAt = 0L
+
+    /**
+     * "Ekranı ayarla" ekranının üzerinde bölge çizeceği kareyi saklar.
+     *
+     * Yeni bir cihazda soru belki hiç okunamıyor, yani kayıtlarda ekran
+     * görüntüsü de yok; ayar ekranının yine de oyunun bir karesine ihtiyacı
+     * var. Birkaç saniyede bir son kare yazılıyor. Şık kutuları görülen bir
+     * kare (soru ekranı) yarım dakika boyunca başka bir kareyle ezilmiyor:
+     * kullanıcı oyundan uygulamaya dönerken geçtiği menü karesi, ayar için
+     * işe yarayan soru karesinin yerini almasın.
+     */
+    private fun ayarKaresiniSakla(shot: Bitmap, soruKaresi: Boolean) {
+        val now = SystemClock.uptimeMillis()
+        if (now - ayarKaresiAt < AYAR_KARESI_ARALIK_MS) return
+        if (!soruKaresi && now - ayarSoruKaresiAt < AYAR_SORU_KARESI_KORUMA_MS) return
+        ayarKaresiAt = now
+        if (soruKaresi) ayarSoruKaresiAt = now
+        runCatching {
+            val f = ayarKaresi(this)
+            f.parentFile?.mkdirs()
+            val gecici = File(f.parentFile, f.name + ".yeni")
+            saveShotTo(shot, gecici)
+            // Ayar ekranı yarım yazılmış bir dosya okumasın.
+            if (!gecici.renameTo(f)) { f.delete(); gecici.renameTo(f) }
         }
     }
 
@@ -2852,6 +2937,18 @@ class CaptureAccessibilityService : AccessibilityService() {
          * Ölçülen ekranlarda numara ilk hapın 0,25-0,30 kadar üstünde.
          */
         private const val OCR_SORU_PAYI = 0.36f
+        /** Piksel imzası için hapın üst ve altından kırpılan pay (yüksekliğe oran). */
+        private const val IMZA_DIKEY_PAY = 0.12f
+        /** Elle seçilmiş soru bölgesinin üstüne OCR için eklenen pay. */
+        private const val OCR_BOLGE_PAYI = 0.02f
+        /** Ayar karesi en fazla bu sıklıkla yazılıyor. */
+        private const val AYAR_KARESI_ARALIK_MS = 4_000L
+        /** Soru karesi bu süre boyunca soru olmayan bir kareyle ezilmiyor. */
+        private const val AYAR_SORU_KARESI_KORUMA_MS = 30_000L
+
+        /** "Ekranı ayarla" ekranının kullandığı son oyun karesi. */
+        fun ayarKaresi(context: android.content.Context): File =
+            File(File(context.filesDir, "ayar"), "son_kare.jpg")
         /** Aynı "bir şık okunamadı" sonucu bu kadar gelince yer tutucuyla devam. */
         private const val OKUNAMAYAN_KABUL = 2
         /**

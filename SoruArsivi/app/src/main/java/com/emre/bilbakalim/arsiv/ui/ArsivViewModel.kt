@@ -5,6 +5,8 @@ import android.content.ClipData
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.provider.Settings
@@ -13,9 +15,11 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.emre.bilbakalim.arsiv.capture.CaptureAccessibilityService
+import com.emre.bilbakalim.arsiv.capture.OptionBoxFinder
 import com.emre.bilbakalim.arsiv.capture.ProjectionPermissionActivity
 import com.emre.bilbakalim.arsiv.capture.ProjectionService
 import com.emre.bilbakalim.arsiv.data.CategoryCount
+import com.emre.bilbakalim.arsiv.data.EkranBolgesi
 import com.emre.bilbakalim.arsiv.data.KategoriListesi
 import com.emre.bilbakalim.arsiv.data.Prefs
 import com.emre.bilbakalim.arsiv.data.QuestionEntity
@@ -37,6 +41,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class AppInfo(val paket: String, val etiket: String, val ikon: Drawable?)
+
+/** "Ekranı ayarla" ekranında üzerine bölge çizilen oyun karesi. */
+data class AyarKaresi(val bitmap: Bitmap, val kaynak: String)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ArsivViewModel(app: Application) : AndroidViewModel(app) {
@@ -184,6 +191,57 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setOnboarded(v: Boolean) = prefs.setOnboarded(v)
     fun setRegions(qt: Float, qb: Float, ot: Float, ob: Float) = prefs.setRegions(qt, qb, ot, ob)
     fun resetRegions() = prefs.resetRegions()
+    fun setEkranBolgeleri(soru: EkranBolgesi, sik: EkranBolgesi) = prefs.setEkranBolgeleri(soru, sik)
+
+    /**
+     * Ayar ekranı için oyunun bir karesi.
+     *
+     * İki kaynak var: yakalama servisinin birkaç saniyede bir sakladığı son
+     * oyun karesi ve en son kaydedilen sorunun ekran görüntüsü. Şık kutuları
+     * görülebilen (yani bir soru ekranı olan) en yeni kare seçiliyor; hiçbirinde
+     * görülmüyorsa (yeni cihazda henüz hiçbir şey okunamamış olabilir) en yenisi.
+     */
+    suspend fun ayarKaresi(context: Context): AyarKaresi? = withContext(Dispatchers.IO) {
+        val adaylar = listOfNotNull(
+            CaptureAccessibilityService.ayarKaresi(context).takeIf { it.exists() }
+                ?.let { it to "oyunun son karesi" },
+            repo.sonEkranGoruntusu()?.let { File(it) }?.takeIf { it.exists() }
+                ?.let { it to "son kaydedilen soru" }
+        ).sortedByDescending { it.first.lastModified() }
+        var ilk: AyarKaresi? = null
+        for ((dosya, kaynak) in adaylar) {
+            val bmp = runCatching { BitmapFactory.decodeFile(dosya.absolutePath) }.getOrNull() ?: continue
+            val kare = AyarKaresi(bmp, kaynak)
+            if (OptionBoxFinder.find(bmp).isNotEmpty()) return@withContext kare
+            if (ilk == null) ilk = kare
+        }
+        ilk
+    }
+
+    /** Galeriden seçilen ekran görüntüsü; bellek için ~1200 piksel genişliğe indiriliyor. */
+    suspend fun galeridenKare(context: Context, uri: Uri): AyarKaresi? = withContext(Dispatchers.IO) {
+        runCatching {
+            val boyut = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, boyut) }
+            var olcek = 1
+            while (boyut.outWidth / (olcek * 2) >= AYAR_KARESI_GENISLIK) olcek *= 2
+            val secenek = BitmapFactory.Options().apply { inSampleSize = olcek }
+            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, secenek) }
+                ?.let { AyarKaresi(it, "galeriden seçilen görüntü") }
+        }.getOrNull()
+    }
+
+    /** Seçilen şık bölgesinde şık kutusu bulunabiliyor mu (ayar ekranının denemesi)? */
+    suspend fun kutulariDene(bmp: Bitmap, sik: EkranBolgesi?): List<OptionBoxFinder.Box> =
+        withContext(Dispatchers.Default) {
+            val bant = sik?.let {
+                OptionBoxFinder.Bant(
+                    (it.sol * bmp.width).toInt(), (it.ust * bmp.height).toInt(),
+                    (it.sag * bmp.width).toInt(), (it.alt * bmp.height).toInt()
+                )
+            }
+            runCatching { OptionBoxFinder.find(bmp, bant) }.getOrDefault(emptyList())
+        }
 
     fun updateQuestion(q: QuestionEntity) = viewModelScope.launch { repo.updateManual(q) }
     fun deleteQuestion(id: Long) = viewModelScope.launch { repo.delete(id) }
@@ -247,6 +305,8 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        private const val AYAR_KARESI_GENISLIK = 1200
+
         /** Erişilebilirlik servisi sistem ayarlarında açık mı? */
         fun accessibilityEnabled(context: Context): Boolean {
             val cn = ComponentName(context, CaptureAccessibilityService::class.java)

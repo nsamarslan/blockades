@@ -59,10 +59,27 @@ data class QuestionEntity(
     /** Kullanıcı elle düzelttiyse true; otomatik güncellemeler bunu ezmez. */
     val edited: Boolean = false,
 
-    val note: String? = null
+    val note: String? = null,
+
+    /**
+     * Şıkların piksel imzaları, şıklarla aynı sırada, ";" ile ayrılmış (bkz.
+     * `capture.SikImzasi`). Metni aynı okunan sembol şıkları (∨ ∧ > hepsi
+     * «V») ancak bununla ayırt ediliyor. Boş parça: o şıkkın imzası yok.
+     * Şıkların sırası değişen her yazımda ya yenisiyle değiştirilmeli ya da
+     * silinmeli; yoksa imza başka bir şıkkı gösterir.
+     */
+    val optionSigs: String? = null
 ) {
     val options: List<String>
         get() = listOfNotNull(optionA, optionB, optionC, optionD)
+
+    /** [optionSigs] şık sırasıyla; eksik ya da bozuksa boş liste. */
+    val imzalar: List<String?>
+        get() {
+            val parcalar = optionSigs?.split(';') ?: return emptyList()
+            if (parcalar.size != options.size) return emptyList()
+            return parcalar.map { it.ifEmpty { null } }
+        }
 
     val correctText: String?
         get() = correctIndex?.let { options.getOrNull(it) }

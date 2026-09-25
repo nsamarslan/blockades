@@ -71,4 +71,37 @@ class IsaretOnarimTest {
         assertNull(Repo.ciftOkumaOnarimi(listOf("3", "2", "4", "6"), "6", listOf("6", "4", "2", "3")))
         assertNull(Repo.ciftOkumaOnarimi(listOf("3", "2", "4", "6 6"), null, listOf("6", "4", "2", "5")))
     }
+
+    // --- Metni aynı okunan şıklar (∨ ∧ > hepsi «V») ------------------------
+
+    @Test
+    fun `metni ayni siklar ekranin sirasiyla yeniden yazilir`() {
+        val eski = listOf("<", "V", "V", "V")
+        val yeni = listOf("V", "V", "V", "<")
+        // Kayıttaki "V" cevabının ekrandaki hangi «V» olduğu bilinemez.
+        assertEquals(Repo.Onarim(null), Repo.belirsizSikOnarimi(eski, "V", yeni))
+        // Tek olan şık korunur.
+        assertEquals(Repo.Onarim(3), Repo.belirsizSikOnarimi(eski, "<", yeni))
+    }
+
+    @Test
+    fun `ayirt edilebilen ya da farkli siklara dokunulmaz`() {
+        assertNull(Repo.belirsizSikOnarimi(listOf("<", ">", "V", "^"), null, listOf("V", "^", "<", ">")))
+        assertNull(Repo.belirsizSikOnarimi(listOf("<", "V", "V", "V"), null, listOf("V", "V", "p", "<")))
+    }
+
+    @Test
+    fun `sik eslesmesi yalnizca birebirse`() {
+        assertEquals(listOf(2, 0, 1), Repo.sikEslesmesi(listOf("Ay", "Mars", "Venüs"), listOf("Mars", "Venüs", "Ay")))
+        assertNull(Repo.sikEslesmesi(listOf("<", "V", "V"), listOf("V", "V", "<")))
+        assertNull(Repo.sikEslesmesi(listOf("Ay", "Mars"), listOf("Ay", "Jüpiter")))
+    }
+
+    @Test
+    fun `imza metni`() {
+        assertEquals("ab;;cd", Repo.imzaMetni(listOf("ab", null, "cd"), 3))
+        assertNull(Repo.imzaMetni(listOf(null, null), 2))
+        assertNull(Repo.imzaMetni(listOf("ab"), 2))
+        assertNull(Repo.imzaMetni(null, 2))
+    }
 }

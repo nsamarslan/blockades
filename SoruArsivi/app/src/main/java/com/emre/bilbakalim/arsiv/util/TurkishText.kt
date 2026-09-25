@@ -474,6 +474,23 @@ object TurkishText {
     }
 
     /**
+     * [text]'i birebir tutan şıklar, [matchIndex]'in kademeleriyle: bir
+     * kademede birden çok şık tutuyorsa hepsi. Metin şıkları ayırt
+     * edemediğinde (∨ ∧ > hepsi «V» okunuyor) piksel imzasına bakılacak
+     * adaylar bunlar. Hiçbir kademe tutmuyorsa boş.
+     */
+    fun matchCandidates(options: List<String>, text: String?): List<Int> {
+        if (text.isNullOrBlank()) return emptyList()
+        for (anahtar in ESLESME_KADEMELERI) {
+            val k = anahtar(text)
+            if (k.isEmpty()) continue
+            val tutan = options.indices.filter { anahtar(options[it]) == k }
+            if (tutan.isNotEmpty()) return tutan
+        }
+        return emptyList()
+    }
+
+    /**
      * Türkçe harfleri koruyan, yalnızca harf-rakamdan oluşan anahtar.
      *
      * [normalizeKey] "ö"yü "o"ya indirdiği için "Töz" ile "Toz"u aynı sayıyor;

@@ -50,7 +50,8 @@ fun SettingsScreen(
     vm: ArsivViewModel,
     onBack: () -> Unit,
     onPickApp: () -> Unit,
-    onOpenDebug: () -> Unit
+    onOpenDebug: () -> Unit,
+    onOpenEkranAyarla: () -> Unit
 ) {
     val context = LocalContext.current
     val s by vm.settings.collectAsState()
@@ -294,10 +295,22 @@ fun SettingsScreen(
                 SectionCard("Ekran bölgeleri") {
                     Text(
                         "Soru ve şıkların ekranın hangi bölümünde arandığını belirler. " +
-                            "Arayüz farklıysa buradan ayarlayabilirsin — Teşhis ekranı " +
-                            "hangi metnin nerede görüldüğünü gösterir.",
+                            "Başka bir telefonda ya da tablette sorular okunmuyorsa " +
+                            "\"Ekranı ayarla\" ile oyunun bir karesi üstünde soru ve şık " +
+                            "bölgelerini parmağınla çiz.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = onOpenEkranAyarla, modifier = Modifier.fillMaxWidth()) {
+                        Text("Ekranı ayarla")
+                    }
+                    Text(
+                        if (s.soruBolgesi != null && s.sikBolgesi != null) "Bölgeler elle seçildi."
+                        else "Bölgeler ekrandan kendiliğinden bulunuyor.",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
                     )
                     Spacer(Modifier.height(8.dp))
                     RegionSlider("Soru — üst", s.questionTop) {

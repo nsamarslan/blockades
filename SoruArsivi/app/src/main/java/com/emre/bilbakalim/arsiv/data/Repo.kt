@@ -3,6 +3,7 @@ package com.emre.bilbakalim.arsiv.data
 import android.content.Context
 import android.util.Log
 import androidx.room.withTransaction
+import com.emre.bilbakalim.arsiv.capture.SikImzasi
 import com.emre.bilbakalim.arsiv.util.Importers
 import com.emre.bilbakalim.arsiv.util.TurkishText
 import kotlinx.coroutines.flow.Flow
@@ -47,7 +48,9 @@ class Repo private constructor(context: Context) {
         category: String?,
         source: CaptureSource,
         confidence: Float,
-        screenshotPath: String?
+        screenshotPath: String?,
+        /** Şıkların piksel imzaları, [options] ile aynı sırada (bkz. [SikImzasi]). */
+        optionSigs: List<String?>? = null
     ): SaveResult {
         val q = TurkishText.cleanOcr(question)
         val opts = options.map { TurkishText.cleanOcr(TurkishText.stripOptionPrefix(it)) }
@@ -62,9 +65,10 @@ class Repo private constructor(context: Context) {
                 // Parmak izi işaretleri görmüyor ("-16" ile "16" aynı anahtar);
                 // işareti silinmiş eski kayıt tam burada bulunuyor.
                 onarimBul(mevcut, opts)?.let { (neden, onarim) ->
-                    siklariOnar(mevcut, opts, fp, onarim)
+                    siklariOnar(mevcut, opts, fp, onarim, optionSigs)
                     return SaveResult.Duplicate(mevcut.id, "şıklar $neden ile yeniden yazıldı")
                 }
+                imzalariIsle(mevcut, opts, optionSigs)?.let { return SaveResult.Duplicate(mevcut.id, it) }
                 // Bu kaydın parmak izi tam bu okumadan geliyor, ama metni
                 // sonradan başka bir sorunun metniyle değiştirilmiş olabilir:
                 // eski birleşme kuralı "cos" / "cot" / "tan" gibi soruları tek
@@ -100,9 +104,10 @@ class Repo private constructor(context: Context) {
                 // şıklar yalnızca liste kısaysa tamamlanıyor. Ekrandaki okuma
                 // bozulmanın tam karşılığıysa şıklar ondan yeniden yazılıyor.
                 onarimBul(old, opts)?.let { (neden, onarim) ->
-                    siklariOnar(old, opts, fp, onarim)
+                    siklariOnar(old, opts, fp, onarim, optionSigs)
                     return SaveResult.Duplicate(old.id, "şıklar $neden ile yeniden yazıldı", BENZERLIK)
                 }
+                imzalariIsle(old, opts, optionSigs)?.let { return SaveResult.Duplicate(old.id, it, BENZERLIK) }
                 // Hangi metin daha temiz? Arayüz uyarısı içermeyen kazanır;
                 // ikisi de temizse daha uzun olanı alırız.
                 val oldDirty = TurkishText.hasChromePhrase(old.questionText)
@@ -142,7 +147,9 @@ class Repo private constructor(context: Context) {
                     dao.update(
                         merged.copy(
                             correctIndex = remapped,
-                            answerSource = if (remapped == null) null else merged.answerSource
+                            answerSource = if (remapped == null) null else merged.answerSource,
+                            // Şıklar ekranın sırasıyla yazıldı; imzalar da.
+                            optionSigs = imzaMetni(optionSigs, merged.options.size)
                         )
                     )
                     adaylariUnut()
@@ -163,7 +170,8 @@ class Repo private constructor(context: Context) {
             source = source.name,
             confidence = confidence,
             fingerprint = fp,
-            screenshotPath = screenshotPath
+            screenshotPath = screenshotPath,
+            optionSigs = imzaMetni(optionSigs, opts.size)
         )
         val id = dao.insertIgnore(entity)
         return if (id > 0) {
@@ -176,6 +184,44 @@ class Repo private constructor(context: Context) {
         }
     }
 
+
+    /**
+     * Kaydın eksik piksel imzalarını ekrandaki okumadan doldurur.
+     *
+     * Kayıttaki şıklar ekrandakilerle metinden birebir eşleşiyorsa imzalar
+     * kaydın sırasına dizilip yazılıyor. Eşleşmiyorsa, çünkü kayıtta metni
+     * aynı şıklar var («V / V / V / <»), hangi «V»nin hangisi olduğu
+     * bilinemez: şıklar ekranın sırasıyla imzalarıyla birlikte yeniden
+     * yazılıyor ([belirsizSikOnarimi]). Döndürdüğü metin günlük için; yalnızca
+     * kayıt yeniden yazıldıysa dolu.
+     */
+    private suspend fun imzalariIsle(old: QuestionEntity, opts: List<String>, sigs: List<String?>?): String? {
+        if (sigs == null || sigs.size != opts.size || sigs.any { it == null }) return null
+        if (old.options.size != opts.size) return null
+        val mevcut = old.imzalar
+        if (mevcut.size == old.options.size && mevcut.all { it != null }) return null
+
+        sikEslesmesi(old.options, opts)?.let { sira ->
+            dao.setSigs(old.id, sira.joinToString(";") { sigs[it] ?: "" })
+            return null
+        }
+        if (old.edited) return null
+        val onarim = belirsizSikOnarimi(old.options, old.correctText, opts) ?: return null
+        dao.update(
+            old.copy(
+                optionA = opts.getOrNull(0),
+                optionB = opts.getOrNull(1),
+                optionC = opts.getOrNull(2),
+                optionD = opts.getOrNull(3),
+                correctIndex = onarim.dogru,
+                answerSource = if (onarim.dogru == null) null else old.answerSource,
+                optionSigs = imzaMetni(sigs, opts.size)
+            )
+        )
+        adaylariUnut()
+        Log.i(TAG, "#${old.id} metni aynı şıklar imzalarıyla yeniden yazıldı: $opts")
+        return "metni aynı okunan şıklar piksel imzalarıyla yeniden yazıldı"
+    }
 
     /** Eski kuralların bozduğu şıkları tanıyan onarımlardan tutan ilki. */
     private fun onarimBul(old: QuestionEntity, opts: List<String>): Pair<String, Onarim>? {
@@ -190,7 +236,13 @@ class Repo private constructor(context: Context) {
      * cevap [onarim]'daki yeni sırasıyla yazılıyor; belirsizse boşaltılıyor,
      * bir sonraki renk okuması yeniden öğretiyor.
      */
-    private suspend fun siklariOnar(old: QuestionEntity, opts: List<String>, fp: String, onarim: Onarim) {
+    private suspend fun siklariOnar(
+        old: QuestionEntity,
+        opts: List<String>,
+        fp: String,
+        onarim: Onarim,
+        sigs: List<String?>?
+    ) {
         val onarilmis = old.copy(
             optionA = opts.getOrNull(0),
             optionB = opts.getOrNull(1),
@@ -198,7 +250,10 @@ class Repo private constructor(context: Context) {
             optionD = opts.getOrNull(3),
             correctIndex = onarim.dogru,
             answerSource = if (onarim.dogru == null) null else old.answerSource,
-            fingerprint = fp
+            fingerprint = fp,
+            // Şıklar ekranın sırasıyla yeniden yazıldı; eski imzalar başka
+            // şıkları gösterirdi.
+            optionSigs = imzaMetni(sigs, opts.size)
         )
         // Parmak izi başka bir satırda duruyorsa tekil indeks yazmayı
         // reddeder; o zaman eski parmak iziyle.
@@ -282,7 +337,10 @@ class Repo private constructor(context: Context) {
                 continue
             }
 
-            val updated = Importers.merge(existing, row)
+            val updated = Importers.merge(existing, row).let {
+                // Şıklar değiştiyse eski piksel imzaları başka şıkları gösterir.
+                if (it.options != existing.options) it.copy(optionSigs = null) else it
+            }
             if (updated == existing) {
                 skipped++
                 continue
@@ -337,7 +395,9 @@ class Repo private constructor(context: Context) {
         screenOptions: List<String> = emptyList(),
         userWasRight: Boolean,
         countAsAttempt: Boolean,
-        evidence: AnswerEvidence = AnswerEvidence.GREEN
+        evidence: AnswerEvidence = AnswerEvidence.GREEN,
+        /** Ekrandaki şıkların piksel imzaları, [screenOptions] ile aynı sırada. */
+        screenSigs: List<String?>? = null
     ) {
         if (correctIndex !in 0..3) return
         val row = dao.byId(id) ?: return
@@ -366,7 +426,15 @@ class Repo private constructor(context: Context) {
                 Log.w(TAG, "Cevap #$id yazılamadı: ekranda ${correctIndex}. şıkkın metni yok")
                 return
             }
-            TurkishText.matchIndex(row.options, screenText) ?: run {
+            TurkishText.matchIndex(row.options, screenText)
+                // Metni aynı birden çok şık var: ekranda yeşile dönen şıkkın
+                // imzası kayıttakilerden hangisine benziyor?
+                ?: SikImzasi.enYakin(
+                    screenSigs?.getOrNull(correctIndex),
+                    TurkishText.matchCandidates(row.options, screenText),
+                    row.imzalar
+                )
+                ?: run {
                 Log.w(
                     TAG,
                     "Cevap #$id yazılamadı: «${screenText.take(40)}» arşivde bulunamadı"
@@ -417,7 +485,7 @@ class Repo private constructor(context: Context) {
     /** [knownAnswerOnScreen] sonucu. */
     sealed interface KnownAnswer {
         /** Arşivdeki doğru cevap ekranda bu sırada duruyor. */
-        data class OnScreen(val index: Int) : KnownAnswer
+        data class OnScreen(val index: Int, val imzayla: Boolean = false) : KnownAnswer
         /**
          * Arşivde cevap var ama ekrandaki şıkların hiçbirine benzemiyor.
          *
@@ -440,16 +508,28 @@ class Repo private constructor(context: Context) {
      * kayıttaki sıra doğrudan kullanılamaz — kayıttaki doğru cevabın
      * **metnini** alıp ekrandaki listede arıyoruz.
      */
-    suspend fun knownAnswerOnScreen(id: Long, screenOptions: List<String>): KnownAnswer {
+    suspend fun knownAnswerOnScreen(
+        id: Long,
+        screenOptions: List<String>,
+        /** Ekrandaki şıkların piksel imzaları, [screenOptions] ile aynı sırada. */
+        screenSigs: List<String?>? = null
+    ): KnownAnswer {
         val row = dao.byId(id) ?: return KnownAnswer.None
-        if (row.correctIndex == null) return KnownAnswer.None
+        val dogru = row.correctIndex ?: return KnownAnswer.None
 
         // Kayıtlı sıra, kaydın kendi şık listesinin dışını gösteriyorsa
         // metni de çıkaramayız; bu bozuk bir satırdır.
         val text = row.correctText ?: return KnownAnswer.Unmatched(null)
 
-        val index = TurkishText.matchIndex(screenOptions, text)
-        return if (index != null) KnownAnswer.OnScreen(index) else KnownAnswer.Unmatched(text)
+        TurkishText.matchIndex(screenOptions, text)?.let { return KnownAnswer.OnScreen(it) }
+        // Metin ayırt edemiyor (ekranda üç «V»): kaydedilmiş doğru şıkkın
+        // imzası ekrandaki adaylardan hangisine benziyor?
+        SikImzasi.enYakin(
+            row.imzalar.getOrNull(dogru),
+            TurkishText.matchCandidates(screenOptions, text),
+            screenSigs.orEmpty()
+        )?.let { return KnownAnswer.OnScreen(it, imzayla = true) }
+        return KnownAnswer.Unmatched(text)
     }
 
     /**
@@ -475,6 +555,7 @@ class Repo private constructor(context: Context) {
         adaylariUnut()
     }
     suspend fun byId(id: Long) = dao.byId(id)
+    suspend fun sonEkranGoruntusu(): String? = dao.sonEkranGoruntusu()
     suspend fun allForExport() = dao.allForExport()
 
     /**
@@ -609,6 +690,42 @@ class Repo private constructor(context: Context) {
             val dogru = storedCorrect?.let { tekrarSil(TurkishText.lower(it.trim())) } ?: return Onarim(null)
             return Onarim(yeni.indices.filter { yeni[it] == dogru }.singleOrNull())
         }
+
+        /**
+         * Kayıttaki her şıkkın ekrandaki sırası; bir şık bile metinden tek
+         * bir karşılık bulamıyorsa null.
+         */
+        internal fun sikEslesmesi(stored: List<String>, fresh: List<String>): List<Int>? {
+            if (stored.size != fresh.size) return null
+            val sira = stored.map { TurkishText.matchIndex(fresh, it) ?: return null }
+            return if (sira.toSet().size == sira.size) sira else null
+        }
+
+        /**
+         * Kayıtta metni aynı şıklar var («V / V / V / <»): kayıttaki
+         * «V»lerden hangisinin ekrandaki hangi «V» olduğu bilinemiyor, yani
+         * kayıttaki cevap da kullanılamıyor. Ekrandaki okuma kayıttaki
+         * şıklarla aynı metinleri taşıyorsa (sırası önemsiz) şıklar ekranın
+         * sırasıyla, bu kez imzalarıyla yeniden yazılır. Doğru cevap yalnızca
+         * metni tek olan bir şıksa korunuyor.
+         */
+        internal fun belirsizSikOnarimi(
+            stored: List<String>,
+            storedCorrect: String?,
+            fresh: List<String>
+        ): Onarim? {
+            if (stored.size != fresh.size || fresh.size < 2) return null
+            val eski = stored.map { TurkishText.lower(it.trim()) }
+            if (eski.toSet().size == eski.size) return null
+            val yeni = fresh.map { TurkishText.lower(it.trim()) }
+            if (eski.sorted() != yeni.sorted()) return null
+            val dogru = storedCorrect?.let { TurkishText.lower(it.trim()) } ?: return Onarim(null)
+            return Onarim(yeni.indices.filter { yeni[it] == dogru }.singleOrNull())
+        }
+
+        /** İmzaları kayda yazılacak biçime getirir; hiç imza yoksa null. */
+        internal fun imzaMetni(sigs: List<String?>?, n: Int): String? =
+            sigs?.takeIf { it.size == n && it.any { s -> s != null } }?.joinToString(";") { it ?: "" }
 
         /** "6 6" → "6"; harf içeren ya da tekrarlamayan metne dokunmaz. */
         private fun tekrarSil(s: String): String {

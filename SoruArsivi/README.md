@@ -533,12 +533,14 @@ app/src/main/java/com/emre/bilbakalim/arsiv/
 │   ├── ArsivDatabase.kt         Room veritabanı
 │   ├── Prefs.kt                 ayarlar
 │   ├── KategoriListesi.kt       kategori listesi: ekleme, ad değiştirme, eski adlar
+│   ├── EkranBolgesi.kt          elle seçilen soru / şık bölgesi (oranlarla)
 │   └── Repo.kt                  kaydetme + tekrar eleme mantığı
 ├── capture/
 │   ├── CaptureAccessibilityService.kt   motor: olay → tarama → kayıt
 │   ├── NodeHarvester.kt         erişilebilirlik ağacından metin toplama
 │   ├── OcrEngine.kt             ML Kit çevrimdışı metin tanıma
 │   ├── OptionBoxFinder.kt       şık kutularını ekrandan piksel olarak bulma
+│   ├── SikImzasi.kt             şık yazısının piksel imzası (sembol şıklar)
 │   ├── QuestionParser.kt        metin yığınından soru + şık çıkarma
 │   ├── AnswerColorDetector.kt   yeşile dönen şıkkı bulma
 │   ├── AutoPlayer.kt            otomatik mod: şıkka ve "Tekrar Oyna"ya dokunma
@@ -1281,15 +1283,77 @@ Aynı metin artık bir kez alınıyor: harfsizse her zaman, harfliyse yalnızca
 iki parça üst üste biniyorsa (yan yana duran gerçek bir tekrar korunuyor).
 Böyle kaydedilmiş eski şıklar, ekranda tek okununca onarılıyor.
 
-### Hâlâ ayırt edilemeyen: sembol şıklar
+### Sembol şıklar: piksel imzası (3.9)
 
 "Ve" / "veya" bağlacı, "büyüktür" gibi sorularda şıklar ∨ ∧ > < sembolleri.
-ML Kit üçünü de «V» okuyor; kayıtta «V / V / V / <» duruyor. Metin aynı
-olduğu için hangisinin doğru olduğu kaydedilemiyor, bot bu sorularda
-rastgele basıyor. Bunu çözmek için şıkkın metni değil **görüntüsü**
-karşılaştırılmalı (her şık kutusundaki yazının küçük bir piksel imzası
-saklanıp metin ayırt edemediğinde ona bakılması). Veritabanına yeni sütun
-gerektiriyor.
+ML Kit üçünü de «V» okuyor; kayıtta «V / V / V / <» duruyordu. Metin aynı
+olduğu için hangisinin doğru olduğu kaydedilemiyor, bot bu sorularda hep
+rastgele basıyordu. "‰" ile "8" de aynı durumda.
+
+Artık her şıkkın **görüntüsü** de saklanıyor: hapın içindeki koyu yazı
+piksellerinin sınırlayıcı kutusu 16x16 ızgaraya bölünüp 256 bitlik bir imza
+çıkarılıyor (`capture/SikImzasi.kt`). Yazının boyundan ve ekran
+çözünürlüğünden bağımsız. Yalnızca metin şıkları ayırt edemediğinde
+kullanılıyor:
+
+* **Bilinen cevaba basarken** kayıttaki doğru şıkkın imzası ekrandaki
+  aynı metinli şıklarla karşılaştırılıyor (günlükte `bilinen cevap (piksel
+  imzasıyla)`).
+* **Cevabı kaydederken** yeşile dönen şıkkın imzası kayıttakilerle.
+
+Karar yalnızca açık farkla veriliyor (en yakın 56 bitten az, ikinciden en az
+24 bit ayrık); verilemezse eskisi gibi rastgele. Gerçek ekran
+görüntülerinde ölçüldü: kare %45-70 küçültülüp JPEG'le bozulduğunda bile
+aynı şık 10-41 bit, farklı şıklar en az 58 bit; "<" ">" "v" "^" birbirinden
+101-160 bit. Sekiz denemenin sekizinde doğru şık seçildi.
+
+Veritabanına tek bir sütun eklendi (sürüm 3, `optionSigs`); mevcut kayıtlar
+olduğu gibi kalıyor, imzalar sorular yeniden görüldükçe doluyor. Kayıtta
+metni aynı şıklar varsa hangi «V»nin hangisi olduğu bilinemeyeceği için
+şıklar ekranın sırasıyla imzalarıyla yeniden yazılıyor ve belirsiz cevap
+boşaltılıyor (`ONARILDI … piksel imzalarıyla yeniden yazıldı`); sonraki
+karşılaşmada doğrusu öğreniliyor.
+
+## Ekranı ayarla: başka telefon ve tablet (3.9)
+
+Ayarlar → *Ekran bölgeleri* → **Ekranı ayarla**. Oyunun bir karesi üstünde
+iki dikdörtgen çizilir:
+
+* **Soru** (sarı): soru numarası kutusunun (**"1."**) üst kenarından beyaz
+  soru kartının alt kenarına kadar, kartın tam genişliğinde. **Numara dahil
+  olmalı**: bot soru numarasını "bu hâlâ aynı soru" kilidi ve tur başı için
+  okuyor. Aynı satırdaki şişe simgesi ve geri sayım zararsız. Üstteki
+  yıldız / altın / 1-7 şeridi dışarıda kalsın.
+* **Şıklar** (yeşil): ilk şıkkın üst kenarından son şıkkın alt kenarına,
+  hapların tam genişliğinde. Alttaki jokerler (50/50, x2, değiştir) ve
+  bedelleri dışarıda kalsın; yoksa "200 / 200 / 100" şık sanılabiliyor.
+
+Şık dikdörtgeni çizilince kutu ölçümü o bölgede hemen deneniyor ve bulunan
+kutular mavi çizgiyle gösteriliyor ("4 şık kutusu bulundu ✓"). Bölge hiç
+seçilmemişse ölçümün kendi bulduğu yer öneri olarak geliyor.
+
+Kare nereden geliyor: yakalama servisi oyun açıkken birkaç saniyede bir son
+kareyi saklıyor (soru ekranı yarım dakika boyunca başka bir kareyle
+ezilmiyor). Oyunda bir soru ekrandayken birkaç saniye bekleyip uygulamaya
+dönmek yeter. Olmazsa oyunda ekran görüntüsü alıp **Galeriden** seçilebilir.
+
+Seçilen bölgeler ne değiştiriyor:
+
+* Şık kutusu ölçümü yalnızca şık bölgesinde yapılıyor ve genişlik ölçüleri
+  ekranın değil **bölgenin** genişliğine göre alınıyor. Telefonda haplar
+  ekranın ~%75'i; yatay tutulan bir tablette oyun ortada dar bir sütunda
+  kalıyor ve haplar ekran genişliğinin %45 eşiğine hiç ulaşmıyordu. Bölgede
+  bulunamazsa yine bütün ekran taranıyor.
+* Soru metni ve soru numarası yalnızca soru bölgesinde aranıyor; OCR soru
+  bölgesinin üstünden başlıyor.
+* Eski kaydırıcıların dikey sınırları da bölgelerden yazılıyor.
+
+**Otomatiğe dön** hepsini varsayılana döndürür.
+
+Portre kullanımda gerek olmayabilir: gönderilen tablet (1848x2960) ve
+telefon (1080x2340) ekran görüntülerinde şık kutuları ayar yapmadan da
+bulundu. Yatay tablet, farklı bir oyun teması ya da okunmayan sorular için
+var.
 
 ### Eksi işaretli şıklar (3.7)
 

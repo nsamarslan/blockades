@@ -57,6 +57,13 @@ class Prefs private constructor(context: Context) {
          * arşive gerçek şıkların yerine kaydediliyordu.
          */
         val optionsBottom: Float = 0.90f,
+        /**
+         * "Ekranı ayarla" ile elle seçilen bölgeler; null ise ekrandan
+         * kendiliğinden bulunuyor. Soru bölgesi soru numarasını da kapsıyor
+         * (numara "hâlâ aynı soru" kilidi için okunuyor).
+         */
+        val soruBolgesi: EkranBolgesi? = null,
+        val sikBolgesi: EkranBolgesi? = null,
         /** Bu değerin altındaki ayrıştırmalar kaydedilmez. */
         val minConfidence: Float = 0.45f,
         /**
@@ -153,6 +160,8 @@ class Prefs private constructor(context: Context) {
         questionBottom = sp.getFloat(K_Q_BOTTOM, 0.55f),
         optionsTop = sp.getFloat(K_O_TOP, 0.45f),
         optionsBottom = sp.getFloat(K_O_BOTTOM, 0.90f),
+        soruBolgesi = EkranBolgesi.oku(sp.getString(K_SORU_BOLGE, null)),
+        sikBolgesi = EkranBolgesi.oku(sp.getString(K_SIK_BOLGE, null)),
         minConfidence = sp.getFloat(K_MIN_CONF, 0.45f),
         findOptionBoxes = sp.getBoolean(K_BOXES, true),
         saveFailedFrames = sp.getBoolean(K_FAIL_FRAMES, true),
@@ -200,7 +209,27 @@ class Prefs private constructor(context: Context) {
         putFloat(K_O_TOP, oTop); putFloat(K_O_BOTTOM, oBottom)
     }
 
-    fun resetRegions() = setRegions(0.08f, 0.55f, 0.45f, 0.90f)
+    fun resetRegions() = commit {
+        putFloat(K_Q_TOP, 0.08f); putFloat(K_Q_BOTTOM, 0.55f)
+        putFloat(K_O_TOP, 0.45f); putFloat(K_O_BOTTOM, 0.90f)
+        remove(K_SORU_BOLGE); remove(K_SIK_BOLGE)
+    }
+
+    /**
+     * Elle seçilen soru ve şık bölgelerini kaydeder.
+     *
+     * Dikey sınırlar eski kaydırıcıların ayarlarına da yazılıyor (biraz
+     * payla): ayrıştırıcının metin yolu ve yakın plan okuma bunlara bakıyor.
+     * Yatay sınırlar ve şık kutusu ölçümünün bandı doğrudan bölgelerden.
+     */
+    fun setEkranBolgeleri(soru: EkranBolgesi, sik: EkranBolgesi) = commit {
+        putString(K_SORU_BOLGE, soru.metin())
+        putString(K_SIK_BOLGE, sik.metin())
+        putFloat(K_Q_TOP, (soru.ust - BOLGE_PAYI).coerceAtLeast(0f))
+        putFloat(K_Q_BOTTOM, (soru.alt + BOLGE_PAYI).coerceAtMost(1f))
+        putFloat(K_O_TOP, (sik.ust - BOLGE_PAYI).coerceAtLeast(0f))
+        putFloat(K_O_BOTTOM, (sik.alt + BOLGE_PAYI).coerceAtMost(1f))
+    }
 
     /**
      * Listeye kategori ekler. Aynı ad (belki farklı yazılışla) zaten varsa
@@ -254,6 +283,10 @@ class Prefs private constructor(context: Context) {
         private const val K_Q_BOTTOM = "soru_alt"
         private const val K_O_TOP = "sik_ust"
         private const val K_O_BOTTOM = "sik_alt"
+        private const val K_SORU_BOLGE = "bolge_soru"
+        private const val K_SIK_BOLGE = "bolge_sik"
+        /** Elle seçilen bölgenin dikey sınırlarına eklenen pay (ekran boyuna oran). */
+        private const val BOLGE_PAYI = 0.01f
         private const val K_MIN_CONF = "min_guven"
         private const val K_BOXES = "sik_kutusu_olcumu"
         private const val K_FAIL_FRAMES = "teshis_kareleri"

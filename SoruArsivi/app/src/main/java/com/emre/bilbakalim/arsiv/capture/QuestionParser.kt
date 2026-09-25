@@ -22,6 +22,9 @@ object QuestionParser {
     /** Soru metninin üstünde en fazla bu kadar uzakta olabilir. */
     private const val NO_MAX_GAP = 0.22f
 
+    /** Elle seçilen bölgenin yan kenarlarına eklenen pay (ekran genişliğine oran). */
+    private const val BOLGE_YATAY_PAY = 0.02f
+
     /** Okunamayan şıkkın yerine yazılan metin (bkz. `parse(tekOkunamayanaIzin)`). */
     const val OKUNAMAYAN_SIK = "(okunamadı)"
 
@@ -196,6 +199,10 @@ object QuestionParser {
         val optBottom = (s.optionsBottom * screenH).toInt()
         val qTop = (s.questionTop * screenH).toInt()
         val qBottom = (s.questionBottom * screenH).toInt()
+        // Elle seçilmiş bölgelerin yatay sınırları (Ekranı ayarla). Seçilmemişse
+        // ekranın tamamı: telefonda oyun ekranı zaten kaplıyor.
+        val soruX = s.soruBolgesi?.yatay(screenW, BOLGE_YATAY_PAY) ?: 0..screenW
+        val sikX = s.sikBolgesi?.yatay(screenW, BOLGE_YATAY_PAY) ?: 0..screenW
 
         // ML Kit alt alta duran kısa şıkları tek bloğa toplayabiliyor;
         // öyleyse şık bölgesindeki blokları satırlarına ayırıyoruz.
@@ -218,7 +225,7 @@ object QuestionParser {
         // --- 1. Şık adayları ---------------------------------------------------
         val options =
             if (knownOptions != null) fromBoxes(knownOptions, tekOkunamayanaIzin)
-            else fromText(cleaned, optTop, optBottom, screenH, fromAccessibility)
+            else fromText(cleaned.filter { it.centerX in sikX }, optTop, optBottom, screenH, fromAccessibility)
         if (options == null) return null
         val optionTexts = options.map { it.second }
 
@@ -244,7 +251,8 @@ object QuestionParser {
         val firstOptionTop = options.minOf { it.first.bounds.top }
         val questionPool = cleaned.filter {
             it.bounds.bottom <= firstOptionTop + 4 &&
-                it.centerY in qTop..maxOf(qTop + 1, minOf(qBottom, firstOptionTop))
+                it.centerY in qTop..maxOf(qTop + 1, minOf(qBottom, firstOptionTop)) &&
+                it.centerX in soruX
         }
         if (questionPool.isEmpty()) return reject("soru bölgesi boş")
 
@@ -289,7 +297,14 @@ object QuestionParser {
             optionRects = options.map { Rect(it.first.bounds) },
             category = category,
             confidence = conf,
-            number = detectQuestionNumber(items, screenW, screenH, questionPool.minOf { it.bounds.top })
+            number = detectQuestionNumber(
+                items, screenH, questionPool.minOf { it.bounds.top },
+                // Numara soru kartının solunda: seçilmiş soru bölgesinin sol
+                // yarısı, seçilmemişse ekranın sol %40'ı.
+                s.soruBolgesi?.let { b ->
+                    b.yatay(screenW, BOLGE_YATAY_PAY).first..((b.sol + b.sag) / 2f * screenW).toInt()
+                } ?: 0..(screenW * NO_MAX_X).toInt()
+            )
         )
     }
 
@@ -396,9 +411,10 @@ object QuestionParser {
      */
     private fun detectQuestionNumber(
         raw: List<TextItem>,
-        screenW: Int,
         screenH: Int,
-        questionTop: Int
+        questionTop: Int,
+        /** Numaranın yatayda durabileceği aralık. */
+        xAraligi: IntRange
     ): Int? {
         val numeric = raw.filter { QUESTION_NO.matches(it.text.trim()) }
         if (numeric.isEmpty()) return null
@@ -410,7 +426,7 @@ object QuestionParser {
 
         val badge = numeric
             .filterNot { it in strip }
-            .filter { it.centerX < screenW * NO_MAX_X }
+            .filter { it.centerX in xAraligi }
             .filter { it.bounds.bottom <= questionTop }
             .filter { questionTop - it.centerY <= screenH * NO_MAX_GAP }
             .maxByOrNull { it.centerY }

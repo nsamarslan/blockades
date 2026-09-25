@@ -57,6 +57,10 @@ interface QuestionDao {
     @Query("UPDATE questions SET questionText = :text WHERE id = :id AND edited = 0")
     suspend fun replaceText(id: Long, text: String)
 
+    /** Şıkların piksel imzaları (bkz. [QuestionEntity.optionSigs]). */
+    @Query("UPDATE questions SET optionSigs = :sigs WHERE id = :id")
+    suspend fun setSigs(id: Long, sigs: String?)
+
     @Query("DELETE FROM questions WHERE id = :id")
     suspend fun delete(id: Long)
 
@@ -126,4 +130,8 @@ interface QuestionDao {
 
     @Query("SELECT * FROM questions ORDER BY capturedAt ASC")
     suspend fun allForExport(): List<QuestionEntity>
+
+    /** En son kaydedilen sorunun ekran görüntüsü (Ekranı ayarla). */
+    @Query("SELECT screenshotPath FROM questions WHERE screenshotPath IS NOT NULL ORDER BY capturedAt DESC LIMIT 1")
+    suspend fun sonEkranGoruntusu(): String?
 }
