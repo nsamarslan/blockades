@@ -88,4 +88,25 @@ class QuestionChromeTest {
         val soru = "Kilise hangi çağda kültürün merkezi haline gelmiştir?"
         assertEquals(soru, TurkishText.stripQuestionChrome(soru))
     }
+
+    @Test
+    fun `buyuk kucuk harf farki olan siklar ayrilir`() {
+        // Gerçek günlük: çap "R", yarıçap "r". İlk kademe küçük harfe
+        // indirdiği için ikisi birden tutuyor, cevap hiç kullanılamıyordu.
+        val siklar = listOf("R", "V", "Z+", "r")
+        assertEquals(0, TurkishText.matchIndex(siklar, "R"))
+        assertEquals(3, TurkishText.matchIndex(siklar, "r"))
+    }
+
+    @Test
+    fun `kayittaki tek harf hatasi eslesir`() {
+        // Gerçek günlük: arşivde "Öklic", ekranda "Öklid"; eşleşmediği için
+        // bot bildiği cevabı bırakıp rastgele basıyordu.
+        val ekran = listOf("Pisagor", "Arşimet", "Zenon", "Öklid")
+        assertEquals(3, TurkishText.matchIndex(ekran, "Öklic"))
+        // Sayılarda tek hane başka cevap.
+        assertEquals(null, TurkishText.matchIndex(listOf("166", "179", "159", "189"), "169"))
+        // İki şık birden tutuyorsa tahmin yok.
+        assertEquals(null, TurkishText.matchIndex(listOf("Kosinüs", "Kosinüz", "Sinüs"), "Kosinüa"))
+    }
 }

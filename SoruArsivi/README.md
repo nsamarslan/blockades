@@ -1217,6 +1217,80 @@ en fazla biri tutmayabilir, çünkü OCR bir şıkkı bozmuş ya da kayıt eksik
 yazılmış cevap, bot o soruda yanlış şıkka basıp oyun doğrusunu gösterince
 kendiliğinden düzeliyor; beklemek istemezsen soruyu açıp doğru harfe dokun.
 
+### Şıkları aynı kalıp sorular (3.8)
+
+Günlükten: bot daha önce defalarca gördüğü sorularda hata yapmaya devam
+ediyordu. Sebep, **aynı dört şıkkı paylaşan farklı soruların tek kayıtta
+toplanmasıydı**:
+
+| Tek kayıtta toplanan sorular | Aradaki fark |
+|---|---|
+| "cos" / "cot" / "tan" şeklinde ifade edilen trigonometrik işlev | tek kısa kelime |
+| Matematikte "ve" / "veya" bağlacı hangi sembolle gösterilir | tek kısa kelime |
+| Bir üçgenin iki açısı 75 ve 30 / … ise nasıl bir üçgendir | bir sayı |
+| 11x14+12 / 12x14+11 işleminin sonucu | sayıların sırası |
+| Tam sayılarda toplama / çarpma işleminin etkisiz elemanı | tek kelime |
+
+Dört şık birebir aynıysa metnin %80 benzemesi yetiyordu; bu metinler %92-99
+benziyor. Kayıt her karşılaşmada öbür sorunun cevabını tutuyordu, bot da hep
+ona basıyordu ("cos" sorusunda Kotanjant, "tan" sorusunda Kosinüs…).
+
+Karakter benzerliği bunu ayıramıyor: "cos" ile "cot" arasındaki tek harf,
+bir OCR hatasıyla aynı büyüklükte. Artık son söz **kelimelerde**:
+
+* Sayılar birebir aynı olmalı (OCR'ın rakamla karıştırdığı O→0, l→1
+  eşleniyor: "%2O" / "%20").
+* Üç harf ve altındaki kelimeler birebir aynı olmalı ("cos" / "cot",
+  "ve" / "veya").
+* Uzun kelimelerde tek harf, sekiz harften uzunlarda iki harf farka izin
+  var ("yıldıza" / "yildza", "kaçıncı" / "kaçıIncı").
+* Fazladan kelime yalnızca başta ya da sonda olabilir (kırpılmış okuma,
+  "Süre Bitti" gibi yapışmış fazlalık); ortada fazladan kelime ayrı soru.
+* Yalnızca boşluğu farklı okunmuş metinler ("1gelme" / "1 gelme") aynı
+  sayılıyor.
+
+Eski birleşme kuralı daha uzun metni alıyordu; bir kaydın metni bu yüzden
+öbür sorunun metniyle değişmiş olabilir. Kaydın parmak izi (ilk okunduğu
+hâl) yeniden görülüp metni başka bir sorunun metni çıkarsa metin geri
+alınıyor (`ONARILDI #… soru metni geri alındı`). Birleşmiş kayıtlar böylece
+kendiliğinden ayrışıyor: öbür soru ilk karşılaşmada kendi kaydını açıyor
+(o sefer rastgele), ikinci karşılaşmadan itibaren doğru biliniyor.
+
+Günlükte benzerlikle bulunan tekrarlar artık `tekrar #… (benzerlik)` diye
+yazılıyor; yanlış birleşmeler böyle görülebilir.
+
+### Şık eşleştirmesi: "R" / "r", "Öklic" / "Öklid" (3.8)
+
+* **Büyük/küçük harf.** "Çemberin çap uzunluğu hangisi ile ifade edilir?"
+  sorusunda şıklar «R» ve «r». Eşleştirmenin ilk kademesi küçük harfe
+  indirdiği için ikisi birden tutuyor, "ayırt edilemiyor" deniyor ve
+  arşivdeki doğru cevap hiç kullanılamıyordu. Artık önce büyük/küçük harfe
+  duyarlı birebir eşitliğe bakılıyor.
+* **Kayıttaki tek harf hatası.** Arşive «Öklic» yazılmış, ekranda «Öklid».
+  Kısa kelimede tek harf %80 benzerlik ediyordu ve %85 eşiğine takılıyordu;
+  bot bildiği cevabı bırakıp rastgele basıyordu. Tek harf farkı artık
+  eşleşiyor; yalnızca tek bir şık tutuyorsa ve sayı değilse.
+
+### İki kez okunan rakam: "6 6" (3.8)
+
+"Bir küpün kaç yüzeyi vardır?" sorusunun «6» şıkkı üç ayrı soruda «6 6»
+okundu (önceki günlükte «4 4»). ML Kit rakamı iki parça olarak döndürüyor,
+kutu metni ikisini birleştiriyordu. Kaydedilen «6 6» ekrandaki «6» ile hiç
+eşleşmediği için o sorunun cevabı ne öğrenilebiliyor ne kullanılabiliyordu.
+Aynı metin artık bir kez alınıyor: harfsizse her zaman, harfliyse yalnızca
+iki parça üst üste biniyorsa (yan yana duran gerçek bir tekrar korunuyor).
+Böyle kaydedilmiş eski şıklar, ekranda tek okununca onarılıyor.
+
+### Hâlâ ayırt edilemeyen: sembol şıklar
+
+"Ve" / "veya" bağlacı, "büyüktür" gibi sorularda şıklar ∨ ∧ > < sembolleri.
+ML Kit üçünü de «V» okuyor; kayıtta «V / V / V / <» duruyor. Metin aynı
+olduğu için hangisinin doğru olduğu kaydedilemiyor, bot bu sorularda
+rastgele basıyor. Bunu çözmek için şıkkın metni değil **görüntüsü**
+karşılaştırılmalı (her şık kutusundaki yazının küçük bir piksel imzası
+saklanıp metin ayırt edemediğinde ona bakılması). Veritabanına yeni sütun
+gerektiriyor.
+
 ### Eksi işaretli şıklar (3.7)
 
 Günlükten: «(-6) neye eşittir?» sorusunun şıkları arşive "16 / 4 / 4 / 16"

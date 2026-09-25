@@ -29,8 +29,15 @@ class Repo private constructor(context: Context) {
 
     sealed interface SaveResult {
         data class Inserted(val id: Long) : SaveResult
-        /** [onarim] doluysa kayıt bozuk bulunup ekrandaki okumadan onarıldı. */
-        data class Duplicate(val id: Long, val onarim: String? = null) : SaveResult
+        /**
+         * [onarim] doluysa kayıt bozuk bulunup ekrandaki okumadan onarıldı.
+         * [yol] kaydın nasıl bulunduğu: parmak izi (birebir) ya da benzerlik.
+         */
+        data class Duplicate(
+            val id: Long,
+            val onarim: String? = null,
+            val yol: String = PARMAK_IZI
+        ) : SaveResult
         data object Rejected : SaveResult
     }
 
@@ -51,15 +58,27 @@ class Repo private constructor(context: Context) {
         val fp = TurkishText.fingerprint(q, opts)
 
         dao.byFingerprint(fp)?.let { mevcut ->
-            // Parmak izi işaretleri görmüyor ("-16" ile "16" aynı anahtar);
-            // işareti silinmiş eski kayıt tam burada bulunuyor.
             if (!mevcut.edited) {
-                isaretOnarimi(mevcut.options, mevcut.correctText, opts)?.let { onarim ->
+                // Parmak izi işaretleri görmüyor ("-16" ile "16" aynı anahtar);
+                // işareti silinmiş eski kayıt tam burada bulunuyor.
+                onarimBul(mevcut, opts)?.let { (neden, onarim) ->
                     siklariOnar(mevcut, opts, fp, onarim)
-                    return SaveResult.Duplicate(mevcut.id, ISARET_ONARIMI)
+                    return SaveResult.Duplicate(mevcut.id, "şıklar $neden ile yeniden yazıldı")
+                }
+                // Bu kaydın parmak izi tam bu okumadan geliyor, ama metni
+                // sonradan başka bir sorunun metniyle değiştirilmiş olabilir:
+                // eski birleşme kuralı "cos" / "cot" / "tan" gibi soruları tek
+                // kayıtta topluyor ve daha uzun metni alıyordu. Metin geri
+                // alınmazsa o başka soru bu kayda düşmeye devam ederdi.
+                if (TekrarSorgusu.ayriMetinler(mevcut.questionText, q)) {
+                    dao.replaceText(mevcut.id, q)
+                    adaylariUnut()
+                    return SaveResult.Duplicate(
+                        mevcut.id, "soru metni geri alındı (başka bir sorunun metni yazılmıştı)"
+                    )
                 }
             }
-            return SaveResult.Duplicate(mevcut.id)
+            return SaveResult.Duplicate(mevcut.id, yol = PARMAK_IZI)
         }
 
         // Bulanık kontrol: son kayıtlar + cevabı eksik olan bütün kayıtlar.
@@ -80,13 +99,9 @@ class Repo private constructor(context: Context) {
                 // → "Dönem"); o kayıtlar kendiliğinden düzelmiyordu, çünkü
                 // şıklar yalnızca liste kısaysa tamamlanıyor. Ekrandaki okuma
                 // bozulmanın tam karşılığıysa şıklar ondan yeniden yazılıyor.
-                siraSayisiOnarimi(old.options, old.correctText, opts)?.let { onarim ->
+                onarimBul(old, opts)?.let { (neden, onarim) ->
                     siklariOnar(old, opts, fp, onarim)
-                    return SaveResult.Duplicate(old.id, SIRA_SAYISI_ONARIMI)
-                }
-                isaretOnarimi(old.options, old.correctText, opts)?.let { onarim ->
-                    siklariOnar(old, opts, fp, onarim)
-                    return SaveResult.Duplicate(old.id, ISARET_ONARIMI)
+                    return SaveResult.Duplicate(old.id, "şıklar $neden ile yeniden yazıldı", BENZERLIK)
                 }
                 // Hangi metin daha temiz? Arayüz uyarısı içermeyen kazanır;
                 // ikisi de temizse daha uzun olanı alırız.
@@ -133,7 +148,7 @@ class Repo private constructor(context: Context) {
                     adaylariUnut()
                 }
             }
-            return SaveResult.Duplicate(old.id)
+            return SaveResult.Duplicate(old.id, yol = BENZERLIK)
         }
 
         val entity = QuestionEntity(
@@ -161,6 +176,14 @@ class Repo private constructor(context: Context) {
         }
     }
 
+
+    /** Eski kuralların bozduğu şıkları tanıyan onarımlardan tutan ilki. */
+    private fun onarimBul(old: QuestionEntity, opts: List<String>): Pair<String, Onarim>? {
+        siraSayisiOnarimi(old.options, old.correctText, opts)?.let { return SIRA_SAYISI_ONARIMI to it }
+        isaretOnarimi(old.options, old.correctText, opts)?.let { return ISARET_ONARIMI to it }
+        ciftOkumaOnarimi(old.options, old.correctText, opts)?.let { return CIFT_OKUMA_ONARIMI to it }
+        return null
+    }
 
     /**
      * Bozuk bulunan kaydın şıklarını ekrandaki okumayla değiştirir. Doğru
@@ -562,9 +585,46 @@ class Repo private constructor(context: Context) {
             return Onarim(eskiKuralla.indices.filter { eskiKuralla[it] == dogru }.singleOrNull())
         }
 
+        /**
+         * İki kez okunmuş şıkları tanır: ML Kit bazı rakamları iki kez
+         * döndürüyordu ve "6" şıkkı arşive "6 6" diye yazılıyordu (bkz.
+         * `QuestionParser.kutuMetni`). Kayıttaki "6 6" ekrandaki "6" ile hiç
+         * eşleşmediği için cevap ne öğrenilebiliyor ne kullanılabiliyordu.
+         *
+         * Dar: yalnızca harfsiz, kendini tekrarlayan şıklar ("6 6", "4 4")
+         * tekine indiriliyor ve kayıttaki şıklar böylece ekrandakilerle
+         * birebir aynı olmalı (sırası önemsiz).
+         */
+        internal fun ciftOkumaOnarimi(
+            stored: List<String>,
+            storedCorrect: String?,
+            fresh: List<String>
+        ): Onarim? {
+            if (stored.size != fresh.size || fresh.size < 2) return null
+            val yeni = fresh.map { TurkishText.lower(it.trim()) }
+            if (yeni.toSet().size != yeni.size) return null
+            val eski = stored.map { TurkishText.lower(it.trim()) }
+            val tekli = eski.map { tekrarSil(it) }
+            if (tekli == eski || tekli.sorted() != yeni.sorted()) return null
+            val dogru = storedCorrect?.let { tekrarSil(TurkishText.lower(it.trim())) } ?: return Onarim(null)
+            return Onarim(yeni.indices.filter { yeni[it] == dogru }.singleOrNull())
+        }
+
+        /** "6 6" → "6"; harf içeren ya da tekrarlamayan metne dokunmaz. */
+        private fun tekrarSil(s: String): String {
+            val parcalar = s.split(' ').filter { it.isNotEmpty() }
+            if (parcalar.size < 2 || parcalar.any { p -> p.any { it.isLetter() } }) return s
+            return if (parcalar.all { it == parcalar[0] }) parcalar[0] else s
+        }
+
         /** Tarama günlüğündeki onarım adları. */
         const val ISARET_ONARIMI = "eksi işaretleri"
         const val SIRA_SAYISI_ONARIMI = "sıra sayıları"
+        const val CIFT_OKUMA_ONARIMI = "iki kez okunmuş rakamlar"
+
+        /** [SaveResult.Duplicate.yol] değerleri. */
+        const val BENZERLIK = "benzerlik"
+        const val PARMAK_IZI = "parmak izi"
 
         private fun strengthOf(source: String?): Int = when (source) {
             AnswerEvidence.CERTAIN.label -> AnswerEvidence.CERTAIN.strength

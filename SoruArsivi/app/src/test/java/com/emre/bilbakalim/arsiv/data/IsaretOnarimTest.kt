@@ -53,4 +53,22 @@ class IsaretOnarimTest {
     fun `ekrandaki siklar ayirt edilemiyorsa onarim yok`() {
         assertNull(Repo.isaretOnarimi(bozuk, null, listOf("-4", "-4", "16", "16")))
     }
+
+    // --- İki kez okunmuş rakam ("6 6") ------------------------------------
+
+    @Test
+    fun `iki kez okunmus rakam tekine indirilir`() {
+        // Gerçek günlük: "Bir küpün kaç yüzeyi vardır?" → 3 / 2 / 4 / "6 6".
+        val eski = listOf("3", "2", "4", "6 6")
+        val yeni = listOf("6", "4", "2", "3")
+        assertEquals(Repo.Onarim(0), Repo.ciftOkumaOnarimi(eski, "6 6", yeni))
+        assertEquals(Repo.Onarim(null), Repo.ciftOkumaOnarimi(eski, null, yeni))
+    }
+
+    @Test
+    fun `harfli tekrar ve saglam kayit onarilmaz`() {
+        assertNull(Repo.ciftOkumaOnarimi(listOf("Beri Beri", "Kuduz"), null, listOf("Beri", "Kuduz")))
+        assertNull(Repo.ciftOkumaOnarimi(listOf("3", "2", "4", "6"), "6", listOf("6", "4", "2", "3")))
+        assertNull(Repo.ciftOkumaOnarimi(listOf("3", "2", "4", "6 6"), null, listOf("6", "4", "2", "5")))
+    }
 }

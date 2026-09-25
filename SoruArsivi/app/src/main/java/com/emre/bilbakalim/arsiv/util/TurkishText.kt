@@ -293,6 +293,67 @@ object TurkishText {
     }
 
     /**
+     * İki soru metni, OCR hatası payıyla kelime kelime aynı mı?
+     *
+     * Karakter benzerliği tek başına bunu söyleyemiyor. Bu oyunda aynı dört
+     * şıkkı paylaşan kalıp sorular çok ve aralarındaki fark tek bir kısa
+     * kelime ya da sayı:
+     *  - "cos" / "cot" / "tan" şeklinde ifade edilen trigonometrik işlev
+     *  - Matematikte "ve" / "veya" bağlacı hangi sembolle gösterilir
+     *  - Bir üçgenin iki açısı 75 ve 30 / 60 ve 30 ise
+     *  - 11x14+12 / 12x14+11 işleminin sonucu
+     * Metinler %92-99 benzer, şıklar birebir aynı; hepsi tek kayıt olmuştu
+     * ve bot her seferinde öbür sorunun cevabına basıyordu. OCR hatası ise
+     * uzun bir kelimede bir iki harf ("yıldıza" / "yildza").
+     *
+     * Kural: kelimeler sırayla [kelimeDenk] olmalı. Kısa metnin fazladan
+     * [fazlaKelime] kelimesi yalnızca başta ya da sonda olabilir (kırpılmış
+     * okuma, "Süre Bitti" gibi yapışmış fazlalık); ortada fazladan ya da
+     * farklı bir kelime ayrı soru demek.
+     *
+     * Kelimeler [words]'ten gelmeli (küçük, katlanmış).
+     */
+    fun ayniSoruKelimeleri(wa: List<String>, wb: List<String>, fazlaKelime: Int = 3): Boolean {
+        val kisa = if (wa.size <= wb.size) wa else wb
+        val uzun = if (wa.size <= wb.size) wb else wa
+        val fark = uzun.size - kisa.size
+        if (fark > fazlaKelime) return false
+        if (kisa.isEmpty()) return uzun.isEmpty()
+        for (kayma in 0..fark) {
+            if (kisa.indices.all { kelimeDenk(kisa[it], uzun[kayma + it]) }) return true
+        }
+        return false
+    }
+
+    /**
+     * İki kelime aynı kelimenin OCR'dan geçmiş hâlleri olabilir mi?
+     *
+     * Sayı içeren kelimeler birebir aynı olmalı; yalnızca OCR'ın rakamla
+     * karıştırdığı harfler (o→0, l/i→1) eşleniyor ("%2O" / "%20"). Üç harf
+     * ve altındaki kelimelerde hiç fark yok ("cos" / "cot", "ve" / "veya").
+     * Dört harften uzunlarda tek harf, sekiz harften uzunlarda iki harf
+     * farka izin var.
+     */
+    fun kelimeDenk(a: String, b: String): Boolean {
+        if (a == b) return true
+        if (a.any { it.isDigit() } || b.any { it.isDigit() }) return rakamlastir(a) == rakamlastir(b)
+        val kisaUzunluk = minOf(a.length, b.length)
+        if (kisaUzunluk < 4 || kotlin.math.abs(a.length - b.length) > 2) return false
+        val d = levenshtein(a, b)
+        return d <= 1 || (d <= 2 && kisaUzunluk >= 8)
+    }
+
+    private fun rakamlastir(s: String): String = buildString(s.length) {
+        for (c in s) append(
+            when (c) {
+                'o' -> '0'
+                'l', 'i' -> '1'
+                else -> c
+            }
+        )
+    }
+
+    /**
      * İki kelime dizisi bir fiilin olumsuzluk ekiyle mi ayrılıyor?
      *
      * "Hilesiz bir zar atıldığında 3 **gelme** olasılığı" ile "3 **gelmeme**
@@ -373,6 +434,11 @@ object TurkishText {
         //     ile "Satış fiyatı < Maliyet"i ayırıyor (normalizeKey simgeleri
         //     siliyor).
         //  4. normalizeKey: yalnızca harf-rakam, katlanmış.
+        //
+        // Hepsinden önce büyük/küçük harfe duyarlı birebir eşitlik: "R" (çap)
+        // ile "r" (yarıçap) ancak burada ayrılıyor. Eskiden ilk kademe küçük
+        // harfe indirdiği için ikisi birden tutuyor, "ayırt edilemiyor"
+        // deniyor ve arşivdeki doğru cevap hiç kullanılamıyordu.
         for (anahtar in ESLESME_KADEMELERI) {
             val k = anahtar(text)
             if (k.isEmpty()) continue
@@ -382,7 +448,16 @@ object TurkishText {
         }
         if (normalizeKey(text).isEmpty()) return null
 
-        // 5. Bulanık benzerlik (OCR harf hataları için).
+        // 5. Tek harflik OCR hatası: "Öklic" / "Öklid". Kısa kelimede tek
+        // harf %80 benzerlik ediyor ve aşağıdaki eşiğe takılıyordu; bot
+        // arşivdeki cevabı ekranda bulamayıp rastgele basıyordu. Yalnızca tek
+        // bir şık tutuyorsa; sayılarda hiç fark yok ([sameOptionKey]).
+        val metinAnahtari = normalizeKey(text)
+        val harfHatasi = options.indices.filter { sameOptionKey(normalizeKey(options[it]), metinAnahtari) }
+        if (harfHatasi.size == 1) return harfHatasi[0]
+        if (harfHatasi.size > 1) return null
+
+        // 6. Bulanık benzerlik (OCR harf hataları için).
         var best = -1
         var bestSim = 0f
         options.forEachIndexed { i, o ->
@@ -418,7 +493,10 @@ object TurkishText {
     private val BOSLUKLAR = Regex("\\s+")
 
     private val ESLESME_KADEMELERI: List<(String) -> String> =
-        listOf(::strictKey, ::distinctKey, ::softKey, ::normalizeKey)
+        listOf(::exactKey, ::strictKey, ::distinctKey, ::softKey, ::normalizeKey)
+
+    /** Büyük/küçük harfe duyarlı; yalnızca boşluklar sadeleşiyor. */
+    private fun exactKey(s: String): String = s.trim().replace(BOSLUKLAR, " ")
 
     /** Şık eşleşmesi için en düşük benzerlik. */
     private const val OPTION_MATCH_MIN = 0.85f

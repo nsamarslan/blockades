@@ -147,4 +147,97 @@ class TekrarSorgusuTest {
         // İki şıklık listede ikisi de tutmalı.
         assertFalse(uyar(listOf("A1", "B2"), listOf("A1", "Z0", "C3", "D4")))
     }
+
+    // --- Şıkları aynı, tek kelimesi ya da sayısı farklı kalıp sorular ------
+
+    private val trig = listOf("Kosinüs", "Kotanjant", "Sinüs", "Tanjant")
+
+    @Test
+    fun `kisa kelimesi farkli kalip sorular ayri kayit`() {
+        // Gerçek günlük (3.7): üçü de #2913'e düşüyor, bot her seferinde
+        // öbürünün cevabına basıyordu.
+        val cos = "\"cos\" şeklinde ifade edilen trigonometrik işlev aşağıdakilerden hangisidir?"
+        val cot = "\"cot\" şeklinde ifade edilen trigonometrik işlev aşağıdakilerden hangisidir?"
+        val tan = "\"tan\" şeklinde ifade edilen trigonometrik işlev aşağıdakilerden hangisidir?"
+        assertFalse(ayni(cos, trig, cot, trig.reversed()))
+        assertFalse(ayni(cos, trig, tan, trig))
+        assertFalse(ayni(cot, trig, tan, trig))
+        val semboller = listOf("V", "V", "V", "<")
+        assertFalse(
+            ayni(
+                "Matematikte \"veya\" bağlacı hangi sembolle gösterilir?", semboller,
+                "Matematikte \"ve\" bağlacı hangi sembolle gösterilir?", semboller
+            )
+        )
+    }
+
+    @Test
+    fun `sayisi farkli kalip sorular ayri kayit`() {
+        val ucgen = listOf("Çeşitkenar Üçgen", "İkizkenar Üçgen", "Eşkenar Üçgen", "Dik üçgen")
+        assertFalse(
+            ayni(
+                "Bir üçgenin iki açısı 60 ve 30 ise, bu üçgen nasıl bir üçgendir?", ucgen,
+                "Bir üçgenin iki açISI 75 ve 30 ise, bu üçgen nasıl bir üçgendir?", ucgen
+            )
+        )
+        val sonuc = listOf("166", "179", "159", "189")
+        assertFalse(ayni("12x14+11 işleminin sonucu kaçtır?", sonuc, "11x14+12 işleminin sonucu kaçtır?", sonuc))
+        assertFalse(
+            ayni(
+                "Tam sayılarda toplama işleminin etkisiz elemanı ile 2 sayısının toplamı kaçtır?",
+                listOf("0", "1", "2", "3"),
+                "Tam sayılarda çarpma işleminin etkisiz elemanı ile 1 sayısının toplamı kaçtır?",
+                listOf("0", "1", "2", "3")
+            )
+        )
+    }
+
+    @Test
+    fun `ocr harf hatasi ve bosluk farki ayni kayit`() {
+        val s = listOf("1/36", "1/6", "1/12", "1/18")
+        // Rakamla karışan harf: "%2O" / "%20", "1l" / "11".
+        assertTrue(ayni("Fiyatı %20 artan ürün kaç TL olur?", s, "Fiyatı %2O artan ürün kaç TL olur?", s))
+        assertTrue(ayni("11'den 100'e kadar kaç asal sayı vardır?", s, "1l'den 100'e kadar kaç asal sayı vardır?", s))
+        // Boşluğu farklı okunmuş metin.
+        assertTrue(
+            ayni(
+                "Aynı anda atılan hilesiz iki zarın da 1 gelme olasılığı kaçtır?", s,
+                "Aynı anda atılan hilesiz iki zarın da 1gelme olasılığı kaçtır?", s
+            )
+        )
+        // Uzun kelimede iki harf.
+        assertTrue(
+            ayni(
+                "Bilinen en eski usturlap kaçıncı yüzyılda yapılmıştır?", s,
+                "Bilinen en eski usturlap kaçıIncı yüzyılda yapılmıştır?", s
+            )
+        )
+    }
+
+    @Test
+    fun `ortada fazladan kelime ayri soru`() {
+        assertFalse(
+            ayni(
+                "Güneş sistemindeki en büyük gezegen hangisidir?", siklar,
+                "Güneş sistemindeki en büyük ikinci gezegen hangisidir?", siklar
+            )
+        )
+    }
+
+    @Test
+    fun `baska sorunun metni yazilmis kayit taninir`() {
+        // Parmak izi tutan kaydın metni başka bir sorununsa geri alınıyor.
+        assertTrue(
+            TekrarSorgusu.ayriMetinler(
+                "\"tan\" şeklinde ifade edilen trigonometrik işlev aşağıdakilerden hangisidir?",
+                "\"cot\" şeklinde ifade edilen trigonometrik işlev aşağıdakilerden hangisidir?"
+            )
+        )
+        assertFalse(
+            TekrarSorgusu.ayriMetinler(
+                "Enerjisi bitince sönen yıldıza ne ad verilir?",
+                "Enerjisi bitince sönen yildza ne ad verilir?"
+            )
+        )
+    }
 }

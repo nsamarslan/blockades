@@ -82,7 +82,7 @@ internal class TekrarSorgusu(question: String, options: List<String>) {
         val contained = oldKey.length >= 12 && key.length >= 12 &&
             (key.contains(oldKey) || oldKey.contains(key)) &&
             (optionsMatch && lengthRatio >= 0.60f || lengthRatio >= 0.85f && siklarUyusuyor(old))
-        if (contained) return !olumsuzlukEkiAyiriyor(old)
+        if (contained) return !metinAyiriyor(old)
 
         // Benzerlik, uzunluk oranını aşamaz: %80 için oran en az %80, %92
         // için en az %92 olmalı. Tutamayacaksa hesaplanmıyor.
@@ -106,7 +106,7 @@ internal class TekrarSorgusu(question: String, options: List<String>) {
         // oldu ve birinin cevabı ötekinin doğru cevabının üstüne yazıldı.
         // Şıklardan en fazla biri tutmayabilir (OCR bir şıkkı bozmuş olabilir).
         if (!(sameOptions || sim >= 0.92f && siklarUyusuyor(old))) return false
-        return !olumsuzlukEkiAyiriyor(old)
+        return !metinAyiriyor(old)
     }
 
     /** Şıklardan en fazla biri tutmuyor (bkz. [siklarUyusuyor]). */
@@ -114,15 +114,39 @@ internal class TekrarSorgusu(question: String, options: List<String>) {
         siklarUyusuyor(old.optionKeys, aday.optionKeys)
 
     /**
-     * İki metin yalnızca bir fiilin olumsuzluk ekiyle mi ayrılıyor ("gelme" /
-     * "gelmeme")? Olumsuzluk imzası ayrı kelimelere ("değil", "olmayan")
-     * bakıyor; ek, kelimenin içinde kaldığı için onu göremiyor. Kelimeler
-     * yalnızca buraya kadar gelmiş, zaten çok benzeyen adaylar için bölünüyor.
+     * Metinler çok benziyor ama gerçekten ayrı sorular mı?
+     *
+     * Benzerlik ve şık kuralları yalnızca bir ön eleme: aynı şıkları
+     * paylaşan kalıp sorular ("cos" / "cot" / "tan" şeklinde ifade edilen
+     * işlev) %99 benziyor. Son söz kelimelerde: farklı bir sayı ya da kısa
+     * kelime, ortada fazladan bir kelime ([TurkishText.ayniSoruKelimeleri])
+     * ya da fiilin içindeki olumsuzluk eki ("gelme" / "gelmeme"; olumsuzluk
+     * imzası ayrı kelimelere bakıyor, eki göremiyor) ayrı soru demek.
+     * Yalnızca boşlukları farklı okunmuş metinler ("1gelme" / "1 gelme")
+     * aynı anahtara düşüyor ve kelimeye bakılmadan aynı sayılıyor.
+     *
+     * Kelimeler yalnızca buraya kadar gelmiş, zaten çok benzeyen adaylar
+     * için bölünüyor.
      */
-    private fun olumsuzlukEkiAyiriyor(old: TekrarAdayi): Boolean =
-        TurkishText.olumsuzlukEkiFarki(old.words, aday.words)
+    private fun metinAyiriyor(old: TekrarAdayi): Boolean =
+        ayriMetinler(old.key, old.words, aday.key, aday.words)
 
     companion object {
+        /** [metinAyiriyor]'un ham metinler için olanı. */
+        internal fun ayriMetinler(a: String, b: String): Boolean = ayriMetinler(
+            TurkishText.normalizeKey(a), TurkishText.words(a),
+            TurkishText.normalizeKey(b), TurkishText.words(b)
+        )
+
+        private fun ayriMetinler(
+            keyA: String, wordsA: List<String>,
+            keyB: String, wordsB: List<String>
+        ): Boolean {
+            if (keyA == keyB) return false
+            return !TurkishText.ayniSoruKelimeleri(wordsA, wordsB) ||
+                TurkishText.olumsuzlukEkiFarki(wordsA, wordsB)
+        }
+
         /**
          * İki şık listesi aynı sorunun şıkları olabilir mi?
          *

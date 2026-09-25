@@ -25,6 +25,38 @@ object QuestionParser {
     /** Okunamayan şıkkın yerine yazılan metin (bkz. `parse(tekOkunamayanaIzin)`). */
     const val OKUNAMAYAN_SIK = "(okunamadı)"
 
+    /**
+     * Bir şık kutusunun içinden okunan OCR parçalarını tek metne birleştirir.
+     * [parcalar] soldan sağa sıralı: metin ve yatay kapladığı aralık.
+     *
+     * ML Kit bazı rakamları iki kez döndürüyor: "Bir küpün kaç yüzeyi
+     * vardır?" sorusunun "6" şıkkı üç ayrı soruda "6 6" okundu (önceki
+     * günlükte de "4 4"). Kaydedilen "6 6", ekrandaki "6" ile bir daha hiç
+     * eşleşmiyor: cevap ne öğrenilebiliyor ne kullanılabiliyordu. Aynı
+     * metin bir kez alınıyor, ama yalnızca harfsizse (sayı, simge) ya da iki
+     * parça üst üste biniyorsa: yan yana duran "Beri Beri" gibi gerçek bir
+     * tekrar korunuyor.
+     */
+    internal fun kutuMetni(parcalar: List<Pair<String, IntRange>>): String {
+        val kalan = ArrayList<Pair<String, IntRange>>(parcalar.size)
+        for (p in parcalar) {
+            val metin = p.first.replace('\n', ' ').trim()
+            if (metin.isEmpty()) continue
+            val esi = kalan.any { (m, r) ->
+                m == metin && (metin.none { it.isLetter() } || ortusur(r, p.second))
+            }
+            if (!esi) kalan.add(metin to p.second)
+        }
+        return kalan.joinToString(" ") { it.first }
+    }
+
+    /** İki aralık, dar olanın en az yarısı kadar üst üste biniyor mu? */
+    private fun ortusur(a: IntRange, b: IntRange): Boolean {
+        val ortak = minOf(a.last, b.last) - maxOf(a.first, b.first)
+        val dar = minOf(a.last - a.first, b.last - b.first).coerceAtLeast(1)
+        return ortak * 2 >= dar
+    }
+
     /** "Tek şık okunamadı" reddinin ayırt edici parçası; yakalama tarafı bunu arıyor. */
     const val TEK_OKUNAMAYAN = ", 1 tanesinin metni okunamadı"
 

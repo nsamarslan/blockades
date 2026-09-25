@@ -1194,7 +1194,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         }
 
         (result as? Repo.SaveResult.Duplicate)?.onarim?.let { neden ->
-            log("ONARILDI #$savedId: şıklar $neden ile yeniden yazıldı · ${p.options.joinToString(" / ")}")
+            log("ONARILDI #$savedId: $neden · ${p.options.joinToString(" / ")}")
         }
         if (savedId == null) {
             log("RED: kayıt çok kısa / şık yetersiz")
@@ -1232,7 +1232,13 @@ class CaptureAccessibilityService : AccessibilityService() {
                     Log.i(TAG, "Kaydedildi #$savedId")
                     log("${p.options.size} şık %$conf · KAYDEDİLDİ #$savedId$noLabel")
                 }
-                newEncounter -> log("${p.options.size} şık %$conf · tekrar #$savedId$noLabel")
+                // Kaydın benzerlikle mi bulunduğu da yazılıyor: yanlış
+                // birleşmeler ("cos" / "cot") ancak böyle günlükten görülüyor.
+                newEncounter -> log(
+                    "${p.options.size} şık %$conf · tekrar #$savedId" +
+                        (if ((result as? Repo.SaveResult.Duplicate)?.yol == Repo.BENZERLIK) " (benzerlik)" else "") +
+                        noLabel
+                )
                 // Aynı ekranın yeniden okunması: günlüğe yazmaya değmez.
             }
             // Sorunun kendisi ve ekrandaki şık sırası, karşılaşma başına bir
@@ -2395,9 +2401,10 @@ class CaptureAccessibilityService : AccessibilityService() {
                 t.bounds.top >= kutu.top - pay && t.bounds.bottom <= kutu.bottom + pay &&
                     t.centerX in kutu.left..kutu.right && t.centerY in kutu.top..kutu.bottom
             }
-            var metin = icerdekiler.sortedBy { it.bounds.left }
-                .joinToString(" ") { it.text.replace('\n', ' ') }
-                .trim()
+            var metin = QuestionParser.kutuMetni(
+                icerdekiler.sortedBy { it.bounds.left }
+                    .map { it.text to it.bounds.left..it.bounds.right }
+            )
             if (metin.isBlank()) metin = readBox(shot, kutu, BOX_SCALE)
             if (metin.isBlank()) metin = readBox(shot, kutu, BOX_SCALE_RETRY)
             TextItem(metin, Rect(kutu))
@@ -2421,9 +2428,9 @@ class CaptureAccessibilityService : AccessibilityService() {
         val items = runCatching { OcrEngine.recognize(big) }.getOrDefault(emptyList())
         if (big !== crop) big.recycle()
         crop.recycle()
-        return items.sortedBy { it.bounds.left }
-            .joinToString(" ") { it.text.replace('\n', ' ') }
-            .trim()
+        return QuestionParser.kutuMetni(
+            items.sortedBy { it.bounds.left }.map { it.text to it.bounds.left..it.bounds.right }
+        )
     }
 
     /**
