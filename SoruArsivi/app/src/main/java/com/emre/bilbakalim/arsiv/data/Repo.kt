@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.room.withTransaction
 import com.emre.bilbakalim.arsiv.capture.SikImzasi
+import com.emre.bilbakalim.arsiv.capture.SikEsleme
 import com.emre.bilbakalim.arsiv.util.Importers
 import com.emre.bilbakalim.arsiv.util.TurkishText
 import kotlinx.coroutines.flow.Flow
@@ -61,9 +62,13 @@ class Repo private constructor(context: Context) {
         val fp = TurkishText.fingerprint(q, opts)
 
         dao.byFingerprint(fp)?.let { mevcut ->
+            if (!SikEsleme.okunamayanlarAyni(mevcut.options, mevcut.imzalar, opts, optionSigs.orEmpty())) {
+                Log.w(TAG, "#${mevcut.id}: okunamayan şıkların görüntüsü değişti; cevaplar birleştirilmedi")
+                return SaveResult.Rejected
+            }
             if (!mevcut.edited) {
-                // Parmak izi işaretleri görmüyor ("-16" ile "16" aynı anahtar);
-                // işareti silinmiş eski kayıt tam burada bulunuyor.
+                // Eski sürümün silmiş olduğu eksi işaretli şıkları, birebir
+                // parmak izine denk gelen bozuk kayıt varsa da onar.
                 onarimBul(mevcut, opts)?.let { (neden, onarim) ->
                     siklariOnar(mevcut, opts, fp, onarim, optionSigs)
                     return SaveResult.Duplicate(mevcut.id, "şıklar $neden ile yeniden yazıldı")
@@ -98,6 +103,10 @@ class Repo private constructor(context: Context) {
         val hit = tekrarAdaylari().firstOrNull { sorgu.matches(it) }
         val old = hit?.let { dao.byId(it.id) }
         if (old != null) {
+            if (!SikEsleme.okunamayanlarAyni(old.options, old.imzalar, opts, optionSigs.orEmpty())) {
+                Log.w(TAG, "#${old.id}: okunamayan şıkların görüntüsü uyuşmuyor; cevaplar birleştirilmedi")
+                return SaveResult.Rejected
+            }
             if (!old.edited) {
                 // Eski şık işareti kuralı sıra sayılarını siliyordu ("1. Dönem"
                 // → "Dönem"); o kayıtlar kendiliğinden düzelmiyordu, çünkü
@@ -426,15 +435,15 @@ class Repo private constructor(context: Context) {
                 Log.w(TAG, "Cevap #$id yazılamadı: ekranda ${correctIndex}. şıkkın metni yok")
                 return
             }
-            TurkishText.matchIndex(row.options, screenText)
-                // Metni aynı birden çok şık var: ekranda yeşile dönen şıkkın
-                // imzası kayıttakilerden hangisine benziyor?
-                ?: SikImzasi.enYakin(
-                    screenSigs?.getOrNull(correctIndex),
-                    TurkishText.matchCandidates(row.options, screenText),
-                    row.imzalar
-                )
-                ?: run {
+            SikEsleme.bul(
+                screenText, screenSigs?.getOrNull(correctIndex),
+                row.options, row.imzalar
+            ) ?: (if (TurkishText.matchCandidates(row.options, screenText).isEmpty()) {
+                // OCR metni tümden değişmiş olabilir. Ancak dört şıkkın
+                // TAMAMI benzersiz görsel eşleşirse sırayı güvenle taşı.
+                SikImzasi.eslesmeSirasi(screenSigs.orEmpty(), row.imzalar)
+                    ?.getOrNull(correctIndex)
+            } else null) ?: run {
                 Log.w(
                     TAG,
                     "Cevap #$id yazılamadı: «${screenText.take(40)}» arşivde bulunamadı"
@@ -521,14 +530,15 @@ class Repo private constructor(context: Context) {
         // metni de çıkaramayız; bu bozuk bir satırdır.
         val text = row.correctText ?: return KnownAnswer.Unmatched(null)
 
-        TurkishText.matchIndex(screenOptions, text)?.let { return KnownAnswer.OnScreen(it) }
-        // Metin ayırt edemiyor (ekranda üç «V»): kaydedilmiş doğru şıkkın
-        // imzası ekrandaki adaylardan hangisine benziyor?
-        SikImzasi.enYakin(
-            row.imzalar.getOrNull(dogru),
-            TurkishText.matchCandidates(screenOptions, text),
-            screenSigs.orEmpty()
-        )?.let { return KnownAnswer.OnScreen(it, imzayla = true) }
+        val index = SikEsleme.bul(text, row.imzalar.getOrNull(dogru), screenOptions, screenSigs.orEmpty())
+            ?: if (TurkishText.matchCandidates(screenOptions, text).isEmpty()) {
+                SikImzasi.eslesmeSirasi(row.imzalar, screenSigs.orEmpty())?.getOrNull(dogru)
+            } else null
+        index?.let { found ->
+            return KnownAnswer.OnScreen(
+                found, imzayla = TurkishText.matchIndex(screenOptions, text) != found
+            )
+        }
         return KnownAnswer.Unmatched(text)
     }
 

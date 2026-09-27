@@ -877,25 +877,27 @@ class CaptureAccessibilityService : AccessibilityService() {
                 )
                 if (viaOcr == null) {
                     kutuRed = QuestionParser.lastReject
-                    // Tek bir şık üst üste aynı biçimde okunamıyorsa (ML Kit'in
-                    // tanımadığı bir simge: ∧, ∨, →) beklemenin anlamı yok:
-                    // bot bir dakika boyunca aynı kareyi okuyup sorunun
-                    // süresini dolduruyordu. İkinci kez aynı sonuç gelince o şık
-                    // yer tutucuyla dolduruluyor; soru kaydediliyor, renk
-                    // okuması kutudan çalıştığı için cevap da okunuyor.
+                    // Okunamayan sembolleri ancak aynı red birkaç kez görülünce
+                    // ve bütün kutuların görsel imzası alınabiliyorsa kabul et.
+                    // Konum tek başına kimlik değildir: şıklar yer değiştirir.
                     val red = kutuRed
-                    if (red != null && red.contains(QuestionParser.TEK_OKUNAMAYAN)) {
+                    if (red != null && red.contains(QuestionParser.OKUNAMAYAN_RED)) {
                         okunamayanSayi = if (red == okunamayanImza) okunamayanSayi + 1 else 1
                         okunamayanImza = red
-                        if (okunamayanSayi >= OKUNAMAYAN_KABUL) {
+                        val imzalarVar = sikImzalari(shot, kutular.map {
+                            Rect(it.left, it.top, it.right, it.bottom)
+                        }, shot.width, shot.height)?.let { imzalar ->
+                            imzalar.size == 4 && imzalar.all { it != null }
+                        } == true
+                        if (okunamayanSayi >= OKUNAMAYAN_KABUL && imzalarVar) {
                             viaOcr = QuestionParser.parse(
                                 ocrItems, shot.width, shot.height, s,
                                 fromAccessibility = false, knownOptions = kutuMetinleri,
-                                tekOkunamayanaIzin = true
+                                okunamayanaIzin = true
                             )
                             if (viaOcr != null) {
                                 kutuRed = null
-                                log("OKUNAMAYAN ŞIK: bir şık ${okunamayanSayi} kez okunamadı, " +
+                                log("OKUNAMAYAN ŞIK: aynı şıklar ${okunamayanSayi} kez okunamadı, " +
                                     "«${QuestionParser.OKUNAMAYAN_SIK}» ile devam · $red")
                             }
                         }
@@ -1077,10 +1079,18 @@ class CaptureAccessibilityService : AccessibilityService() {
                 if (waiting.id == currentEncounterId) {
                     waiting.seenAt = SystemClock.uptimeMillis()
                     buKareImza?.let { waiting.seenSig = it }
-                    if (sameOrder(waiting.options, p.options)) {
+                    val yeniImzalar = if (yol == "kutu")
+                        sikImzalari(shot, p.optionRects, screenW, screenH) else null
+                    val imzaSirasiAyni = waiting.imzalar?.let { eski ->
+                        if (yeniImzalar == null || eski.size != yeniImzalar.size ||
+                            eski.any { it == null } || yeniImzalar.any { it == null }
+                        ) true else eski.indices.all { SikImzasi.ayni(eski[it], yeniImzalar[it]) }
+                    } ?: true
+                    if (sameOrder(waiting.options, p.options) && imzaSirasiAyni) {
                         // Sıra aynı: kutular animasyonla biraz kaymış olabilir.
                         waiting.rects = p.optionRects
-                    } else if (yalnizcaHarfFarki(waiting.options, p.options)) {
+                    } else if (imzaSirasiAyni && yalnizcaHarfFarki(waiting.options, p.options) &&
+                        !sameOrder(waiting.options, p.options)) {
                         // "Töz" bir karede "Toz" okunmuş olabilir, şıklar da
                         // gerçekten yer değiştirmiş olabilir; ikisi ayırt
                         // edilemiyor. Hiçbir şeye dokunmuyoruz.
@@ -1088,7 +1098,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                         // Sıra değişti. Metinle kutu birlikte güncelleniyor.
                         waiting.options = p.options
                         waiting.rects = p.optionRects
-                        waiting.imzalar = if (yol == "kutu") sikImzalari(shot, p.optionRects, screenW, screenH) else null
+                        waiting.imzalar = yeniImzalar
                         // Konuma bağlı bütün durum artık geçersiz: hangi
                         // kutunun yeşil olduğu, hangisine basıldığı, kaç
                         // saniyedir beklenildiği — hepsi yeniden okunmalı.
@@ -1225,7 +1235,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             log("ONARILDI #$savedId: $neden · ${p.options.joinToString(" / ")}")
         }
         if (savedId == null) {
-            log("RED: kayıt çok kısa / şık yetersiz")
+            log("RED: kayıt kısa, şıklar yetersiz veya okunamayan şık imzaları uyuşmuyor")
             pendingAnswer = null
             iz.cik("kayit_red")
         } else {
@@ -1922,9 +1932,9 @@ class CaptureAccessibilityService : AccessibilityService() {
      */
     private fun sameOrder(a: List<String>, b: List<String>): Boolean {
         if (a.size != b.size) return false
-        val katli = a.map { TurkishText.normalizeKey(it) }
+        val katli = a.map { TurkishText.optionKey(it) }
         return a.indices.all { i ->
-            katli[i] == TurkishText.normalizeKey(b[i]) &&
+            katli[i] == TurkishText.optionKey(b[i]) &&
                 (katli.count { it == katli[i] } == 1 ||
                     TurkishText.distinctKey(a[i]) == TurkishText.distinctKey(b[i]))
         }
@@ -1933,7 +1943,9 @@ class CaptureAccessibilityService : AccessibilityService() {
     /** Listeler yalnızca Türkçe harf farkıyla mı ayrılıyor (bkz. [sameOrder])? */
     private fun yalnizcaHarfFarki(a: List<String>, b: List<String>): Boolean =
         a.size == b.size && a.indices.all {
-            TurkishText.normalizeKey(a[it]) == TurkishText.normalizeKey(b[it])
+            TurkishText.optionKey(a[it]) == TurkishText.optionKey(b[it])
+        } && a.indices.any {
+            TurkishText.distinctKey(a[it]) != TurkishText.distinctKey(b[it])
         }
 
     /**

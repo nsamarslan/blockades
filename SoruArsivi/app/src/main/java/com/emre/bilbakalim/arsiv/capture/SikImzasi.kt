@@ -99,6 +99,10 @@ object SikImzasi {
         return onaltilik(bitler)
     }
 
+    /** Aynı cihazdaki ardışık karelerde bir kutunun görüntüsü değişti mi? */
+    fun ayni(a: String?, b: String?): Boolean =
+        mesafe(a, b)?.let { it <= ESLESME_MAX } == true
+
     /** İki imzanın farklı bit sayısı; biri yoksa ya da boyları tutmuyorsa null. */
     fun mesafe(a: String?, b: String?): Int? {
         if (a.isNullOrEmpty() || b.isNullOrEmpty() || a.length != b.length) return null
@@ -131,6 +135,19 @@ object SikImzasi {
         val ikinci = sirali.getOrNull(1)?.second
         if (ikinci != null && ikinci - d < EN_AZ_ARALIK) return null
         return enIyi
+    }
+
+    /**
+     * OCR aynı sembolü başka metinle (veya hiç) okuduğunda son çare:
+     * bütün dört şık görsel olarak birebir ve benzersiz eşleşmeli. Yalnızca
+     * doğru şıkkın imzasını karşılaştırmak farklı bir şık setini yanlışlıkla
+     * aynı soru kabul etmeye yol açabilir.
+     */
+    fun eslesmeSirasi(stored: List<String?>, screen: List<String?>): List<Int>? {
+        if (stored.size != 4 || screen.size != 4) return null
+        val indices = screen.indices.toList()
+        val mapping = stored.map { enYakin(it, indices, screen) ?: return null }
+        return mapping.takeIf { it.toSet().size == 4 }
     }
 
     private fun yaziMi(c: Int): Boolean {

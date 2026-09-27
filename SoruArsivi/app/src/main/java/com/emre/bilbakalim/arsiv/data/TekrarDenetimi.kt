@@ -13,10 +13,19 @@ import com.emre.bilbakalim.arsiv.util.TurkishText
  * geç gelmesinin ve taramanın ağırlaşmasının bir parçası buydu. Bu hesaplar
  * satır başına bir kez yapılıp saklanıyor (bkz. `Repo`'daki önbellek).
  */
+private val SYMBOL_TOKEN = Regex("~[0-9a-f]+~")
+
 internal class TekrarAdayi(val id: Long, question: String, options: List<String>) {
-    val key: String = TurkishText.normalizeKey(question)
+    val key: String = TurkishText.optionKey(question)
+    val questionSymbols: List<String> = SYMBOL_TOKEN.findAll(key).map { it.value }.toList()
     val negation: Int = TurkishText.negationSignature(question)
-    val optionKeys: List<String> = options.map { TurkishText.normalizeKey(it) }
+    val rawOptions: List<String> = options
+    val optionKeys: List<String> = options.map { TurkishText.optionKey(it) }
+    // Eksisi düşmüş eski sayı şıklarını onarmak için; diğer işaretler
+    // asla bulanık eşleştirmede yok sayılmaz.
+    val symbols: List<String> = optionKeys.map { key ->
+        SYMBOL_TOKEN.findAll(key).map { it.value }.filter { it != "~2d~" }.joinToString("")
+    }.sorted()
     val sortedOptionKey: String = optionKeys.sorted().joinToString("|")
     val words: List<String> by lazy { TurkishText.words(question) }
 
@@ -36,6 +45,16 @@ internal class TekrarSorgusu(question: String, options: List<String>) {
     private val optionCount = options.size
 
     fun matches(old: TekrarAdayi): Boolean {
+        // Aynı soru metni ve üç ortak şık, dördüncü şık "∨" yerine "∧"
+        // olduğunda iki ayrı cevap setidir. Bulanık OCR toleransı bunu
+        // birleştirirse eski doğru cevap yanlış sete aktarılır.
+        if (old.symbols != aday.symbols || old.questionSymbols != aday.questionSymbols) return false
+        // Önceki sürüm baştaki eksi işaretlerini silmişti. Yeni simge-duyarlı
+        // anahtar bu eski kayıtlarla artık eşleşmez; yalnızca *kanıtlanmış*
+        // eksi onarımında ve aynı soru metninde onları yakala.
+        if (old.key == aday.key &&
+            Repo.isaretOnarimi(old.rawOptions, null, aday.rawOptions) != null
+        ) return true
         // Şıklar birebir aynı olmak zorunda değil: OCR bir şıkkın
         // sonundaki harfi düşürünce ("Fransa" / "Frans") birebir eşitlik
         // tutmuyor ve kırpılmış okuma yakalanamıyordu. Sayı şıklarında
@@ -134,8 +153,8 @@ internal class TekrarSorgusu(question: String, options: List<String>) {
     companion object {
         /** [metinAyiriyor]'un ham metinler için olanı. */
         internal fun ayriMetinler(a: String, b: String): Boolean = ayriMetinler(
-            TurkishText.normalizeKey(a), TurkishText.words(a),
-            TurkishText.normalizeKey(b), TurkishText.words(b)
+            TurkishText.optionKey(a), TurkishText.words(a),
+            TurkishText.optionKey(b), TurkishText.words(b)
         )
 
         private fun ayriMetinler(
@@ -143,6 +162,9 @@ internal class TekrarSorgusu(question: String, options: List<String>) {
             keyB: String, wordsB: List<String>
         ): Boolean {
             if (keyA == keyB) return false
+            // Kelimeler simgeleri atıyor. "a<b" ile "a>b" zıt sorulardır.
+            if (SYMBOL_TOKEN.findAll(keyA).map { it.value }.toList() !=
+                SYMBOL_TOKEN.findAll(keyB).map { it.value }.toList()) return true
             return !TurkishText.ayniSoruKelimeleri(wordsA, wordsB) ||
                 TurkishText.olumsuzlukEkiFarki(wordsA, wordsB)
         }

@@ -25,8 +25,8 @@ object QuestionParser {
     /** Elle seçilen bölgenin yan kenarlarına eklenen pay (ekran genişliğine oran). */
     private const val BOLGE_YATAY_PAY = 0.02f
 
-    /** Okunamayan şıkkın yerine yazılan metin (bkz. `parse(tekOkunamayanaIzin)`). */
-    const val OKUNAMAYAN_SIK = "(okunamadı)"
+    /** Okunamayan şıkkın yerine yazılan metin (bkz. `parse(okunamayanaIzin)`). */
+    const val OKUNAMAYAN_SIK = TurkishText.UNREADABLE_OPTION
 
     /**
      * Bir şık kutusunun içinden okunan OCR parçalarını tek metne birleştirir.
@@ -60,8 +60,8 @@ object QuestionParser {
         return ortak * 2 >= dar
     }
 
-    /** "Tek şık okunamadı" reddinin ayırt edici parçası; yakalama tarafı bunu arıyor. */
-    const val TEK_OKUNAMAYAN = ", 1 tanesinin metni okunamadı"
+    /** Kutu yolu, kaç şıkkın okunamadığını bu redde ekler. */
+    const val OKUNAMAYAN_RED = "tanesinin metni okunamadı"
 
     /** Teşhis ekranı için: son ayrıştırmanın neden başarısız olduğu. */
     @Volatile var lastReject: String? = null
@@ -186,11 +186,11 @@ object QuestionParser {
         fromAccessibility: Boolean,
         knownOptions: List<TextItem>? = null,
         /**
-         * Dört kutudan tam biri okunamıyorsa o şık [OKUNAMAYAN_SIK] ile
+         * Dört kutudan herhangi biri okunamıyorsa o şık [OKUNAMAYAN_SIK] ile
          * doldurulsun mu? Yakalama tarafı bunu ancak aynı sonuç üst üste
          * geldiğinde açıyor (ML Kit'in tanımadığı bir simge).
          */
-        tekOkunamayanaIzin: Boolean = false
+        okunamayanaIzin: Boolean = false
     ): Parsed? {
         if (screenW <= 0 || screenH <= 0) return reject("ekranda metin yok")
         if (raw.isEmpty() && knownOptions.isNullOrEmpty()) return reject("ekranda metin yok")
@@ -224,7 +224,7 @@ object QuestionParser {
 
         // --- 1. Şık adayları ---------------------------------------------------
         val options =
-            if (knownOptions != null) fromBoxes(knownOptions, tekOkunamayanaIzin)
+            if (knownOptions != null) fromBoxes(knownOptions, okunamayanaIzin)
             else fromText(cleaned.filter { it.centerX in sikX }, optTop, optBottom, screenH, fromAccessibility)
         if (options == null) return null
         val optionTexts = options.map { it.second }
@@ -312,19 +312,20 @@ object QuestionParser {
      * Şık kutuları ekrandan bulunduğunda izlenen yol.
      *
      * Burada hiçbir sezgi yok: kutular zaten kesin, tek iş her kutunun
-     * metnini sıraya koymak. Metni okunamayan kutu listeden düşmüyor, açıkça
-     * reddediliyor — çünkü "dört kutu gördüm, üçünü okuyabildim" ile "ekranda
-     * üç şık var" bambaşka iki durum ve ikincisi sanıldığında eksik şıkla
-     * kayıt açılıyordu.
+     * metnini sıraya koymak. Okunamayan kutu listeden düşmez: önce red
+     * döner; dıştaki yakalama tekrar eden okumayı ve görsel imzaları
+     * doğruladıysa metin yerine açık bir yer tutucu koyar. Böylece
+     * "dört kutu gördüm, üçünü okuyabildim" hiçbir zaman "üç şık var"
+     * diye yanlış yorumlanmaz.
      */
     private fun fromBoxes(
         boxes: List<TextItem>,
-        tekOkunamayanaIzin: Boolean
+        okunamayanaIzin: Boolean
     ): List<Pair<TextItem, String>>? {
         val sorted = boxes.sortedBy { it.bounds.top }
         val named = sorted.map { it to TurkishText.stripOptionPrefix(TurkishText.cleanOcr(it.text)) }
         val okunamayan = named.count { it.second.isBlank() }
-        if (okunamayan == 1 && tekOkunamayanaIzin && sorted.size >= 4) {
+        if (okunamayanKabulEdilir(sorted.size, okunamayan, okunamayanaIzin)) {
             return named.map { (item, text) -> item to text.ifBlank { OKUNAMAYAN_SIK } }
         }
         if (okunamayan > 0) {
@@ -337,6 +338,10 @@ object QuestionParser {
         }
         return named
     }
+
+    /** Kutu yolu yalnızca dört fiziksel kutuyu teyit ettikten sonra izin verir. */
+    internal fun okunamayanKabulEdilir(kutuSayisi: Int, okunamayan: Int, izin: Boolean): Boolean =
+        izin && kutuSayisi == 4 && okunamayan in 1..4
 
     /**
      * Şık kutuları bulunamadığında izlenen eski yol: şıkları metin

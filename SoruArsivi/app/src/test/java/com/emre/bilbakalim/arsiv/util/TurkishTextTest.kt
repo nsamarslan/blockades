@@ -102,4 +102,31 @@ class TurkishTextTest {
         assertFalse(fark("Mars kaçıncı gezegendir?", "Dünya kaçıncı gezegendir?"))
         assertFalse(fark("Aynı soru", "Aynı soru"))
     }
+    @Test
+    fun `mantik simgeleri cevapta ve parmak izinde korunur`() {
+        val q = "Mantıkta veya işlemi hangi semboldür?"
+        val options = listOf("∧", "∨", "<", ">")
+        assertEquals(1, TurkishText.matchIndex(options, "∨"))
+        assertEquals(3, TurkishText.matchIndex(options, ">"))
+        assertNull(TurkishText.matchIndex(listOf("a<b", "a>b"), "a=b"))
+        assertFalse(TurkishText.sameOptionText("-16", "16"))
+        assertFalse(TurkishText.sameOptionText("a<b", "a>b"))
+        assertEquals(TurkishText.fingerprint(q, options), TurkishText.fingerprint(q, options.reversed()))
+        assertFalse(TurkishText.fingerprint(q, options) ==
+            TurkishText.fingerprint(q, listOf("∧", "∧", "<", ">")))
+        assertFalse(TurkishText.fingerprint("a<b ifadesi doğru mudur?", options) ==
+            TurkishText.fingerprint("a>b ifadesi doğru mudur?", options))
+        assertFalse(TurkishText.fingerprint(q, listOf("-16", "-4", "4", "16")) ==
+            TurkishText.fingerprint(q, listOf("16", "4", "4", "16")))
+    }
+
+    @Test
+    fun `okunamadi metinle ve benzersiz simge olmayanla eslesmez`() {
+        assertNull(TurkishText.matchIndex(listOf("(okunamadı)", "∨", "8", "9"), "(okunamadı)"))
+        assertEquals(listOf(0, 1), TurkishText.matchCandidates(
+            listOf("(okunamadı)", "(okunamadı)", "<", ">"), "(okunamadı)"
+        ))
+        assertNull(TurkishText.matchIndex(listOf("a<b", "c"), "a>b"))
+    }
+
 }

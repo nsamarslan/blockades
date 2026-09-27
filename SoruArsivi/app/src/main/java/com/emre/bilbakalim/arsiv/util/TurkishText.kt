@@ -86,6 +86,40 @@ object TurkishText {
     // Düzenli ifadeler bir kez derleniyor. Eskiden her çağrıda yeniden
     // derleniyordu; tekrar denetimi bu iki fonksiyonu arşivin her satırı
     // için çağırdığından, bilinmeyen her soruda binlerce derleme demekti.
+    /**
+     * Şık kimliği için anlam taşıyan matematik/mantık işaretleri. Genel soru
+     * arama anahtarı [normalizeKey] eski davranışında kalır; şıklarda ise
+     * "<" ve ">" ya da "∧" ve "∨" asla aynı cevap sayılmamalı.
+     * Sayı önündeki eksi de işarettir; sözcük arasındaki tire değildir.
+     */
+    private const val SIK_ISARETLERI = "<>≤≥=≠∧∨¬→↔⇒⇔∈∉⊂⊆∪∩∀∃∴∵±×÷√∞%‰+/*^"
+    private fun matematikIsareti(s: String, i: Int): Char? {
+        val c = s[i]
+        return when {
+            c in SIK_ISARETLERI -> c
+            c in "−–—-" && s.drop(i + 1).trimStart().firstOrNull()?.isDigit() == true -> '-'
+            else -> null
+        }
+    }
+
+    /** Simgelerin sırası da önemlidir: "a>b" ile "a<b" ayrılmalı. */
+    fun optionKey(s: String): String = buildString {
+        val t = fold(lower(s))
+        for (i in t.indices) {
+            val sign = matematikIsareti(t, i)
+            if (sign != null) append('~').append(sign.code.toString(16)).append('~')
+            else if (t[i] in 'a'..'z' || t[i] in '0'..'9') append(t[i])
+        }
+    }
+
+    /** İşaretler eşleşmiyorsa, bulanık OCR eşleştirmesi de karar vermemeli. */
+    private fun compatibleOptionSymbols(a: String, b: String): Boolean =
+        a.indices.mapNotNull { matematikIsareti(a, it) } ==
+            b.indices.mapNotNull { matematikIsareti(b, it) }
+
+    /** OCR metni hiç olmayan şık: metinle değil yalnızca görsel imzayla eşleşir. */
+    const val UNREADABLE_OPTION = "(okunamadı)"
+
     private val HARF_RAKAM_DISI = Regex("[^a-z0-9]")
     private val KELIME_AYRACI = Regex("[^a-z0-9]+")
 
@@ -100,12 +134,12 @@ object TurkishText {
     fun words(s: String): List<String> =
         fold(lower(s)).split(KELIME_AYRACI).filter { it.isNotEmpty() }
 
-    /** Soru metninden kararlı bir parmak izi üretir. */
+    /** Soru metninden kararlı bir parmak izi üretir; matematik işaretleri silinmez. */
     fun fingerprint(question: String, options: List<String>): String {
         val key = buildString {
-            append(normalizeKey(question))
+            append(optionKey(question))
             // Şıkların sırası oyunda değişebiliyor; bu yüzden sıralayıp ekliyoruz.
-            options.map { normalizeKey(it) }.filter { it.isNotBlank() }.sorted()
+            options.map { optionKey(it) }.filter { it.isNotBlank() }.sorted()
                 .forEach { append('|').append(it) }
         }
         return sha256(key)
@@ -243,11 +277,12 @@ object TurkishText {
      * cevaplar. Orada birebir eşitlik aranıyor.
      */
     fun sameOptionText(a: String, b: String): Boolean =
-        sameOptionKey(normalizeKey(a), normalizeKey(b))
+        sameOptionKey(optionKey(a), optionKey(b))
 
-    /** [sameOptionText]'in zaten [normalizeKey]'den geçmiş anahtarlar için olanı. */
+    /** [sameOptionText]'in zaten [optionKey]'den geçmiş anahtarlar için olanı. */
     fun sameOptionKey(x: String, y: String): Boolean {
         if (x == y) return x.isNotEmpty()
+        if ('~' in x || '~' in y) return false
         if (DIGITS_ONLY.matches(x) || DIGITS_ONLY.matches(y)) return false
         if (minOf(x.length, y.length) < 4) return false
         if (kotlin.math.abs(x.length - y.length) > 1) return false
@@ -262,9 +297,9 @@ object TurkishText {
      * kullanılamaz.
      */
     fun optionsNearlyMatch(a: List<String>, b: List<String>): Boolean =
-        optionKeysNearlyMatch(a.map { normalizeKey(it) }, b.map { normalizeKey(it) })
+        optionKeysNearlyMatch(a.map { optionKey(it) }, b.map { optionKey(it) })
 
-    /** [optionsNearlyMatch]'in [normalizeKey]'den geçmiş anahtarlar için olanı. */
+    /** [optionsNearlyMatch]'in [optionKey]'den geçmiş anahtarlar için olanı. */
     fun optionKeysNearlyMatch(a: List<String>, b: List<String>): Boolean {
         if (a.size < 4 || a.size != b.size) return false
         val kalan = b.toMutableList()
@@ -278,7 +313,7 @@ object TurkishText {
 
     /**
      * İki şık listesinin kaç şıkkı birbirini tutuyor? Sıra önemsiz, her şık
-     * en fazla bir kez kullanılıyor. Anahtarlar [normalizeKey]'den geçmiş olmalı.
+     * en fazla bir kez kullanılıyor. Anahtarlar [optionKey]'den geçmiş olmalı.
      */
     fun optionKeyOverlap(a: List<String>, b: List<String>): Int {
         val kalan = b.toMutableList()
@@ -416,7 +451,7 @@ object TurkishText {
      * bilmediğimizi söylemek yeğdir.
      */
     fun matchIndex(options: List<String>, text: String?): Int? {
-        if (text.isNullOrBlank() || options.isEmpty()) return null
+        if (text.isNullOrBlank() || options.isEmpty() || text == UNREADABLE_OPTION) return null
 
         // Birebir eşleşme, sıkıdan gevşeğe dört anahtarla. Bir kademede tek
         // şık tutuyorsa o; birden çok şık tutuyorsa şıklar o kademede ayırt
@@ -442,7 +477,10 @@ object TurkishText {
         for (anahtar in ESLESME_KADEMELERI) {
             val k = anahtar(text)
             if (k.isEmpty()) continue
-            val tutan = options.indices.filter { anahtar(options[it]) == k }
+            val tutan = options.indices.filter {
+                options[it] != UNREADABLE_OPTION && compatibleOptionSymbols(options[it], text) &&
+                    anahtar(options[it]) == k
+            }
             if (tutan.size == 1) return tutan[0]
             if (tutan.size > 1) return null
         }
@@ -453,7 +491,10 @@ object TurkishText {
         // arşivdeki cevabı ekranda bulamayıp rastgele basıyordu. Yalnızca tek
         // bir şık tutuyorsa; sayılarda hiç fark yok ([sameOptionKey]).
         val metinAnahtari = normalizeKey(text)
-        val harfHatasi = options.indices.filter { sameOptionKey(normalizeKey(options[it]), metinAnahtari) }
+        val harfHatasi = options.indices.filter {
+            options[it] != UNREADABLE_OPTION && compatibleOptionSymbols(options[it], text) &&
+                sameOptionKey(optionKey(options[it]), optionKey(text))
+        }
         if (harfHatasi.size == 1) return harfHatasi[0]
         if (harfHatasi.size > 1) return null
 
@@ -461,7 +502,8 @@ object TurkishText {
         var best = -1
         var bestSim = 0f
         options.forEachIndexed { i, o ->
-            val sim = similarity(o, text)
+            val sim = if (o != UNREADABLE_OPTION && compatibleOptionSymbols(o, text))
+                similarity(o, text) else 0f
             if (sim > bestSim) {
                 bestSim = sim
                 best = i
@@ -470,7 +512,9 @@ object TurkishText {
         if (best < 0 || bestSim < OPTION_MATCH_MIN) return null
         // En iyi adayla aynı anahtarı taşıyan bir başkası varsa belirsiz.
         val bestKey = normalizeKey(options[best])
-        return if (options.count { normalizeKey(it) == bestKey } > 1) null else best
+        return if (options.count {
+            it != UNREADABLE_OPTION && compatibleOptionSymbols(it, text) && normalizeKey(it) == bestKey
+        } > 1) null else best
     }
 
     /**
@@ -484,7 +528,11 @@ object TurkishText {
         for (anahtar in ESLESME_KADEMELERI) {
             val k = anahtar(text)
             if (k.isEmpty()) continue
-            val tutan = options.indices.filter { anahtar(options[it]) == k }
+            val tutan = options.indices.filter {
+                (text == UNREADABLE_OPTION || options[it] != UNREADABLE_OPTION) &&
+                    compatibleOptionSymbols(options[it], text) &&
+                    anahtar(options[it]) == k
+            }
             if (tutan.isNotEmpty()) return tutan
         }
         return emptyList()

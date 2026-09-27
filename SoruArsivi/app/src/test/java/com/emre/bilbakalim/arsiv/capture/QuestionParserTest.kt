@@ -114,4 +114,13 @@ class QuestionParserTest {
         assertFalse(keptOutside("(44)"))
         assertFalse(keptOutside("1."))
     }
+    @Test
+    fun `birden cok OCR siz simge ancak dort kutu ve teyitle kabul edilir`() {
+        assertTrue(QuestionParser.okunamayanKabulEdilir(4, 3, true))
+        assertTrue(QuestionParser.okunamayanKabulEdilir(4, 4, true))
+        assertFalse(QuestionParser.okunamayanKabulEdilir(4, 2, false))
+        assertFalse(QuestionParser.okunamayanKabulEdilir(3, 2, true))
+        assertFalse(QuestionParser.okunamayanKabulEdilir(4, 0, true))
+    }
+
 }

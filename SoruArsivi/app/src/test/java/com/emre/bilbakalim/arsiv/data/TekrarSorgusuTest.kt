@@ -240,4 +240,27 @@ class TekrarSorgusuTest {
             )
         )
     }
+    @Test
+    fun `simgesi farkli dortlu ayni soruya birlesmez`() {
+        val q = "Aşağıdaki mantık sembollerinden hangisi veya anlamına gelir?"
+        assertFalse(ayni(q, listOf("∨", "∧", "<", ">"),
+            q, listOf("∧", "∧", "<", ">")))
+        assertTrue(ayni(q, listOf("∨", "∧", "<", ">"),
+            q, listOf(">", "<", "∧", "∨")))
+    }
+
+    @Test
+    fun `eski eksisi silinmis kayit eksi onarimina ulasir`() {
+        val q = "Eksi sayıların çarpımının sonucu kaçtır?"
+        assertTrue(ayni(q, listOf("4", "16", "16", "4"),
+            q, listOf("-16", "-4", "4", "16")))
+    }
+
+    @Test
+    fun `soru metnindeki mantik simgeleri farkli sorudur`() {
+        val siklar = listOf("Doğru", "Yanlış", "Bilinmez", "Hiçbiri")
+        assertFalse(ayni("a<b ifadesi doğru mu?", siklar,
+            "a>b ifadesi doğru mu?", siklar))
+    }
+
 }

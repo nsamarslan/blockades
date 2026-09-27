@@ -40,6 +40,11 @@ jobs:
       - name: gradlew calistirilabilir yap
         run: chmod +x ./gradlew
 
+      # Android kaynakları değiştiğinde önce birim testlerini çalıştır; hatalı
+      # şık eşleştirmesiyle APK üretmeyelim.
+      - name: Android birim testleri
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
       - name: Debug APK derle
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
