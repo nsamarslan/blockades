@@ -98,6 +98,19 @@ class IsaretOnarimTest {
     }
 
     @Test
+    fun `tek okunamayan sik geriye kalan okunamayana eslesir`() {
+        val u = "(okunamadı)"
+        assertEquals(
+            listOf(1, 3, 0, 2),
+            Repo.sikEslesmesi(listOf(u, "<", ">", "8"), listOf(">", u, "8", "<"))
+        )
+        // İki okunamayan: hangisinin hangisi olduğu metinden bilinemez.
+        assertNull(Repo.sikEslesmesi(listOf(u, u, ">", "8"), listOf(">", u, "8", u)))
+        // Kalan ekrandaki şık okunmuş bir metin: eşleşme uydurulmuyor.
+        assertNull(Repo.sikEslesmesi(listOf(u, "<", ">", "8"), listOf(">", "V", "8", "<")))
+    }
+
+    @Test
     fun `imza metni`() {
         assertEquals("ab;;cd", Repo.imzaMetni(listOf("ab", null, "cd"), 3))
         assertNull(Repo.imzaMetni(listOf(null, null), 2))

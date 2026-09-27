@@ -1314,6 +1314,31 @@ metni aynı şıklar varsa hangi «V»nin hangisi olduğu bilinemeyeceği için
 boşaltılıyor (`ONARILDI … piksel imzalarıyla yeniden yazıldı`); sonraki
 karşılaşmada doğrusu öğreniliyor.
 
+### İşaretli şıklar ve imza doğrulaması
+
+* **İşaretler anahtarda.** Şık eşleştirmesi, parmak izi ve tekrar denetimi
+  matematik/mantık işaretlerini artık silmiyor: `<` / `>`, `∧` / `∨`,
+  `-16` / `16`, `1/6` / `16` ayrı. Eski hesapla yazılmış parmak izleri,
+  kayıt benzerlikle ilk bulunduğunda yenisine geçiyor; yoksa bu sorular her
+  seferinde tanınmayıp ikinci okumayı bekliyordu.
+* **Birden çok okunamayan şık.** Aynı red iki kez gelir ve dört kutunun da
+  imzası alınabilirse, okunamayan her şık «(okunamadı)» ile dolduruluyor.
+  Bu şıklar yalnızca imzayla eşleşiyor.
+* **Kısa ve işaretli cevaplar** ("12", "V", "1/6") iki tarafta imza varsa
+  imzayla doğrulanıyor. İmza yoksa metin kararı geçerli; yalnızca tek harf
+  ya da rakam («V», «8») tahmin edilmiyor. Elle düzeltilmiş kayıtlara da,
+  şıklarına ve cevabına dokunmadan, eksik imzaları yazılıyor.
+* **Okunamayan şıkların görüntüsü kayıttakiyle uyuşmazsa** (başka bir
+  sembol seti) soru yine oynanıyor, ama arşivin cevabı kullanılmıyor ve
+  cevap yazılmıyor (günlükte `İMZA UYUŞMADI`). Kayıtta «(okunamadı)» olan
+  şık bu kez «V» okunduysa dört imza birebir eşleştiğinde aynı set
+  sayılıyor. 3.9 öncesinden kalma imzasız kayıtlar eskisi gibi metinle
+  eşleşiyor, imzaları ilk karşılaşmada yazılıyor.
+* **Şıklar yer değiştirdi mi?** Metin aynı görünse de («(okunamadı)»,
+  «V / V»), iki karenin imzaları dört şıkkı birebir ama başka bir sıraya
+  eşliyorsa yer değiştirmiş sayılıyor. Karar verilemeyen kare (basma
+  efekti, puan balonu) sayılmıyor; konuma bağlı durum boşuna silinmiyor.
+
 ## Ekranı ayarla: başka telefon ve tablet (3.9)
 
 Ayarlar → *Ekran bölgeleri* → **Ekranı ayarla**. Oyunun bir karesi üstünde

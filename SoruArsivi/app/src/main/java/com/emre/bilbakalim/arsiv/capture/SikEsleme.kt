@@ -12,6 +12,12 @@ object SikEsleme {
      * Aynı sorunun OCR'siz şıklarının *kümesi* değiştiyse, parmak izi
      * metinle aynı görünse de başka bir cevap seti olabilir. Birbirine
      * benzeyen ama yerleri değişmiş şıkları birebir görsel eşleyerek doğrula.
+     *
+     * false yalnızca iki tarafın imzası karşılaştırılıp tutmadığında (ya da
+     * ekranın imzası eksik olduğunda) döner. Kayıt imzasızsa (3.9 öncesi)
+     * doğrulanacak bir şey yok: eskiden olduğu gibi metinle devam edilir ve
+     * eksik imzalar bu karşılaşmada yazılır. Yoksa o kayıtlar bir daha hiç
+     * eşleşmiyor, bot da o sorulara hiç basmıyordu.
      */
     fun okunamayanlarAyni(
         stored: List<String>, storedSigs: List<String?>,
@@ -20,10 +26,15 @@ object SikEsleme {
         val a = stored.indices.filter { stored[it] == TurkishText.UNREADABLE_OPTION }
         val b = screen.indices.filter { screen[it] == TurkishText.UNREADABLE_OPTION }
         if (a.isEmpty() && b.isEmpty()) return true
-        if (a.size != b.size || storedSigs.size != stored.size || screenSigs.size != screen.size)
-            return false
-        val matched = a.map { SikImzasi.enYakin(storedSigs[it], b, screenSigs) }
-        return matched.all { it != null } && matched.toSet().size == b.size
+        if (storedSigs.size != stored.size || storedSigs.any { it == null }) return true
+        if (screenSigs.size != screen.size) return false
+        if (a.size == b.size) {
+            val matched = a.map { SikImzasi.enYakin(storedSigs[it], b, screenSigs) }
+            if (matched.all { it != null } && matched.toSet().size == b.size) return true
+        }
+        // OCR bu kez başka bir şıkkı okuyamamış ya da okunamayanı «V» diye
+        // okumuş olabilir. Dört şık görüntüce birebir eşleşiyorsa aynı settir.
+        return SikImzasi.eslesmeSirasi(storedSigs, screenSigs) != null
     }
 
     fun bul(
@@ -42,17 +53,25 @@ object SikEsleme {
         val shortOrSymbol = text.length <= 2 ||
             TurkishText.optionKey(text) != TurkishText.normalizeKey(text)
         if (textIndex != null) {
+            if (!shortOrSymbol || screenSigs.isEmpty()) return textIndex
             // İki tarafta da imza varsa kısa/simgeli şıkkı metinle tek
             // eşleşti diye onaylama: resimde başka karakter olabilir.
-            if (shortOrSymbol && screenSigs.isNotEmpty()) {
-                // Kutu OCR yolundayız ama imzalardan biri eksikse, kısa
-                // metnin tek karşılığına bakıp tahmin etmek güvenli değil.
-                if (storedSig == null || screenSigs.getOrNull(textIndex) == null) return null
+            if (storedSig != null && screenSigs.getOrNull(textIndex) != null) {
                 return if (SikImzasi.enYakin(storedSig, listOf(textIndex), screenSigs) == textIndex)
                     textIndex else null
             }
-            return textIndex
+            // İmzalardan biri yok, görüntüyle doğrulanamıyor. OCR'ın ayrı
+            // simgeleri aynı okuduğu yer tek harf ya da rakam («V», «8»):
+            // orada tahmin yok. "12", "1/6", "-4", "<" gibi metinlerde metin
+            // kararı geçerli (işaretler zaten birebir tutmak zorunda); yoksa
+            // imzası alınamamış kayıtlarda bu cevapların hiçbiri bulunmuyordu.
+            return if (tekHarfYaDaRakam(text)) null else textIndex
         }
         return sigIndex
+    }
+
+    private fun tekHarfYaDaRakam(text: String): Boolean {
+        val t = text.trim()
+        return t.length == 1 && t[0].isLetterOrDigit()
     }
 }

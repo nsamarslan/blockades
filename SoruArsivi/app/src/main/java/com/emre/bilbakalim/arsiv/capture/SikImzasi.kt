@@ -99,10 +99,6 @@ object SikImzasi {
         return onaltilik(bitler)
     }
 
-    /** Aynı cihazdaki ardışık karelerde bir kutunun görüntüsü değişti mi? */
-    fun ayni(a: String?, b: String?): Boolean =
-        mesafe(a, b)?.let { it <= ESLESME_MAX } == true
-
     /** İki imzanın farklı bit sayısı; biri yoksa ya da boyları tutmuyorsa null. */
     fun mesafe(a: String?, b: String?): Int? {
         if (a.isNullOrEmpty() || b.isNullOrEmpty() || a.length != b.length) return null

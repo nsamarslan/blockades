@@ -34,11 +34,16 @@ class Repo private constructor(context: Context) {
         /**
          * [onarim] doluysa kayıt bozuk bulunup ekrandaki okumadan onarıldı.
          * [yol] kaydın nasıl bulunduğu: parmak izi (birebir) ya da benzerlik.
+         * [cevapKullanilmaz]: okunamayan şıkların görüntüsü kayıttakilerle
+         * uyuşmadı (bkz. [SikEsleme.okunamayanlarAyni]). Kaydın şıklarına ve
+         * cevabına dokunulmadı; bu karşılaşmada arşivin cevabı kullanılmamalı
+         * ve cevap yazılmamalı.
          */
         data class Duplicate(
             val id: Long,
             val onarim: String? = null,
-            val yol: String = PARMAK_IZI
+            val yol: String = PARMAK_IZI,
+            val cevapKullanilmaz: Boolean = false
         ) : SaveResult
         data object Rejected : SaveResult
     }
@@ -62,11 +67,19 @@ class Repo private constructor(context: Context) {
         val fp = TurkishText.fingerprint(q, opts)
 
         dao.byFingerprint(fp)?.let { mevcut ->
+            // Uyuşmazlıkta kayıt reddedilmiyor: red, botun o soruya hiç
+            // basmaması demekti. Kayda dokunulmuyor, cevap kullanılmıyor.
             if (!SikEsleme.okunamayanlarAyni(mevcut.options, mevcut.imzalar, opts, optionSigs.orEmpty())) {
                 Log.w(TAG, "#${mevcut.id}: okunamayan şıkların görüntüsü değişti; cevaplar birleştirilmedi")
-                return SaveResult.Rejected
+                return SaveResult.Duplicate(mevcut.id, yol = PARMAK_IZI, cevapKullanilmaz = true)
             }
-            if (!mevcut.edited) {
+            if (mevcut.edited) {
+                // Elle düzeltilmiş kayıtta şıklara ve cevaba dokunulmuyor;
+                // yalnızca eksik imzalar, şıklar metinden birebir eşleşiyorsa
+                // yazılıyor. Yoksa kısa ve sembollü cevaplar (bkz.
+                // [SikEsleme.bul]) bu kayıtlarda hiç doğrulanamıyordu.
+                imzalariIsle(mevcut, opts, optionSigs)
+            } else {
                 // Eski sürümün silmiş olduğu eksi işaretli şıkları, birebir
                 // parmak izine denk gelen bozuk kayıt varsa da onar.
                 onarimBul(mevcut, opts)?.let { (neden, onarim) ->
@@ -105,9 +118,12 @@ class Repo private constructor(context: Context) {
         if (old != null) {
             if (!SikEsleme.okunamayanlarAyni(old.options, old.imzalar, opts, optionSigs.orEmpty())) {
                 Log.w(TAG, "#${old.id}: okunamayan şıkların görüntüsü uyuşmuyor; cevaplar birleştirilmedi")
-                return SaveResult.Rejected
+                return SaveResult.Duplicate(old.id, yol = BENZERLIK, cevapKullanilmaz = true)
             }
-            if (!old.edited) {
+            if (old.edited) {
+                // Elle düzeltilmiş kayıt: yalnızca eksik imzalar (yukarıya bkz.).
+                imzalariIsle(old, opts, optionSigs)
+            } else {
                 // Eski şık işareti kuralı sıra sayılarını siliyordu ("1. Dönem"
                 // → "Dönem"); o kayıtlar kendiliğinden düzelmiyordu, çünkü
                 // şıklar yalnızca liste kısaysa tamamlanıyor. Ekrandaki okuma
@@ -164,6 +180,7 @@ class Repo private constructor(context: Context) {
                     adaylariUnut()
                 }
             }
+            parmakIziniYenile(old)
             return SaveResult.Duplicate(old.id, yol = BENZERLIK)
         }
 
@@ -201,8 +218,9 @@ class Repo private constructor(context: Context) {
      * kaydın sırasına dizilip yazılıyor. Eşleşmiyorsa, çünkü kayıtta metni
      * aynı şıklar var («V / V / V / <»), hangi «V»nin hangisi olduğu
      * bilinemez: şıklar ekranın sırasıyla imzalarıyla birlikte yeniden
-     * yazılıyor ([belirsizSikOnarimi]). Döndürdüğü metin günlük için; yalnızca
-     * kayıt yeniden yazıldıysa dolu.
+     * yazılıyor ([belirsizSikOnarimi]); elle düzeltilmiş kayıtta bu ikinci
+     * adım yok. Döndürdüğü metin günlük için; yalnızca kayıt yeniden
+     * yazıldıysa dolu.
      */
     private suspend fun imzalariIsle(old: QuestionEntity, opts: List<String>, sigs: List<String?>?): String? {
         if (sigs == null || sigs.size != opts.size || sigs.any { it == null }) return null
@@ -230,6 +248,23 @@ class Repo private constructor(context: Context) {
         adaylariUnut()
         Log.i(TAG, "#${old.id} metni aynı şıklar imzalarıyla yeniden yazıldı: $opts")
         return "metni aynı okunan şıklar piksel imzalarıyla yeniden yazıldı"
+    }
+
+    /**
+     * Parmak izi artık matematik işaretlerini de görüyor ("1/6" ile "16" ayrı).
+     * Eski hesapla yazılmış kayıtlar birebir yoldan bulunamıyor: her
+     * karşılaşmada benzerlikle aranıyor, tanıdık soru sayılmadığı için de
+     * ikinci okuma bekleniyordu (bir tarama turu). Kaydın parmak izi kendi
+     * metninin eski hesabıysa yenisiyle değiştirilir. Başka bir okumadan
+     * gelen parmak izine dokunulmuyor: metni sonradan değişmiş kayıtların
+     * geri alınması (bkz. [save]) ona dayanıyor.
+     */
+    private suspend fun parmakIziniYenile(old: QuestionEntity) {
+        val yeni = TurkishText.fingerprint(old.questionText, old.options)
+        if (yeni == old.fingerprint) return
+        if (old.fingerprint != TurkishText.legacyFingerprint(old.questionText, old.options)) return
+        // Aynı parmak izi başka bir satırdaysa tekil indeks reddeder; kalsın.
+        runCatching { dao.setFingerprint(old.id, yeni) }
     }
 
     /** Eski kuralların bozduğu şıkları tanıyan onarımlardan tutan ilki. */
@@ -704,11 +739,22 @@ class Repo private constructor(context: Context) {
         /**
          * Kayıttaki her şıkkın ekrandaki sırası; bir şık bile metinden tek
          * bir karşılık bulamıyorsa null.
+         *
+         * Tek istisna, iki tarafta da tek bir «(okunamadı)» şık: metni
+         * yok, ama öteki şıklar birebir eşleştiyse geriye kalan odur. 3.9
+         * öncesinde imzasız kaydedilmiş bu kayıtlar imzalarını ancak böyle
+         * alabiliyor; yoksa cevapları bir daha hiç bulunamıyordu.
          */
         internal fun sikEslesmesi(stored: List<String>, fresh: List<String>): List<Int>? {
             if (stored.size != fresh.size) return null
-            val sira = stored.map { TurkishText.matchIndex(fresh, it) ?: return null }
-            return if (sira.toSet().size == sira.size) sira else null
+            val sira = stored.map { TurkishText.matchIndex(fresh, it) }.toMutableList()
+            val bos = sira.indices.filter { sira[it] == null }
+            if (bos.size == 1 && stored[bos[0]] == TurkishText.UNREADABLE_OPTION) {
+                val kalan = fresh.indices.filter { it !in sira }
+                if (kalan.size == 1 && fresh[kalan[0]] == TurkishText.UNREADABLE_OPTION) sira[bos[0]] = kalan[0]
+            }
+            val tam = sira.map { it ?: return null }
+            return if (tam.toSet().size == tam.size) tam else null
         }
 
         /**

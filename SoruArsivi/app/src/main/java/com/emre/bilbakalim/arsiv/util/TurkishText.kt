@@ -135,11 +135,22 @@ object TurkishText {
         fold(lower(s)).split(KELIME_AYRACI).filter { it.isNotEmpty() }
 
     /** Soru metninden kararlı bir parmak izi üretir; matematik işaretleri silinmez. */
-    fun fingerprint(question: String, options: List<String>): String {
+    fun fingerprint(question: String, options: List<String>): String =
+        parmakIzi(question, options, ::optionKey)
+
+    /**
+     * İşaretleri silen eski parmak izi ("1/6" → "16"). Yalnızca onunla
+     * yazılmış kayıtları tanıyıp yenisine geçirmek için (bkz.
+     * `Repo.parmakIziniYenile`); yeni hiçbir kayıtta kullanılmıyor.
+     */
+    internal fun legacyFingerprint(question: String, options: List<String>): String =
+        parmakIzi(question, options, ::normalizeKey)
+
+    private fun parmakIzi(question: String, options: List<String>, anahtar: (String) -> String): String {
         val key = buildString {
-            append(optionKey(question))
+            append(anahtar(question))
             // Şıkların sırası oyunda değişebiliyor; bu yüzden sıralayıp ekliyoruz.
-            options.map { optionKey(it) }.filter { it.isNotBlank() }.sorted()
+            options.map(anahtar).filter { it.isNotBlank() }.sorted()
                 .forEach { append('|').append(it) }
         }
         return sha256(key)

@@ -121,6 +121,21 @@ class TurkishTextTest {
     }
 
     @Test
+    fun `eski parmak izi yalnizca isaretli sorularda farkli`() {
+        val q = "Hilesiz bir zar atıldığında 3 gelme olasılığı kaçtır?"
+        // İşaret yoksa iki hesap aynı: işaretsiz kayıtların parmak izi değişmiyor.
+        val duz = listOf("Fransa", "İtalya", "Almanya", "İspanya")
+        assertEquals(TurkishText.fingerprint(q, duz), TurkishText.legacyFingerprint(q, duz))
+        // Kesir şıkları eski hesapta "16", "13"... oluyordu.
+        val kesir = listOf("1/6", "2/4", "3/6", "1/3")
+        assertFalse(TurkishText.fingerprint(q, kesir) == TurkishText.legacyFingerprint(q, kesir))
+        assertEquals(
+            TurkishText.legacyFingerprint(q, kesir),
+            TurkishText.legacyFingerprint(q, listOf("16", "24", "36", "13"))
+        )
+    }
+
+    @Test
     fun `okunamadi metinle ve benzersiz simge olmayanla eslesmez`() {
         assertNull(TurkishText.matchIndex(listOf("(okunamadı)", "∨", "8", "9"), "(okunamadı)"))
         assertEquals(listOf(0, 1), TurkishText.matchCandidates(

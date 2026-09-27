@@ -61,6 +61,10 @@ interface QuestionDao {
     @Query("UPDATE questions SET optionSigs = :sigs WHERE id = :id")
     suspend fun setSigs(id: Long, sigs: String?)
 
+    /** Eski hesapla yazılmış parmak izini yenisiyle değiştirir (bkz. `Repo.parmakIziniYenile`). */
+    @Query("UPDATE questions SET fingerprint = :fp WHERE id = :id")
+    suspend fun setFingerprint(id: Long, fp: String)
+
     @Query("DELETE FROM questions WHERE id = :id")
     suspend fun delete(id: Long)
 

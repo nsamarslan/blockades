@@ -323,6 +323,12 @@ class CaptureAccessibilityService : AccessibilityService() {
          */
         var imzalar: List<String?>? = null,
         /**
+         * Okunamayan şıkların görüntüsü kayıttakiyle uyuşmadı (bkz.
+         * `Repo.SaveResult.Duplicate.cevapKullanilmaz`): bu karşılaşmada
+         * arşivdeki cevaba basılmıyor ve oyunun verdiği cevap yazılmıyor.
+         */
+        var cevapKullanilmaz: Boolean = false,
+        /**
          * Şık kutuları ne zamandan beri çizilmiş durumda (0 = henüz değil).
          *
          * Soru kartı ekrana solarak geliyor ve bu sırada şıklar yerlerine
@@ -884,12 +890,15 @@ class CaptureAccessibilityService : AccessibilityService() {
                     if (red != null && red.contains(QuestionParser.OKUNAMAYAN_RED)) {
                         okunamayanSayi = if (red == okunamayanImza) okunamayanSayi + 1 else 1
                         okunamayanImza = red
-                        val imzalarVar = sikImzalari(shot, kutular.map {
-                            Rect(it.left, it.top, it.right, it.bottom)
-                        }, shot.width, shot.height)?.let { imzalar ->
-                            imzalar.size == 4 && imzalar.all { it != null }
-                        } == true
-                        if (okunamayanSayi >= OKUNAMAYAN_KABUL && imzalarVar) {
+                        // İmzalar yalnızca kabul eşiğinde ölçülüyor; her red
+                        // karesinde dört kutuyu taramanın anlamı yok.
+                        val imzalarVar = okunamayanSayi >= OKUNAMAYAN_KABUL &&
+                            sikImzalari(shot, kutular.map {
+                                Rect(it.left, it.top, it.right, it.bottom)
+                            }, shot.width, shot.height)?.let { imzalar ->
+                                imzalar.size == 4 && imzalar.all { it != null }
+                            } == true
+                        if (imzalarVar) {
                             viaOcr = QuestionParser.parse(
                                 ocrItems, shot.width, shot.height, s,
                                 fromAccessibility = false, knownOptions = kutuMetinleri,
@@ -1079,18 +1088,24 @@ class CaptureAccessibilityService : AccessibilityService() {
                 if (waiting.id == currentEncounterId) {
                     waiting.seenAt = SystemClock.uptimeMillis()
                     buKareImza?.let { waiting.seenSig = it }
-                    val yeniImzalar = if (yol == "kutu")
-                        sikImzalari(shot, p.optionRects, screenW, screenH) else null
-                    val imzaSirasiAyni = waiting.imzalar?.let { eski ->
-                        if (yeniImzalar == null || eski.size != yeniImzalar.size ||
-                            eski.any { it == null } || yeniImzalar.any { it == null }
-                        ) true else eski.indices.all { SikImzasi.ayni(eski[it], yeniImzalar[it]) }
-                    } ?: true
-                    if (sameOrder(waiting.options, p.options) && imzaSirasiAyni) {
+                    // Metin sırayı her zaman göremez: şıklar «(okunamadı)» ya
+                    // da aynı okunan semboller («V / V / < / >») olabilir. İki
+                    // karede de dört imza varsa ve imzalar şıkları birebir ama
+                    // BAŞKA bir sıraya eşliyorsa şıklar yer değiştirmiştir.
+                    // Karar verilemeyen kare (geçiş, basma efekti, puan balonu)
+                    // yer değiştirme sayılmıyor; yoksa konuma bağlı durum ve
+                    // uçuştaki dokunuş/kayıt işleri boşuna siliniyordu.
+                    val eskiImzalar = waiting.imzalar
+                    val yeniImzalar = if (yol == "kutu" && eskiImzalar != null &&
+                        eskiImzalar.size == 4 && eskiImzalar.all { it != null }
+                    ) sikImzalari(shot, p.optionRects, screenW, screenH) else null
+                    val imzaYerDegisti = yeniImzalar
+                        ?.let { SikImzasi.eslesmeSirasi(eskiImzalar.orEmpty(), it) }
+                        ?.let { sira -> sira.indices.any { sira[it] != it } } == true
+                    if (sameOrder(waiting.options, p.options) && !imzaYerDegisti) {
                         // Sıra aynı: kutular animasyonla biraz kaymış olabilir.
                         waiting.rects = p.optionRects
-                    } else if (imzaSirasiAyni && yalnizcaHarfFarki(waiting.options, p.options) &&
-                        !sameOrder(waiting.options, p.options)) {
+                    } else if (!imzaYerDegisti && yalnizcaHarfFarki(waiting.options, p.options)) {
                         // "Töz" bir karede "Toz" okunmuş olabilir, şıklar da
                         // gerçekten yer değiştirmiş olabilir; ikisi ayırt
                         // edilemiyor. Hiçbir şeye dokunmuyoruz.
@@ -1099,6 +1114,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                         waiting.options = p.options
                         waiting.rects = p.optionRects
                         waiting.imzalar = yeniImzalar
+                            ?: if (yol == "kutu") sikImzalari(shot, p.optionRects, screenW, screenH) else null
                         // Konuma bağlı bütün durum artık geçersiz: hangi
                         // kutunun yeşil olduğu, hangisine basıldığı, kaç
                         // saniyedir beklenildiği — hepsi yeniden okunmalı.
@@ -1234,8 +1250,11 @@ class CaptureAccessibilityService : AccessibilityService() {
         (result as? Repo.SaveResult.Duplicate)?.onarim?.let { neden ->
             log("ONARILDI #$savedId: $neden · ${p.options.joinToString(" / ")}")
         }
+        // Okunamayan şıkların görüntüsü kayıttakiyle uyuşmadı: soru yine de
+        // oynanıyor, ama arşivin cevabı kullanılmıyor ve cevap yazılmıyor.
+        val cevapKullanilmaz = (result as? Repo.SaveResult.Duplicate)?.cevapKullanilmaz == true
         if (savedId == null) {
-            log("RED: kayıt kısa, şıklar yetersiz veya okunamayan şık imzaları uyuşmuyor")
+            log("RED: kayıt çok kısa / şık yetersiz")
             pendingAnswer = null
             iz.cik("kayit_red")
         } else {
@@ -1289,7 +1308,11 @@ class CaptureAccessibilityService : AccessibilityService() {
                 // "bu soru bizde yok" bilgisini ekrana bakmadan veriyor.
                 // Yeni açılan kaydın cevabı olamaz; ses veritabanı sorgusunu
                 // beklemeden çalıyor.
-                val bilinen = if (result is Repo.SaveResult.Inserted) Repo.KnownAnswer.None
+                if (cevapKullanilmaz) {
+                    log("İMZA UYUŞMADI #$savedId: okunamayan şıklar kayıttakilerle " +
+                        "görüntüce eşleşmedi; arşivin cevabı kullanılmıyor, cevap yazılmayacak")
+                }
+                val bilinen = if (result is Repo.SaveResult.Inserted || cevapKullanilmaz) Repo.KnownAnswer.None
                 else runCatching {
                     repo.knownAnswerOnScreen(savedId, p.options, imzalar)
                 }.getOrDefault(Repo.KnownAnswer.None)
@@ -1319,6 +1342,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             if (current != null && current.id == savedId) {
                 current.seenAt = SystemClock.uptimeMillis()
                 buKareImza?.let { current.seenSig = it }
+                if (cevapKullanilmaz) current.cevapKullanilmaz = true
             }
             if (!answeredJustNow && (current == null || current.id != savedId)) {
                 // Kartın oturduğu bu noktada ZATEN ölçülmüş durumda: birkaç
@@ -1333,6 +1357,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                     if (shot != null) brightSince = now
                     seenSig = buKareImza
                     this.imzalar = imzalar
+                    this.cevapKullanilmaz = cevapKullanilmaz
                 }
             }
         }
@@ -1434,7 +1459,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             // Soruyu daha önce görmüşsek doğru şıkka, görmemişsek rastgele
             // birine dokunuyoruz. Kayıttaki sıra değil, kayıttaki doğru
             // cevabın o anki ekrandaki sırası aranıyor: şıklar karışıyor.
-            val lookup = if (cur.autoUseKnownAnswer) {
+            val lookup = if (cur.autoUseKnownAnswer && !waiting.cevapKullanilmaz) {
                 runCatching { repo.knownAnswerOnScreen(waiting.id, waiting.options, waiting.imzalar) }
                     .getOrDefault(Repo.KnownAnswer.None)
             } else Repo.KnownAnswer.None
@@ -2209,6 +2234,12 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (waiting.rects.size != waiting.options.size) {
             log("atlandı #${waiting.id}: şık kutusu (${waiting.rects.size}) ve " +
                 "metin (${waiting.options.size}) sayısı tutmuyor")
+            return
+        }
+        // Okunamayan şıkların görüntüsü kayıttakiyle uyuşmamıştı: bu şıklar
+        // kayıttakilerle aynı set olmayabilir, cevabı o kayda yazılmıyor.
+        if (waiting.cevapKullanilmaz) {
+            log("atlandı #${waiting.id}: okunamayan şıklar kayıttakilerle eşleşmedi")
             return
         }
         waiting.knownIndex?.let { known ->
