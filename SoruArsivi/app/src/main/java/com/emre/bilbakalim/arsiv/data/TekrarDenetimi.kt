@@ -15,7 +15,10 @@ import com.emre.bilbakalim.arsiv.util.TurkishText
  */
 private val SYMBOL_TOKEN = Regex("~[0-9a-f]+~")
 
-internal class TekrarAdayi(val id: Long, question: String, options: List<String>) {
+internal class TekrarAdayi(val id: Long, soru: String, options: List<String>) {
+    // Baştaki içerik etiketi ("A69)", "Ks79") karşılaştırmaya girmiyor:
+    // arşivde etiketli kalmış kayıtlar da etiketsiz okumayla eşleşsin.
+    private val question = TurkishText.soruEtiketiniAt(soru)
     val key: String = TurkishText.optionKey(question)
     val questionSymbols: List<String> = SYMBOL_TOKEN.findAll(key).map { it.value }.toList()
     val negation: Int = TurkishText.negationSignature(question)
@@ -152,10 +155,14 @@ internal class TekrarSorgusu(question: String, options: List<String>) {
 
     companion object {
         /** [metinAyiriyor]'un ham metinler için olanı. */
-        internal fun ayriMetinler(a: String, b: String): Boolean = ayriMetinler(
-            TurkishText.optionKey(a), TurkishText.words(a),
-            TurkishText.optionKey(b), TurkishText.words(b)
-        )
+        internal fun ayriMetinler(a: String, b: String): Boolean {
+            val x = TurkishText.soruEtiketiniAt(a)
+            val y = TurkishText.soruEtiketiniAt(b)
+            return ayriMetinler(
+                TurkishText.optionKey(x), TurkishText.words(x),
+                TurkishText.optionKey(y), TurkishText.words(y)
+            )
+        }
 
         private fun ayriMetinler(
             keyA: String, wordsA: List<String>,

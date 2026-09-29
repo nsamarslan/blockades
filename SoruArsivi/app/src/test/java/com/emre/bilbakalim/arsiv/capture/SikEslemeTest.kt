@@ -91,17 +91,46 @@ class SikEslemeTest {
         assertEquals(0, SikEsleme.bul("<", null, listOf("<", ">", "V", "8"), imzalar))
         // Ekranın imzası yok (cevap kaydı, kayıt imzalı).
         assertEquals(1, SikEsleme.bul("12", veya, ekran, listOf(ve, null, buyuktur, kucuktur)))
-        // Tek harf/rakam OCR'ın simgeleri karıştırdığı yer: imzasız tahmin yok.
-        assertNull(SikEsleme.bul("8", null, listOf("8", "<", ">", "V"), imzalar))
+        // Tek harf OCR'ın simgeleri karıştırdığı yer: imzasız tahmin yok.
+        assertNull(SikEsleme.bul("V", null, listOf("V", "<", ">", "8"), imzalar))
         assertNull(SikEsleme.bul("V", veya, listOf("V", "<", ">", "8"), listOf(null, veya, kucuktur, buyuktur)))
     }
 
     @Test
-    fun `iki tarafta imza varsa kisa cevap imzayla dogrulanir`() {
-        val ekran = listOf("15", "12", "14", "13")
+    fun `rakamli cevap imza tutmasa da metinle bulunur`() {
+        // Gerçek günlük: arşiv «1» diyor, ekranda C «1» var; ince rakamın
+        // imzası 56 biti aşınca "eşleşmedi" deyip rastgele basıyordu.
+        val ekran = listOf("3", "(okunamadı)", "1", "2")
         val imzalar = listOf(ve, veya, buyuktur, kucuktur)
-        assertEquals(1, SikEsleme.bul("12", veya, ekran, imzalar))
-        assertNull(SikEsleme.bul("12", ve, ekran, imzalar))
+        assertEquals(2, SikEsleme.bul("1", ve, ekran, imzalar))
+        assertEquals(1, SikEsleme.bul("12", ve, listOf("15", "12", "14", "13"), imzalar))
+        assertEquals(0, SikEsleme.bul("8", null, listOf("8", "<", ">", "V"), imzalar))
+        // Simge ve harflerde imza doğrulaması sürüyor.
+        assertEquals(1, SikEsleme.bul("<", kucuktur, listOf(">", "<", "V", "8"), listOf(buyuktur, kucuktur, ve, veya)))
+        assertNull(SikEsleme.bul("<", ve, listOf(">", "<", "V", "8"), listOf(buyuktur, kucuktur, ve, veya)))
+    }
+
+    @Test
+    fun `okunamayan sifir kayitta okunmussa eleme yeter`() {
+        // ML Kit tek başına duran "0"ı çoğu kez okuyamıyor; bir karşılaşmada
+        // okunup ötekinde okunamaması aynı set. Rakam imzasına bakılmıyor.
+        val kayit = listOf("3", "0", "1", "2")
+        val kayitImza = listOf(ve, veya, buyuktur, kucuktur)
+        val ekran = listOf("1", "(okunamadı)", "2", "3")
+        val ekranImza = listOf(kucuktur, ve, veya, buyuktur)  // hiçbiri tutmuyor
+        assertEquals(true, SikEsleme.okunamayanlarAyni(kayit, kayitImza, ekran, ekranImza))
+        // Kayıttaki doğru cevap "0": ekranda okunamayan tek şık o.
+        assertEquals(listOf(3, 1, 0, 2), SikEsleme.siraBul(kayit, kayitImza, ekran, ekranImza))
+        // Tersi: kayıtta okunamayan, ekranda okunmuş.
+        assertEquals(
+            listOf(3, 1, 0, 2),
+            SikEsleme.siraBul(listOf("3", "(okunamadı)", "1", "2"), kayitImza, listOf("1", "0", "2", "3"), emptyList())
+        )
+        // İki okunamayan: eleme yetmez, imza gerekir.
+        assertNull(SikEsleme.siraBul(
+            listOf("(okunamadı)", "(okunamadı)", "1", "2"), kayitImza,
+            listOf("1", "(okunamadı)", "2", "(okunamadı)"), ekranImza
+        ))
     }
 
     @Test

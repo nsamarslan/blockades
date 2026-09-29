@@ -121,6 +121,17 @@ class TurkishTextTest {
     }
 
     @Test
+    fun `kisa kelimede yalnizca tek i farki affedilir`() {
+        assertTrue(TurkishText.kelimeDenk("iki", "iiki"))
+        assertTrue(TurkishText.kelimeDenk("kz", "kiz"))
+        // Kalıp soruları ayıran farklar olduğu gibi.
+        assertFalse(TurkishText.kelimeDenk("ve", "veya"))
+        assertFalse(TurkishText.kelimeDenk("cos", "cot"))
+        assertFalse(TurkishText.kelimeDenk("tan", "cot"))
+        assertFalse(TurkishText.kelimeDenk("ve", "vee"))
+    }
+
+    @Test
     fun `eski parmak izi yalnizca isaretli sorularda farkli`() {
         val q = "Hilesiz bir zar atıldığında 3 gelme olasılığı kaçtır?"
         // İşaret yoksa iki hesap aynı: işaretsiz kayıtların parmak izi değişmiyor.

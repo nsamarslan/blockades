@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import com.emre.bilbakalim.arsiv.data.Repo
 import java.io.File
 
 @Composable
@@ -173,7 +174,7 @@ fun DetailScreen(vm: ArsivViewModel, id: Long, onBack: () -> Unit) {
                                 optionC = opts.getOrNull(2)?.trim()?.ifBlank { null },
                                 optionD = opts.getOrNull(3)?.trim()?.ifBlank { null },
                                 correctIndex = correct,
-                                answerSource = if (correct != q.correctIndex) "elle" else q.answerSource,
+                                answerSource = if (correct != q.correctIndex) Repo.ELLE_SECILDI else q.answerSource,
                                 category = category.trim().ifBlank { null },
                                 note = note.trim().ifBlank { null }
                             )

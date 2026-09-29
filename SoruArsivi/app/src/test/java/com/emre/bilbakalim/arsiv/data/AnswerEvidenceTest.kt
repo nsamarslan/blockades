@@ -45,6 +45,19 @@ class AnswerEvidenceTest {
     }
 
     @Test
+    fun `elle duzeltilmis kayda yalnizca kesin karar yazar, elle secilmis cevaba hicbiri`() {
+        // Detay ekranında yalnızca kategori/metin düzeltilip "Kaydet"e
+        // basılmış kayıt: oyunun kesin kararı yanlış cevabı düzeltebilmeli.
+        assertFalse(Repo.elleKilitli(true, AnswerEvidence.CERTAIN.label, AnswerEvidence.CERTAIN))
+        assertTrue(Repo.elleKilitli(true, AnswerEvidence.CERTAIN.label, AnswerEvidence.GREEN))
+        assertTrue(Repo.elleKilitli(true, AnswerEvidence.GREEN.label, AnswerEvidence.TOUCH))
+        // Cevabı elle seçilmiş: dokunulmuyor.
+        assertTrue(Repo.elleKilitli(true, Repo.ELLE_SECILDI, AnswerEvidence.CERTAIN))
+        // Elle düzeltilmemiş kayıt kilitli değil.
+        assertFalse(Repo.elleKilitli(false, Repo.ELLE_SECILDI, AnswerEvidence.TOUCH))
+    }
+
+    @Test
     fun `kaynagi bilinmeyen eski kayit her gozlemle guncellenir`() {
         // Bu sürümden önce yazılmış kayıtların kaynağı tanınmıyor; onların
         // düzelebilmesi için en zayıf gözlemin bile geçmesi gerekiyor.

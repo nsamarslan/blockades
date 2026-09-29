@@ -135,7 +135,9 @@ class Repo private constructor(context: Context) {
                 imzalariIsle(old, opts, optionSigs)?.let { return SaveResult.Duplicate(old.id, it, BENZERLIK) }
                 // Hangi metin daha temiz? Arayüz uyarısı içermeyen kazanır;
                 // ikisi de temizse daha uzun olanı alırız.
-                val oldDirty = TurkishText.hasChromePhrase(old.questionText)
+                // Baştaki içerik etiketi ("A69)", "Ks79") de kir sayılıyor.
+                val oldDirty = TurkishText.hasChromePhrase(old.questionText) ||
+                    TurkishText.soruEtiketiniAt(old.questionText) != old.questionText
                 val newDirty = TurkishText.hasChromePhrase(q)
                 val takeNew = when {
                     oldDirty && !newDirty -> true
@@ -255,14 +257,20 @@ class Repo private constructor(context: Context) {
      * Eski hesapla yazılmış kayıtlar birebir yoldan bulunamıyor: her
      * karşılaşmada benzerlikle aranıyor, tanıdık soru sayılmadığı için de
      * ikinci okuma bekleniyordu (bir tarama turu). Kaydın parmak izi kendi
-     * metninin eski hesabıysa yenisiyle değiştirilir. Başka bir okumadan
-     * gelen parmak izine dokunulmuyor: metni sonradan değişmiş kayıtların
-     * geri alınması (bkz. [save]) ona dayanıyor.
+     * metninin eski hesabıysa yenisiyle değiştirilir. Metnin başında içerik
+     * etiketi ("A69)") varsa parmak izi etiketsiz metinden hesaplanıyor:
+     * yeni okumalarda etiket zaten atılıyor. Başka bir okumadan gelen parmak
+     * izine dokunulmuyor: metni sonradan değişmiş kayıtların geri alınması
+     * (bkz. [save]) ona dayanıyor.
      */
     private suspend fun parmakIziniYenile(old: QuestionEntity) {
-        val yeni = TurkishText.fingerprint(old.questionText, old.options)
+        val yeni = TurkishText.fingerprint(TurkishText.soruEtiketiniAt(old.questionText), old.options)
         if (yeni == old.fingerprint) return
-        if (old.fingerprint != TurkishText.legacyFingerprint(old.questionText, old.options)) return
+        val kendiHesaplari = setOf(
+            TurkishText.legacyFingerprint(old.questionText, old.options),
+            TurkishText.fingerprint(old.questionText, old.options)
+        )
+        if (old.fingerprint !in kendiHesaplari) return
         // Aynı parmak izi başka bir satırdaysa tekil indeks reddeder; kalsın.
         runCatching { dao.setFingerprint(old.id, yeni) }
     }
@@ -442,9 +450,9 @@ class Repo private constructor(context: Context) {
         evidence: AnswerEvidence = AnswerEvidence.GREEN,
         /** Ekrandaki şıkların piksel imzaları, [screenOptions] ile aynı sırada. */
         screenSigs: List<String?>? = null
-    ) {
-        if (correctIndex !in 0..3) return
-        val row = dao.byId(id) ?: return
+    ): String? {
+        if (correctIndex !in 0..3) return "geçersiz şık sırası $correctIndex"
+        val row = dao.byId(id) ?: return "kayıt yok"
 
         // Zayıf bir okuma, güçlü kanıtla yazılmış bir cevabın üstüne yazmasın.
         // Kayıtta zaten cevap varsa ve elimizdeki kanıt daha zayıfsa
@@ -468,32 +476,46 @@ class Repo private constructor(context: Context) {
             val screenText = screenOptions.getOrNull(correctIndex)
             if (screenText.isNullOrBlank()) {
                 Log.w(TAG, "Cevap #$id yazılamadı: ekranda ${correctIndex}. şıkkın metni yok")
-                return
+                return "ekranda ${'A' + correctIndex} şıkkının metni yok"
             }
             SikEsleme.bul(
                 screenText, screenSigs?.getOrNull(correctIndex),
                 row.options, row.imzalar
             ) ?: (if (TurkishText.matchCandidates(row.options, screenText).isEmpty()) {
-                // OCR metni tümden değişmiş olabilir. Ancak dört şıkkın
-                // TAMAMI benzersiz görsel eşleşirse sırayı güvenle taşı.
-                SikImzasi.eslesmeSirasi(screenSigs.orEmpty(), row.imzalar)
+                // OCR metni tümden değişmiş olabilir («(okunamadı)» bu kez
+                // okundu ya da tersi): öteki şıklar metinden eşleşince kalan.
+                SikEsleme.siraBul(screenOptions, screenSigs.orEmpty(), row.options, row.imzalar)
                     ?.getOrNull(correctIndex)
             } else null) ?: run {
                 Log.w(
                     TAG,
                     "Cevap #$id yazılamadı: «${screenText.take(40)}» arşivde bulunamadı"
                 )
-                return
+                return "«${screenText.take(40)}» kayıttaki şıklarda bulunamadı"
             }
         }
         if (stored !in row.options.indices) {
             Log.w(TAG, "Cevap #$id yazılamadı: şık listesi tutmuyor")
-            return
+            return "şık listesi tutmuyor"
         }
 
-        if (!row.edited && !keepStored) dao.setCorrect(id, stored, evidence.label)
+        val kilitli = elleKilitli(row.edited, row.answerSource, evidence)
+        val ayni = stored == row.correctIndex
+        val neden = when {
+            kilitli -> if (ayni) null else "kayıt elle düzeltilmiş" +
+                (if (row.answerSource == ELLE_SECILDI) ", cevabı elle seçilmiş" else "") +
+                "; arşivde ${row.correctText?.let { "«${it.take(30)}»" } ?: "cevap yok"} kaldı"
+            keepStored -> if (ayni) null
+                else "arşivdeki cevap daha güçlü kanıtla yazılmış (${row.answerSource})"
+            else -> {
+                // Cevap aynıysa da yazılıyor: kanıtın etiketi güçlenir.
+                dao.setCorrect(id, stored, evidence.label)
+                null
+            }
+        }
         if (countAsAttempt) dao.recordAttempt(id, if (userWasRight) 1 else 0)
         Log.i(TAG, "Cevap #$id -> ${'A' + stored}, kullanıcı ${if (userWasRight) "bildi" else "bilemedi"}")
+        return neden
     }
 
     /**
@@ -567,7 +589,7 @@ class Repo private constructor(context: Context) {
 
         val index = SikEsleme.bul(text, row.imzalar.getOrNull(dogru), screenOptions, screenSigs.orEmpty())
             ?: if (TurkishText.matchCandidates(screenOptions, text).isEmpty()) {
-                SikImzasi.eslesmeSirasi(row.imzalar, screenSigs.orEmpty())?.getOrNull(dogru)
+                SikEsleme.siraBul(row.options, row.imzalar, screenOptions, screenSigs.orEmpty())?.getOrNull(dogru)
             } else null
         index?.let { found ->
             return KnownAnswer.OnScreen(
@@ -634,6 +656,18 @@ class Repo private constructor(context: Context) {
          * Eşit güçte gözlem üstüne yazabiliyor: bozuk eski kayıtların yeni
          * karşılaşmalarda kendiliğinden düzelmesi buna bağlı.
          */
+        /**
+         * Elle düzeltilmiş kaydın cevabı bu gözlemle değişemez mi?
+         *
+         * Elle düzeltilmiş kayıtta cevaba dokunulmuyor. Ama cevabı elle
+         * seçilmediyse (detay ekranında yalnızca metin, kategori ya da not
+         * düzeltilip "Kaydet"e basıldıysa) oyunun kesin kararı (yeşil +
+         * kırmızı) yine yazılıyor. Yoksa kayıttaki yanlış cevap bir daha hiç
+         * düzelmiyor, bot her karşılaşmada ona basıyordu.
+         */
+        internal fun elleKilitli(edited: Boolean, answerSource: String?, incoming: AnswerEvidence): Boolean =
+            edited && (incoming != AnswerEvidence.CERTAIN || answerSource == ELLE_SECILDI)
+
         internal fun shouldKeepStored(
             storedIndex: Int?,
             storedSource: String?,
@@ -796,6 +830,8 @@ class Repo private constructor(context: Context) {
         const val CIFT_OKUMA_ONARIMI = "iki kez okunmuş rakamlar"
 
         /** [SaveResult.Duplicate.yol] değerleri. */
+        /** Cevabı detay ekranında elle seçilmiş kaydın [QuestionEntity.answerSource]'u. */
+        const val ELLE_SECILDI = "elle"
         const val BENZERLIK = "benzerlik"
         const val PARMAK_IZI = "parmak izi"
 

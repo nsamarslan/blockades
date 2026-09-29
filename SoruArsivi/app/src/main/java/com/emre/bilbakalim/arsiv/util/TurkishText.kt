@@ -201,6 +201,25 @@ object TurkishText {
     }
 
     private val LEADING_NUMBER = Regex("^\\d{1,3}\\s*[.)\\-]\\s*")
+
+    /**
+     * Soru metninin başına yapışan içerik etiketi: "A69)", "h64)", "h48¢",
+     * "fo9;", "Ks79", "ho84", "S179.". Oyun sorunun başında gösteriyor; OCR
+     * kimi karede alıyor kimi karede almıyor, bazen de başka harflerle
+     * ("Ks79" / "A69)"). Metinde kalınca aynı soru yeni soru sanılıp bot
+     * rastgele basıyordu. Bilerek dar: "15 kişilik", "12:3 = 4", "8'li",
+     * "B12 vitamini", "CO2" etiket sayılmıyor.
+     */
+    private val SORU_ETIKETI = Regex(
+        "^(?:\\p{L}{0,3}\\d{1,3}\\s*[)¢;:]|\\p{L}{2,3}\\d{2,3}|\\p{L}{1,3}\\d{2,3}\\.)\\s+(?=\\S)"
+    )
+
+    /** Metnin başındaki içerik etiketini atar (bkz. [SORU_ETIKETI]). */
+    fun soruEtiketiniAt(s: String): String {
+        val t = s.trimStart()
+        val m = SORU_ETIKETI.find(t) ?: return s
+        return t.substring(m.range.last + 1)
+    }
     private val LEADING_CHROME = Regex(
         "^(süre\\s*bitti|sure\\s*bitti|süre\\s*doldu|zaman\\s*doldu|muhteşem|muhtesem|" +
             "biraz\\s*daha\\s*gayret|tebrikler|harika|bravo|doğru\\s*cevap|kombo|combo|" +
@@ -246,6 +265,7 @@ object TurkishText {
             if (cut == 0) LEADING_CHROME.find(low)?.let { if (it.range.first == 0) cut = it.range.last + 1 }
             if (cut == 0) SCORE_BADGE_START.find(low)?.let { if (it.range.first == 0) cut = it.range.last + 1 }
             if (cut > 0) t = t.substring(cut).trim()
+            t = soruEtiketiniAt(t).trim()
 
             // Sondaki puan balonu. Soru işaretinden sonra geldiği için
             // metnin anlamını bozmadan kesilebiliyor.
@@ -295,6 +315,14 @@ object TurkishText {
         if (x == y) return x.isNotEmpty()
         if ('~' in x || '~' in y) return false
         if (DIGITS_ONLY.matches(x) || DIGITS_ONLY.matches(y)) return false
+        // Birimli sayılarda harf hatası hoş görülür, sayı farkı görülmez:
+        // "20 cm" ile "20 cmn" aynı şık, "30 cm" değil. Eskiden üçü de tek
+        // harf farkı sayılıyor, cevap belirsiz kalıp rastgele basılıyordu.
+        // Yalnızca bir tarafta rakam varsa o, harfin rakam okunmasıdır
+        // ("Tekrar 0yna"); orada sayı karşılaştırılmıyor.
+        if (x.any { it.isDigit() } && y.any { it.isDigit() }) {
+            if (rakamDuzelt(x).filter { it.isDigit() } != rakamDuzelt(y).filter { it.isDigit() }) return false
+        }
         if (minOf(x.length, y.length) < 4) return false
         if (kotlin.math.abs(x.length - y.length) > 1) return false
         return levenshtein(x, y) <= 1
@@ -376,7 +404,9 @@ object TurkishText {
      *
      * Sayı içeren kelimeler birebir aynı olmalı; yalnızca OCR'ın rakamla
      * karıştırdığı harfler (o→0, l/i→1) eşleniyor ("%2O" / "%20"). Üç harf
-     * ve altındaki kelimelerde hiç fark yok ("cos" / "cot", "ve" / "veya").
+     * ve altındaki kelimelerde tek izin verilen fark bir "i": OCR ince
+     * harfi (ı, i, İ) düşürüyor ya da çiftliyor ("kız" / "kz", "İki" /
+     * "İiki"). Başka her fark ayrı kelime ("cos" / "cot", "ve" / "veya").
      * Dört harften uzunlarda tek harf, sekiz harften uzunlarda iki harf
      * farka izin var.
      */
@@ -384,9 +414,17 @@ object TurkishText {
         if (a == b) return true
         if (a.any { it.isDigit() } || b.any { it.isDigit() }) return rakamlastir(a) == rakamlastir(b)
         val kisaUzunluk = minOf(a.length, b.length)
-        if (kisaUzunluk < 4 || kotlin.math.abs(a.length - b.length) > 2) return false
+        if (kisaUzunluk < 4) return tekIFarki(a, b)
+        if (kotlin.math.abs(a.length - b.length) > 2) return false
         val d = levenshtein(a, b)
         return d <= 1 || (d <= 2 && kisaUzunluk >= 8)
+    }
+
+    /** Biri ötekinin tam bir "i" eklenmiş hâli mi? Kelimeler katlanmış olmalı. */
+    private fun tekIFarki(a: String, b: String): Boolean {
+        if (kotlin.math.abs(a.length - b.length) != 1) return false
+        val (kisa, uzun) = if (a.length < b.length) a to b else b to a
+        return uzun.indices.any { uzun[it] == 'i' && uzun.removeRange(it, it + 1) == kisa }
     }
 
     private fun rakamlastir(s: String): String = buildString(s.length) {
@@ -569,7 +607,32 @@ object TurkishText {
     private val BOSLUKLAR = Regex("\\s+")
 
     private val ESLESME_KADEMELERI: List<(String) -> String> =
-        listOf(::exactKey, ::strictKey, ::distinctKey, ::softKey, ::normalizeKey)
+        listOf(::exactKey, ::strictKey, ::distinctKey, ::softKey, ::normalizeKey, ::rakamKey)
+
+    /**
+     * [normalizeKey], rakamın yanındaki harfler rakama çevrilmiş olarak:
+     * OCR "9 sa. 10 dk."yı "9 sa. 1O dk." okuyor. Rakamsız metinde boş
+     * (bu kademe atlanır).
+     */
+    private fun rakamKey(s: String): String {
+        val k = normalizeKey(s)
+        return if (k.any { it.isDigit() }) rakamDuzelt(k) else ""
+    }
+
+    /** Rakama bitişik o → 0, l / i → 1. Anahtar küçük harfe inmiş olmalı. */
+    private fun rakamDuzelt(k: String): String = buildString(k.length) {
+        for (i in k.indices) {
+            val c = k[i]
+            val bitisik = k.getOrNull(i - 1)?.isDigit() == true || k.getOrNull(i + 1)?.isDigit() == true
+            append(
+                if (!bitisik) c else when (c) {
+                    'o' -> '0'
+                    'l', 'i' -> '1'
+                    else -> c
+                }
+            )
+        }
+    }
 
     /** Büyük/küçük harfe duyarlı; yalnızca boşluklar sadeleşiyor. */
     private fun exactKey(s: String): String = s.trim().replace(BOSLUKLAR, " ")

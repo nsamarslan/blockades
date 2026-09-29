@@ -1339,6 +1339,33 @@ karşılaşmada doğrusu öğreniliyor.
   eşliyorsa yer değiştirmiş sayılıyor. Karar verilemeyen kare (basma
   efekti, puan balonu) sayılmıyor; konuma bağlı durum boşuna silinmiyor.
 
+### Bilinen soruda rastgele basma: OCR'ın küçük hataları
+
+Bir oturumun 13 yanlışından 11'i cevabı arşivde olan sorulardı:
+
+* **Rakamlı cevaplar (9 yanlış).** Arşiv «1» diyor, ekranda C «1» duruyor,
+  ama "eşleşmedi" deyip rastgele basıyordu; cevap da aynı sebeple hiç
+  yazılamıyordu. Kısa cevaplar piksel imzasıyla doğrulanıyordu ve ince
+  rakamların (1, 7) imzası kareden kareye 56 biti aşıyor. Rakam içeren
+  cevapta artık metin geçerli; imza yalnızca simge ve harflerde.
+* **Okunamayan "0".** ML Kit tek başına duran "0"ı çoğu kez okuyamıyor
+  («(okunamadı)»). Öteki şıklar metinden eşleşince geriye kalan tek şık
+  eleme ile bulunuyor; dört rakamın imzasını birden tutturmak gerekmiyor.
+* **Kısa kelimede i/ı hatası.** "İki" → "İiki", "kız" → "kz": üç harflik
+  kelimelerde hiç fark kabul edilmediği için soru yeni soru sanılıyordu.
+  Artık tek bir "i" eklenmesi ya da düşmesi aynı kelime ("ve" / "veya",
+  "cos" / "cot" hâlâ ayrı).
+* **Baştaki içerik etiketi.** "A69)", "h64)", "h48¢", "Ks79", "S179." gibi
+  etiketler OCR'a kimi karede giriyor, kimi karede girmiyor; soru metninden
+  atılıyor ve karşılaştırmada yok sayılıyor. "15 kişilik", "12:3 = 4",
+  "B12 vitamini" etiket sayılmıyor.
+* **Birimli ve harfli sayılar.** "20 cm" / "20 cmn" aynı şık ("30 cm"
+  değil), "10 dk" / "1O dk" aynı şık.
+* **Elle düzeltilmiş kayıt.** Detay ekranında "Kaydet" kaydı elle
+  düzeltilmiş yapıyor ve oyunun kararı bir daha yazılmıyordu. Cevabı elle
+  seçilmediyse kesin karar (yeşil + kırmızı) artık yazılıyor. Cevap
+  yazılamadığında günlükte `CEVAP YAZILMADI #…: sebep`.
+
 ## Ekranı ayarla: başka telefon ve tablet (3.9)
 
 Ayarlar → *Ekran bölgeleri* → **Ekranı ayarla**. Oyunun bir karesi üstünde

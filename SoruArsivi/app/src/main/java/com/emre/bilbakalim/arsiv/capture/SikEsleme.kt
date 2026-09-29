@@ -28,13 +28,76 @@ object SikEsleme {
         if (a.isEmpty() && b.isEmpty()) return true
         if (storedSigs.size != stored.size || storedSigs.any { it == null }) return true
         if (screenSigs.size != screen.size) return false
-        if (a.size == b.size) {
-            val matched = a.map { SikImzasi.enYakin(storedSigs[it], b, screenSigs) }
-            if (matched.all { it != null } && matched.toSet().size == b.size) return true
-        }
         // OCR bu kez başka bir şıkkı okuyamamış ya da okunamayanı «V» diye
-        // okumuş olabilir. Dört şık görüntüce birebir eşleşiyorsa aynı settir.
-        return SikImzasi.eslesmeSirasi(storedSigs, screenSigs) != null
+        // okumuş olabilir: okunabilenler metinden eşleşiyor, geriye kalanlar
+        // karşılıklı olmalı.
+        val e = metinleEsle(stored, screen)
+        if (e.kalanKayit.size != e.kalanEkran.size) return false
+        // ML Kit tek başına duran "0"ı çoğu kez okuyamıyor ve rakamların
+        // imzası kareden kareye kararsız. Geriye tek şık kaldıysa ve okunan
+        // tarafı bir sayıysa aynı şıktır; imza yalnızca simgeleri ayırıyor.
+        if (e.kalanKayit.size == 1 &&
+            (stored[e.kalanKayit[0]].any { it.isDigit() } || screen[e.kalanEkran[0]].any { it.isDigit() })
+        ) return true
+        return imzaylaEsle(e, storedSigs, screenSigs) != null
+    }
+
+    /**
+     * Kayıttaki her şıkkın ekrandaki sırası, metin doğrudan tutmadığında
+     * (kayıttaki doğru şık «(okunamadı)», ekranda bu kez okunmuş ya da tersi).
+     * Okunabilen şıklar metinden eşleşiyor. Geriye tek şık kaldıysa ve bir
+     * tarafı okunamayansa eleme yetiyor; kalanlar birden çoksa her biri
+     * imzayla açık farkla eşleşmeli. Karar verilemezse null.
+     *
+     * Eskiden dört şıkkın dördü de imzayla eşlenmek zorundaydı; rakam
+     * imzaları buna dayanmıyor.
+     */
+    fun siraBul(
+        stored: List<String>, storedSigs: List<String?>,
+        screen: List<String>, screenSigs: List<String?>
+    ): List<Int>? {
+        if (stored.size != screen.size) return null
+        val e = metinleEsle(stored, screen)
+        if (e.kalanKayit.size != e.kalanEkran.size) return null
+        if (e.kalanKayit.size == 1) {
+            val s = e.kalanKayit[0]
+            val k = e.kalanEkran[0]
+            if (stored[s] == TurkishText.UNREADABLE_OPTION || screen[k] == TurkishText.UNREADABLE_OPTION) {
+                e.sira[s] = k
+                return stored.indices.map { e.sira.getValue(it) }
+            }
+        }
+        val kalan = imzaylaEsle(e, storedSigs, screenSigs) ?: return null
+        e.sira.putAll(kalan)
+        return stored.indices.map { e.sira[it] ?: return null }
+    }
+
+    private class MetinEslesmesi(
+        /** Kayıttaki sıra → ekrandaki sıra, metinden eşleşenler. */
+        val sira: MutableMap<Int, Int>,
+        val kalanKayit: List<Int>,
+        val kalanEkran: List<Int>
+    )
+
+    private fun metinleEsle(stored: List<String>, screen: List<String>): MetinEslesmesi {
+        val sira = mutableMapOf<Int, Int>()
+        val kalanKayit = mutableListOf<Int>()
+        for (i in stored.indices) {
+            val j = if (stored[i] == TurkishText.UNREADABLE_OPTION) null
+            else TurkishText.matchIndex(screen, stored[i])?.takeIf { it !in sira.values }
+            if (j == null) kalanKayit += i else sira[i] = j
+        }
+        return MetinEslesmesi(sira, kalanKayit, screen.indices.filter { it !in sira.values })
+    }
+
+    /** Kalan şıkların her biri kalan ekran şıklarından birine imzayla, benzersiz. */
+    private fun imzaylaEsle(
+        e: MetinEslesmesi, storedSigs: List<String?>, screenSigs: List<String?>
+    ): Map<Int, Int>? {
+        val esler = e.kalanKayit.associateWith {
+            SikImzasi.enYakin(storedSigs.getOrNull(it), e.kalanEkran, screenSigs) ?: return null
+        }
+        return esler.takeIf { it.values.toSet().size == e.kalanEkran.size }
     }
 
     fun bul(
@@ -48,10 +111,14 @@ object SikEsleme {
         val sigIndex = SikImzasi.enYakin(storedSig, candidates, screenSigs)
         if (unreadable) return sigIndex
 
-        // OCR'nin «V» dediği şey V, ∨, ∧ veya > olabilir; benzer şekilde
-        // «8» bazen ‰ olabilir. Metin tek başına ayırt edici sayılmaz.
-        val shortOrSymbol = text.length <= 2 ||
-            TurkishText.optionKey(text) != TurkishText.normalizeKey(text)
+        // OCR'nin «V» dediği şey V, ∨, ∧ veya > olabilir. Metin tek başına
+        // ayırt edici sayılmaz. Rakam içeren metin ("1", "-4", "1/36") bunun
+        // dışında: OCR rakamı güvenilir okuyor, rakamların imzası ise ince
+        // gövdeleri yüzünden kareden kareye 56 biti aşıyor. Ekrandaki «1»
+        // arşivdeki «1»le eşleşmiyor sayılıp rastgele basılıyor, cevap da
+        // hiç yazılamıyordu.
+        val shortOrSymbol = text.none { it.isDigit() } &&
+            (text.length <= 2 || TurkishText.optionKey(text) != TurkishText.normalizeKey(text))
         if (textIndex != null) {
             if (!shortOrSymbol || screenSigs.isEmpty()) return textIndex
             // İki tarafta da imza varsa kısa/simgeli şıkkı metinle tek
@@ -61,17 +128,16 @@ object SikEsleme {
                     textIndex else null
             }
             // İmzalardan biri yok, görüntüyle doğrulanamıyor. OCR'ın ayrı
-            // simgeleri aynı okuduğu yer tek harf ya da rakam («V», «8»):
-            // orada tahmin yok. "12", "1/6", "-4", "<" gibi metinlerde metin
-            // kararı geçerli (işaretler zaten birebir tutmak zorunda); yoksa
-            // imzası alınamamış kayıtlarda bu cevapların hiçbiri bulunmuyordu.
-            return if (tekHarfYaDaRakam(text)) null else textIndex
+            // simgeleri aynı okuduğu yer tek harf («V»): orada tahmin yok.
+            // "<", "ab" gibi metinlerde metin kararı geçerli (işaretler zaten
+            // birebir tutmak zorunda).
+            return if (tekHarf(text)) null else textIndex
         }
         return sigIndex
     }
 
-    private fun tekHarfYaDaRakam(text: String): Boolean {
+    private fun tekHarf(text: String): Boolean {
         val t = text.trim()
-        return t.length == 1 && t[0].isLetterOrDigit()
+        return t.length == 1 && t[0].isLetter()
     }
 }

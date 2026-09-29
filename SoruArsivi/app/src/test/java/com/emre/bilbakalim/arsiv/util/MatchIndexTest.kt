@@ -86,4 +86,19 @@ class MatchIndexTest {
         // Birebir tutmayan ve iki şıkka katlanarak uyan metin: belirsiz.
         assertNull(TurkishText.matchIndex(listOf("Töz", "Toz", "Oz", "Öz"), "Tôz"))
     }
+
+    @Test
+    fun `birimli sayida harf hatasi affedilir sayi farki affedilmez`() {
+        // Gerçek günlük: arşivde "20 cm", ekranda "20 cmn"; "30 cm" ve "10 cm"
+        // de tek harf farkı sayıldığı için cevap belirsiz kalıyordu.
+        assertEquals(3, TurkishText.matchIndex(listOf("40 cmn", "30 cm", "10 cm", "20 cmn"), "20 cm"))
+        assertNull(TurkishText.matchIndex(listOf("40 cm", "30 cm", "10 cm"), "20 cm"))
+    }
+
+    @Test
+    fun `rakamin yanindaki O sifir sayilir`() {
+        val ekran = listOf("10 sa. 20 dk.", "9 sa. 20 dk.", "10 sa. 10 dk.", "9 sa. 1O dk.")
+        assertEquals(3, TurkishText.matchIndex(ekran, "9 sa. 10 dk."))
+        assertEquals(1, TurkishText.matchIndex(listOf("12", "1O", "11"), "10"))
+    }
 }

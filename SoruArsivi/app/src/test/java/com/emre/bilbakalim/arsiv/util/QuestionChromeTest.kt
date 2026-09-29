@@ -109,4 +109,28 @@ class QuestionChromeTest {
         // İki şık birden tutuyorsa tahmin yok.
         assertEquals(null, TurkishText.matchIndex(listOf("Kosinüs", "Kosinüz", "Sinüs"), "Kosinüa"))
     }
+
+    @Test
+    fun `bastaki icerik etiketi sokuluyor`() {
+        val soru = "10 kişilik bir bilet kuyruğunda kaç kişi bulunur?"
+        for (etiket in listOf("A69)", "h64)", "h48¢", "fo9;", "Ks79", "ho84", "S179.", "B83)")) {
+            assertEquals(etiket, soru, TurkishText.stripQuestionChrome("$etiket $soru"))
+        }
+        assertEquals("Dik açı kaç derecedir?", TurkishText.soruEtiketiniAt("S179. Dik açı kaç derecedir?"))
+    }
+
+    @Test
+    fun `etikete benzeyen gercek soru basi sokulmuyor`() {
+        for (soru in listOf(
+            "15 kişilik bir kuyrukta sağdan sayıldığında 8. sırada bulunan Ahmet soldan kaçıncı sırada yer alır?",
+            "12:3 = 4 işleminde \"bölüm\" hangisidir?",
+            "8'li sayı sisteminde kaç rakam vardır?",
+            "B12 vitamini eksikliğinde hangi hastalık görülür?",
+            "CO2 gazının kimyasal adı nedir?",
+            "O! işleminin sonucu kaçtır?",
+            "Aylin 8, ablası 10, annesi 32 yaşındadır."
+        )) {
+            assertEquals(soru, TurkishText.soruEtiketiniAt(soru))
+        }
+    }
 }

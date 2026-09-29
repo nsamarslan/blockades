@@ -263,4 +263,27 @@ class TekrarSorgusuTest {
             "a>b ifadesi doğru mu?", siklar))
     }
 
+    @Test
+    fun `kisa kelimede dusen ya da ciftlenen i ayni sorudur`() {
+        // Gerçek günlük: arşivdeki soru yeni soru sanıldı, bot rastgele bastı.
+        assertTrue(ayni(
+            "İki tavuk, dört fil, beş yılandan oluşan çiftlikte kaç ayak vardır?", listOf("20", "10", "25", "8"),
+            "İiki tavuk, dört fil, beş yıilandan oluşan çiftlikte kaç ayak vardır?", listOf("20", "25", "8", "10")
+        ))
+        val aile = listOf("6", "5", "3", "7")
+        assertTrue(ayni(
+            "Ahmet'in ailesinde 2 kız kardeş, 3 erkek kardeş ile anne ve babası varsa bu evde kaç erkek bulunmaktadır?", aile,
+            "Ahmet'in ailesinde 2 kz kardeş, 3 erkek kardeş ile anne ve babası varsa bu evde kaç erkek bulunmaktadır?", aile
+        ))
+    }
+
+    @Test
+    fun `bastaki icerik etiketi farki ayni sorudur`() {
+        val siklar = listOf("2", "3", "1", "4")
+        val metin = "10 kişilik bir bilet kuyruğunda Ömer baştan 8. sırada, İlyas sondan 5. sırada ise " +
+            "Ömer ile İlyas arasında kaç kişi bulunur?"
+        assertTrue(ayni("Ks79 $metin", siklar, "A69) $metin", siklar))
+        assertTrue(ayni(metin, siklar, "A69) $metin", siklar))
+    }
+
 }

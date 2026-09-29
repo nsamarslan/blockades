@@ -2250,13 +2250,15 @@ class CaptureAccessibilityService : AccessibilityService() {
                 )
             }
         }
+        // Yazılamayan cevap günlükte görünsün: eskiden yalnızca logcat'e
+        // düşüyordu ve "neden hep aynı yanlışa basıyor" sorusunun izi yoktu.
         repo.recordReveal(
             waiting.id, index, waiting.options,
             userWasRight = userWasRight,
             countAsAttempt = countAsAttempt,
             evidence = evidence,
             screenSigs = waiting.imzalar
-        )
+        )?.let { neden -> log("CEVAP YAZILMADI #${waiting.id}: $neden") }
     }
 
     /**
