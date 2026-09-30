@@ -5,6 +5,7 @@ import android.graphics.Rect
 import android.util.Log
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -27,11 +28,20 @@ object OcrEngine {
      * Blok kullanıyoruz çünkü ML Kit çok satırlı bir soruyu tek blokta toplar —
      * bu da satır satır birleştirme derdini büyük ölçüde ortadan kaldırır.
      */
-    suspend fun recognize(bitmap: Bitmap): List<TextItem> =
+    suspend fun recognize(bitmap: Bitmap): List<TextItem> = recognizeWith(recognizer, bitmap)
+
+    /**
+     * Kendi tanıyıcısıyla çalışacak iş için (dışa aktarım): servis kapanırken
+     * paylaşılan tanıyıcıyı kapatıyor, kapanmış tanıyıcı bir daha çalışmıyor.
+     * İşi biten [TextRecognizer.close] çağırmalı.
+     */
+    fun yeniTaniyici(): TextRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+
+    suspend fun recognizeWith(r: TextRecognizer, bitmap: Bitmap): List<TextItem> =
         suspendCancellableCoroutine { cont ->
             try {
                 val image = InputImage.fromBitmap(bitmap, 0)
-                recognizer.process(image)
+                r.process(image)
                     .addOnSuccessListener { text ->
                         val out = ArrayList<TextItem>(text.textBlocks.size)
                         for (block in text.textBlocks) {

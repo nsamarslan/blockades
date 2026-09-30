@@ -587,10 +587,7 @@ class Repo private constructor(context: Context) {
         // metni de çıkaramayız; bu bozuk bir satırdır.
         val text = row.correctText ?: return KnownAnswer.Unmatched(null)
 
-        val index = SikEsleme.bul(text, row.imzalar.getOrNull(dogru), screenOptions, screenSigs.orEmpty())
-            ?: if (TurkishText.matchCandidates(screenOptions, text).isEmpty()) {
-                SikEsleme.siraBul(row.options, row.imzalar, screenOptions, screenSigs.orEmpty())?.getOrNull(dogru)
-            } else null
+        val index = SikEsleme.ekrandaBul(row.options, row.imzalar, dogru, screenOptions, screenSigs.orEmpty())
         index?.let { found ->
             return KnownAnswer.OnScreen(
                 found, imzayla = TurkishText.matchIndex(screenOptions, text) != found

@@ -20,6 +20,7 @@ import com.emre.bilbakalim.arsiv.R
 import com.emre.bilbakalim.arsiv.data.CaptureSource
 import com.emre.bilbakalim.arsiv.data.Prefs
 import com.emre.bilbakalim.arsiv.data.Repo
+import com.emre.bilbakalim.arsiv.util.SoruGorseli
 import com.emre.bilbakalim.arsiv.util.TurkishText
 import java.io.File
 import java.io.FileOutputStream
@@ -1223,7 +1224,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         iz.adim("foto")
         if (s.saveScreenshots) {
             if (shot == null) shot = captureScreen()
-            shotPath = shot?.let { saveShot(it, p.key) }
+            shotPath = shot?.let { saveShot(it, p.key, p, yol, screenW, screenH) }
         }
 
         // Şıkların piksel imzaları: yalnızca kutu yolunda, çünkü ancak orada
@@ -2623,7 +2624,10 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (scaled !== bmp) scaled.recycle()
     }
 
-    private fun saveShot(bmp: Bitmap, key: String): String? = runCatching {
+    private fun saveShot(
+        bmp: Bitmap, key: String,
+        p: QuestionParser.Parsed, yol: String, screenW: Int, screenH: Int
+    ): String? = runCatching {
         val dir = File(filesDir, "shots").apply { mkdirs() }
         val target = File(dir, "${key.take(24)}.jpg")
         if (target.exists()) return target.absolutePath
@@ -2635,6 +2639,20 @@ class CaptureAccessibilityService : AccessibilityService() {
         } else bmp
 
         FileOutputStream(target).use { scaled.compress(Bitmap.CompressFormat.JPEG, 72, it) }
+        // Şıkların ekrandaki sırası ve kutuları, kaydedilen görüntünün
+        // pikselleriyle: dışa aktarım doğru şıkkı OCR'sız işaretleyebilsin.
+        runCatching {
+            val sx = scaled.width.toFloat() / screenW.coerceAtLeast(1)
+            val sy = scaled.height.toFloat() / screenH.coerceAtLeast(1)
+            val kutular = p.optionRects.map { r ->
+                OptionBoxFinder.Box((r.left * sx).toInt(), (r.top * sy).toInt(), (r.right * sx).toInt(), (r.bottom * sy).toInt())
+            }
+            val siklar = p.options.map { TurkishText.cleanOcr(TurkishText.stripOptionPrefix(it)) }
+            if (siklar.size == kutular.size) {
+                SoruGorseli.yerlesimDosyasi(target)
+                    .writeText(SoruKartiDuzeni.SikYerlesimi(siklar, kutular, yol).json())
+            }
+        }
         if (scaled !== bmp) scaled.recycle()
         target.absolutePath
     }.getOrNull()

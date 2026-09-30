@@ -43,6 +43,23 @@ object SikEsleme {
     }
 
     /**
+     * Kayıttaki [dogru]. şık ekranda kaçıncı sırada? Önce metin (gerekirse
+     * imzayla doğrulanarak), metin hiç tutmuyorsa öteki şıklardan eleme.
+     * Bilinen cevaba basan bot da dışa aktarımdaki "doğru şık" işareti de
+     * bunu kullanıyor. Karar verilemezse null.
+     */
+    fun ekrandaBul(
+        kayit: List<String>, kayitImza: List<String?>, dogru: Int,
+        ekran: List<String>, ekranImza: List<String?>
+    ): Int? {
+        val text = kayit.getOrNull(dogru) ?: return null
+        return bul(text, kayitImza.getOrNull(dogru), ekran, ekranImza)
+            ?: if (TurkishText.matchCandidates(ekran, text).isEmpty()) {
+                siraBul(kayit, kayitImza, ekran, ekranImza)?.getOrNull(dogru)
+            } else null
+    }
+
+    /**
      * Kayıttaki her şıkkın ekrandaki sırası, metin doğrudan tutmadığında
      * (kayıttaki doğru şık «(okunamadı)», ekranda bu kez okunmuş ya da tersi).
      * Okunabilen şıklar metinden eşleşiyor. Geriye tek şık kaldıysa ve bir

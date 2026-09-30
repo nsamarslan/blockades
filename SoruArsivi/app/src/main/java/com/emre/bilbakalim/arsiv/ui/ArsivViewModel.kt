@@ -25,12 +25,15 @@ import com.emre.bilbakalim.arsiv.data.Prefs
 import com.emre.bilbakalim.arsiv.data.QuestionEntity
 import com.emre.bilbakalim.arsiv.data.Repo
 import com.emre.bilbakalim.arsiv.util.Exporters
+import com.emre.bilbakalim.arsiv.util.GorselDisaAktarim
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -273,16 +276,87 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun export(context: Context, format: Exporters.Format, onDone: (File?) -> Unit) {
+    /**
+     * [kategoriler]: dışa aktarılacak kategoriler, kategorisiz kayıtlar için
+     * boş metin; null ise hepsi.
+     */
+    fun export(
+        context: Context,
+        format: Exporters.Format,
+        kategoriler: Set<String>? = null,
+        onDone: (File?) -> Unit
+    ) {
         viewModelScope.launch {
             val file = withContext(Dispatchers.IO) {
                 runCatching {
-                    val rows = repo.allForExport()
+                    val rows = secililer(kategoriler)
                     if (rows.isEmpty()) null else Exporters.write(context, rows, format)
                 }.getOrNull()
             }
             onDone(file)
         }
+    }
+
+    private suspend fun secililer(kategoriler: Set<String>?): List<QuestionEntity> {
+        val hepsi = repo.allForExport()
+        return if (kategoriler == null) hepsi else hepsi.filter { (it.category ?: "") in kategoriler }
+    }
+
+    /** Seçimdeki soru sayısı ve kaçının ekran görüntüsü diskte duruyor. */
+    suspend fun disaAktarimSayilari(kategoriler: Set<String>?): Pair<Int, Int> =
+        withContext(Dispatchers.IO) {
+            val s = secililer(kategoriler)
+            s.size to GorselDisaAktarim.gorselliler(s).size
+        }
+
+    /** Görsel dışa aktarımın durumu; null: çalışan ya da bitip gösterilen iş yok. */
+    data class DisaAktarimDurumu(
+        val ilerleme: GorselDisaAktarim.Ilerleme? = null,
+        val bitti: GorselDisaAktarim.Sonuc? = null,
+        val hata: String? = null
+    )
+
+    private val _disaAktarim = MutableStateFlow<DisaAktarimDurumu?>(null)
+    val disaAktarim: StateFlow<DisaAktarimDurumu?> = _disaAktarim
+    private var disaAktarimIsi: Job? = null
+
+    /**
+     * Seçili kategorilerdeki soruların ekran görüntülerini [bicim]'de yazar,
+     * bitince paylaşım penceresini açar. İş ekran dönse de sürüyor.
+     */
+    fun gorselDisaAktar(
+        context: Context,
+        kategoriler: Set<String>?,
+        bicim: GorselDisaAktarim.Bicim,
+        sutun: Int
+    ) {
+        if (disaAktarimIsi?.isActive == true) return
+        _disaAktarim.value = DisaAktarimDurumu()
+        disaAktarimIsi = viewModelScope.launch {
+            try {
+                val rows = withContext(Dispatchers.IO) { secililer(kategoriler) }
+                val sonuc = GorselDisaAktarim.yaz(
+                    getApplication(), rows, bicim, sutun, settings.value.sikBolgesi
+                ) { i -> _disaAktarim.value = DisaAktarimDurumu(ilerleme = i) }
+                _disaAktarim.value = DisaAktarimDurumu(bitti = sonuc)
+                if (sonuc.adet > 0) GorselDisaAktarim.paylas(context, sonuc.dosya, bicim)
+            } catch (c: CancellationException) {
+                _disaAktarim.value = null
+                throw c
+            } catch (t: Throwable) {
+                _disaAktarim.value = DisaAktarimDurumu(hata = t.message ?: "Dışa aktarılamadı")
+            }
+        }
+    }
+
+    fun disaAktarimIptal() {
+        disaAktarimIsi?.cancel()
+        _disaAktarim.value = null
+    }
+
+    /** Biten ya da hata veren işin penceresini kapatır. */
+    fun disaAktarimKapat() {
+        if (disaAktarimIsi?.isActive != true) _disaAktarim.value = null
     }
 
     // --- Cihaz durumu -------------------------------------------------------

@@ -43,7 +43,6 @@ import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.emre.bilbakalim.arsiv.data.Repo
-import com.emre.bilbakalim.arsiv.util.Exporters
 
 @Composable
 fun SettingsScreen(
@@ -57,6 +56,12 @@ fun SettingsScreen(
     val s by vm.settings.collectAsState()
     var confirmWipe by remember { mutableStateOf(false) }
     var backupMessage by remember { mutableStateOf<String?>(null) }
+    // Dışa aktarım ekran dönse de sürüyor; penceresi de açık kalsın.
+    val disaAktarimSuruyor by vm.disaAktarim.collectAsState()
+    var disaAktar by remember { mutableStateOf(false) }
+    if (disaAktar || disaAktarimSuruyor != null) {
+        DisaAktarPenceresi(vm, DisaAktarimSecimi.JSON) { disaAktar = false }
+    }
 
     // Kullanıcının seçtiği yedek dosyası. Dosya yöneticileri JSON'u bazen
     // "application/octet-stream" diye etiketlediği için tür süzgeci koymuyoruz;
@@ -403,7 +408,9 @@ fun SettingsScreen(
                     Text(
                         "Arşivi JSON olarak dışa aktarıp saklayabilir, sonra buradan " +
                             "geri yükleyebilirsin. Uygulamayı silip yeniden kurman " +
-                            "gerektiğinde sorularını böyle taşırsın.",
+                            "gerektiğinde sorularını böyle taşırsın. Dışa aktar'da " +
+                            "kategori seçip soruları ekran görüntüsüyle PDF, Word ya da " +
+                            "fotoğraf (ZIP) olarak da alabilirsin; doğru şık işaretli.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -418,15 +425,7 @@ fun SettingsScreen(
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
-                            onClick = {
-                                vm.export(context, Exporters.Format.JSON) { file ->
-                                    if (file == null) {
-                                        backupMessage = "Dışa aktarılacak kayıt yok."
-                                    } else {
-                                        Exporters.share(context, file, Exporters.Format.JSON)
-                                    }
-                                }
-                            },
+                            onClick = { disaAktar = true },
                             modifier = Modifier.weight(1f)
                         ) { Text("Dışa aktar") }
                         Button(

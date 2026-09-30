@@ -18,8 +18,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -35,16 +33,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.emre.bilbakalim.arsiv.util.Exporters
-import kotlinx.coroutines.launch
 
 @Composable
 fun ListScreen(
@@ -52,8 +46,6 @@ fun ListScreen(
     onBack: () -> Unit,
     onOpenDetail: (Long) -> Unit
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
     val query by vm.query.collectAsState()
@@ -62,30 +54,19 @@ fun ListScreen(
     val results by vm.results.collectAsState()
     val categories by vm.categories.collectAsState()
 
-    var menuOpen by remember { mutableStateOf(false) }
+    // Dışa aktarım ekran dönse de sürüyor; penceresi de açık kalsın.
+    val disaAktarimSuruyor by vm.disaAktarim.collectAsState()
+    var disaAktar by remember { mutableStateOf(false) }
+    if (disaAktar || disaAktarimSuruyor != null) {
+        // Listede bir kategori süzülmüşse pencere onunla açılıyor.
+        DisaAktarPenceresi(vm, DisaAktarimSecimi.PDF, kategori = filterCat) { disaAktar = false }
+    }
 
     Scaffold(
         topBar = {
             ArsivTopBar("Arşiv (${results.size})", onBack = onBack) {
-                IconButton(onClick = { menuOpen = true }) {
+                IconButton(onClick = { disaAktar = true }) {
                     Icon(Icons.Default.Share, contentDescription = "Dışa aktar")
-                }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    Exporters.Format.entries.forEach { fmt ->
-                        DropdownMenuItem(
-                            text = { Text(fmt.etiket) },
-                            onClick = {
-                                menuOpen = false
-                                vm.export(context, fmt) { file ->
-                                    if (file == null) {
-                                        scope.launch { snackbar.showSnackbar("Dışa aktarılacak kayıt yok") }
-                                    } else {
-                                        Exporters.share(context, file, fmt)
-                                    }
-                                }
-                            }
-                        )
-                    }
                 }
             }
         },

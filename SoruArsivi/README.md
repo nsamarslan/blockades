@@ -512,12 +512,60 @@ ekranda yazar.
 
 ## Dışa aktarma
 
-Arşiv ekranının sağ üstündeki paylaş simgesi:
+Ayarlar → Yedekleme → **Dışa aktar** ya da Arşiv ekranının sağ üstündeki
+paylaş simgesi aynı pencereyi açıyor (Arşiv'de bir kategori süzülmüşse o
+seçili gelir):
 
-* **CSV** — Excel / Google E-Tablolar (Türkçe karakterler için BOM'lu, `;` ayraçlı)
-* **JSON** — başka bir programa aktarmak için
-* **Anki (TSV)** — ön yüz soru + şıklar, arka yüz doğru cevap. Sadece doğru
-  cevabı bilinen kayıtlar dışa aktarılır.
+* **Kategoriler** — Tümü ya da istediklerin (örneğin yalnızca Matematik).
+* **Biçim:**
+  * **PDF** / **Word (.docx)** — soruların ekran görüntüleri, doğru şık
+    işaretli. Sayfada iki sütun (sayfa başına ~4 soru) ya da "Büyük" (~1 soru).
+    Bir soru **hiçbir zaman iki sayfaya bölünmez**.
+  * **Fotoğraflar (ZIP)** — her soru ayrı bir JPEG (`0001_matematik.jpg`),
+    yanında `icindekiler.txt`: numara, kayıt, kategori, soru, doğru cevap.
+  * **Yedek (JSON)**, **Tablo (CSV)**, **Anki (TSV)** — eskisi gibi, görselsiz.
+    Anki'ye yalnızca doğru cevabı bilinen kayıtlar gider.
+
+Ekran görüntüsü yalnızca Ayarlar'da "ekran görüntüsü kaydet" açıkken
+yakalanan sorularda var; pencere seçimdeki soru sayısını ve kaçının görüntüsü
+olduğunu gösteriyor.
+
+### Doğru şık nasıl işaretleniyor?
+
+![örnek](docs/disa_aktarim_ornek.png)
+
+*Temsili: PDF yazıcısının sentetik oyun ekranlarıyla ürettiği sayfa; çizim
+uygulamadakiyle aynı ölçülerde.*
+
+Her soru tek bir görsel: üstte "12. soru · Matematik · #1985", altında soru
+kartı ve şıklar (ekranın geri kalanı kırpılıyor), doğru şıkkın çevresinde
+yeşil bir çerçeve, sağdan ona uzanan bir ok ve "DOĞRU"; en altta
+"Doğru cevap: «20»". Doğru şıkkın görüntüdeki yeri:
+
+1. **Oyun kararı açmışsa** (seçilen yanlış şık kırmızı, doğrusu yeşil) yeşil
+   hap. Oyunun kendi kararı, arşivden bile sağlam.
+2. **Yoksa** arşivdeki doğru cevabın metni görüntüdeki şıklarda aranıyor —
+   bilinen cevaba basan botla aynı kural. Şıkların görüntüdeki sırası
+   yakalama anında görüntünün yanına yazılıyor (`shots/*.json`); bu dosyadan
+   önceki görüntülerde şıklar bir kez OCR'la okunup aynı dosyaya yazılıyor.
+3. **Emin olunamıyorsa** ok çizilmiyor; alt satırda "Doğru cevap: «…»
+   (görüntüde yeri bulunamadı)". Yanlış şıkkı göstermektense hiç göstermemek.
+
+### Hız ve boyut
+
+Soru başına: görüntüyü açmak, hapları bulmak, çizmek ~0,1 sn; şık metni
+gerekip yan dosyası olmayan eski görüntüde OCR ~0,3 sn. Üç soru birden
+çiziliyor. Kaba tahmin (cihaza göre değişir, pencere çalışırken kalan süreyi
+gösteriyor):
+
+| Soru | Yan dosyalı / yeşilli | İlk kez, hepsi OCR'lı |
+| --- | --- | --- |
+| 800 (bir kategori) | ~40 sn | ~3-4 dk |
+| 4000 (tüm arşiv) | ~3 dk | ~15-20 dk |
+
+OCR sonucu yan dosyaya yazıldığı için ikinci dışa aktarım ilk sütundaki
+hızda. PDF, Word ve ZIP görüntüleri yeniden sıkıştırmadan gömüyor: soru
+başına ~70-100 KB (800 soru ~60-80 MB).
 
 ---
 
@@ -541,6 +589,8 @@ app/src/main/java/com/emre/bilbakalim/arsiv/
 │   ├── OcrEngine.kt             ML Kit çevrimdışı metin tanıma
 │   ├── OptionBoxFinder.kt       şık kutularını ekrandan piksel olarak bulma
 │   ├── SikImzasi.kt             şık yazısının piksel imzası (sembol şıklar)
+│   ├── SikEsleme.kt             arşivdeki doğru şıkkı ekrandaki şıklarda bulma
+│   ├── SoruKartiDuzeni.kt       dışa aktarım: doğru hap, kırpma, şık yerleşimi
 │   ├── QuestionParser.kt        metin yığınından soru + şık çıkarma
 │   ├── AnswerColorDetector.kt   yeşile dönen şıkkı bulma
 │   ├── AutoPlayer.kt            otomatik mod: şıkka ve "Tekrar Oyna"ya dokunma
@@ -548,7 +598,12 @@ app/src/main/java/com/emre/bilbakalim/arsiv/
 │   └── ProjectionPermissionActivity.kt
 ├── util/
 │   ├── TurkishText.kt           Türkçe normalleştirme, parmak izi, şık eşleştirme
-│   └── Exporters.kt             CSV / JSON / Anki
+│   ├── Exporters.kt             CSV / JSON / Anki
+│   ├── GorselDisaAktarim.kt     ekran görüntülerini ZIP / PDF / Word olarak dışa aktarma
+│   ├── SoruGorseli.kt           işaretli soru kartını çizme
+│   ├── PdfYazici.kt             JPEG gömen PDF (soru sayfaya bölünmez)
+│   ├── DocxYazici.kt            Word belgesi (zip + XML)
+│   └── Sayfalayici.kt           görselleri sayfaya dizme
 └── ui/                          Compose ekranları
 ```
 
