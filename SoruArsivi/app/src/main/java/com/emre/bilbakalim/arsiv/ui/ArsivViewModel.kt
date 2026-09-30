@@ -24,6 +24,7 @@ import com.emre.bilbakalim.arsiv.data.KategoriListesi
 import com.emre.bilbakalim.arsiv.data.Prefs
 import com.emre.bilbakalim.arsiv.data.QuestionEntity
 import com.emre.bilbakalim.arsiv.data.Repo
+import com.emre.bilbakalim.arsiv.util.DisaAktarimSirasi
 import com.emre.bilbakalim.arsiv.util.Exporters
 import com.emre.bilbakalim.arsiv.util.GorselDisaAktarim
 import java.io.File
@@ -284,12 +285,13 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
         context: Context,
         format: Exporters.Format,
         kategoriler: Set<String>? = null,
+        sira: DisaAktarimSirasi = DisaAktarimSirasi.KAYIT,
         onDone: (File?) -> Unit
     ) {
         viewModelScope.launch {
             val file = withContext(Dispatchers.IO) {
                 runCatching {
-                    val rows = secililer(kategoriler)
+                    val rows = secililer(kategoriler, sira)
                     if (rows.isEmpty()) null else Exporters.write(context, rows, format)
                 }.getOrNull()
             }
@@ -297,9 +299,12 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun secililer(kategoriler: Set<String>?): List<QuestionEntity> {
+    private suspend fun secililer(
+        kategoriler: Set<String>?,
+        sira: DisaAktarimSirasi = DisaAktarimSirasi.KAYIT
+    ): List<QuestionEntity> {
         val hepsi = repo.allForExport()
-        return if (kategoriler == null) hepsi else hepsi.filter { (it.category ?: "") in kategoriler }
+        return sira.sirala(if (kategoriler == null) hepsi else hepsi.filter { (it.category ?: "") in kategoriler })
     }
 
     /** Seçimdeki soru sayısı ve kaçının ekran görüntüsü diskte duruyor. */
@@ -327,6 +332,7 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun gorselDisaAktar(
         context: Context,
         kategoriler: Set<String>?,
+        sira: DisaAktarimSirasi,
         bicim: GorselDisaAktarim.Bicim,
         sutun: Int
     ) {
@@ -334,7 +340,7 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
         _disaAktarim.value = DisaAktarimDurumu()
         disaAktarimIsi = viewModelScope.launch {
             try {
-                val rows = withContext(Dispatchers.IO) { secililer(kategoriler) }
+                val rows = withContext(Dispatchers.IO) { secililer(kategoriler, sira) }
                 val sonuc = GorselDisaAktarim.yaz(
                     getApplication(), rows, bicim, sutun, settings.value.sikBolgesi
                 ) { i -> _disaAktarim.value = DisaAktarimDurumu(ilerleme = i) }

@@ -517,12 +517,17 @@ paylaş simgesi aynı pencereyi açıyor (Arşiv'de bir kategori süzülmüşse 
 seçili gelir):
 
 * **Kategoriler** — Tümü ya da istediklerin (örneğin yalnızca Matematik).
+* **Sıralama** — **En sık çıkan önce** (varsayılan; "kaç kez çıktı"
+  sayacına göre, eşitlerde önce kaydedilen önde) ya da kaydedildiği sırayla.
+  PDF / Word sayfaları, ZIP'teki dosya numaraları ve metin biçimlerinin
+  satırları bu sırada; her kartın başlığında "18 kez çıktı" yazıyor.
 * **Biçim:**
   * **PDF** / **Word (.docx)** — soruların ekran görüntüleri, doğru şık
     işaretli. Sayfada iki sütun (sayfa başına ~4 soru) ya da "Büyük" (~1 soru).
     Bir soru **hiçbir zaman iki sayfaya bölünmez**.
   * **Fotoğraflar (ZIP)** — her soru ayrı bir JPEG (`0001_matematik.jpg`),
-    yanında `icindekiler.txt`: numara, kayıt, kategori, soru, doğru cevap.
+    yanında `icindekiler.txt`: numara, kayıt, kategori, kaç kez çıktı, soru,
+    doğru cevap.
   * **Yedek (JSON)**, **Tablo (CSV)**, **Anki (TSV)** — eskisi gibi, görselsiz.
     Anki'ye yalnızca doğru cevabı bilinen kayıtlar gider.
 
@@ -537,7 +542,7 @@ olduğunu gösteriyor.
 *Temsili: PDF yazıcısının sentetik oyun ekranlarıyla ürettiği sayfa; çizim
 uygulamadakiyle aynı ölçülerde.*
 
-Her soru tek bir görsel: üstte "12. soru · Matematik · #1985", altında soru
+Her soru tek bir görsel: üstte "12. soru · Matematik · 18 kez çıktı · #1985", altında soru
 kartı ve şıklar (ekranın geri kalanı kırpılıyor), doğru şıkkın çevresinde
 yeşil bir çerçeve, sağdan ona uzanan bir ok ve "DOĞRU"; en altta
 "Doğru cevap: «20»". Doğru şıkkın görüntüdeki yeri:

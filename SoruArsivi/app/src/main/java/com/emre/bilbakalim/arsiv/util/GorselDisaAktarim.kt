@@ -136,8 +136,9 @@ object GorselDisaAktarim {
         )
     }
 
-    private fun baslik(no: Int, r: QuestionEntity) =
-        listOfNotNull("$no. soru", r.category?.takeIf { it.isNotBlank() }, "#${r.id}").joinToString(" · ")
+    private fun baslik(no: Int, r: QuestionEntity) = listOfNotNull(
+        "$no. soru", r.category?.takeIf { it.isNotBlank() }, "${r.seenCount} kez çıktı", "#${r.id}"
+    ).joinToString(" · ")
 
     /** Biçimden bağımsız çıkış: görseller sırayla geliyor. */
     private interface Cikis : Closeable {
@@ -160,11 +161,11 @@ object GorselDisaAktarim {
 
     /**
      * Fotoğraflar sıkıştırılmadan (JPEG zaten sıkışık) ve bir içindekiler
-     * dosyası: numara, kategori, soru, doğru cevap.
+     * dosyası: numara, kategori, kaç kez çıktı, soru, doğru cevap.
      */
     private class ZipCikis(dosya: File) : Cikis {
         private val zip = ZipOutputStream(BufferedOutputStream(dosya.outputStream(), 1 shl 16))
-        private val liste = StringBuilder("no\tkayit\tkategori\tsoru\tdogru_cevap\n")
+        private val liste = StringBuilder("no\tkayit\tkategori\tkac_kez_cikti\tsoru\tdogru_cevap\n")
 
         override fun ekle(no: Int, r: QuestionEntity, k: SoruGorseli.Sonuc) {
             val ad = String.format(Locale.US, "%04d_%s.jpg", no, dosyaAdi(r.category ?: "kategorisiz"))
@@ -179,6 +180,7 @@ object GorselDisaAktarim {
             zip.closeEntry()
             liste.append(no).append('\t').append(r.id).append('\t')
                 .append(r.category.orEmpty().tekSatir()).append('\t')
+                .append(r.seenCount).append('\t')
                 .append(r.questionText.tekSatir()).append('\t')
                 .append(r.correctText.orEmpty().tekSatir()).append('\n')
         }

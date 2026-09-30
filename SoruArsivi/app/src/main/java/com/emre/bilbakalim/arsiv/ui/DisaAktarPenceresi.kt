@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.emre.bilbakalim.arsiv.util.DisaAktarimSirasi
 import com.emre.bilbakalim.arsiv.util.Exporters
 import com.emre.bilbakalim.arsiv.util.GorselDisaAktarim
 
@@ -59,7 +60,8 @@ enum class DisaAktarimSecimi(
 
 /**
  * Dışa aktarma: kategori seçimi (hepsi ya da örneğin yalnızca Matematik),
- * biçim ve görsellerde sayfa düzeni. Görsel dışa aktarım sürerken ilerleme,
+ * sıralama (en sık çıkan önce ya da kayıt sırası), biçim ve görsellerde
+ * sayfa düzeni. Görsel dışa aktarım sürerken ilerleme,
  * kalan süre ve iptal; bitince paylaşım penceresi kendiliğinden açılıyor.
  *
  * @param kategori açılışta seçili tek kategori (Arşiv listesindeki süzgeç); null: hepsi.
@@ -82,6 +84,7 @@ fun DisaAktarPenceresi(
     val kategoriler by vm.categories.collectAsState()
     var secili by remember { mutableStateOf(kategori?.let { setOf(it) }) }
     var secim by remember { mutableStateOf(varsayilan) }
+    var sira by remember { mutableStateOf(DisaAktarimSirasi.EN_SIK) }
     var buyuk by remember { mutableStateOf(false) }
     var sayilar by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var mesaj by remember { mutableStateOf<String?>(null) }
@@ -105,6 +108,17 @@ fun DisaAktarPenceresi(
                         val simdiki = secili ?: tumAnahtarlar
                         val yeni = if (isaretli) simdiki + anahtar else simdiki - anahtar
                         secili = if (yeni.containsAll(tumAnahtarlar)) null else yeni
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("Sıralama", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                for (s in DisaAktarimSirasi.entries) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { sira = s },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = sira == s, onClick = { sira = s })
+                        Text(s.etiket, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
                 Spacer(Modifier.height(12.dp))
@@ -152,9 +166,9 @@ fun DisaAktarPenceresi(
                     val g = secim.gorsel
                     val m = secim.metin
                     if (g != null) {
-                        vm.gorselDisaAktar(context, secili, g, if (buyuk) 1 else 2)
+                        vm.gorselDisaAktar(context, secili, sira, g, if (buyuk) 1 else 2)
                     } else if (m != null) {
-                        vm.export(context, m, secili) { file ->
+                        vm.export(context, m, secili, sira) { file ->
                             if (file == null) mesaj = "Dışa aktarılacak kayıt yok."
                             else {
                                 Exporters.share(context, file, m)
