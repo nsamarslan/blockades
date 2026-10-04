@@ -1493,6 +1493,46 @@ Soru metnindeki üs ("(-4)²") ML Kit'in okuyamadığı bir şey; soru metni
 "(-6)" gibi bozuk görünebilir. Bu, cevabı etkilemiyor: soru kaydı şıklarla
 birlikte tanınıyor.
 
+## Kartın üstündeki başlık: "A-Z", "2x2=4"
+
+Soru kartının hemen üstünde bir başlık satırı var: solda soru numarası
+("2."), ortada kategorinin simgesi, sağda geri sayım. Bazı kategorilerde
+simgenin kendisi bir yazı: İngilizce Lügat'ta kitabın üstündeki "A-Z",
+4 İşlem'de "2x2=4". OCR bunları da okuyordu. Kısa sorularda soru metni
+"en uzun iki parça birleştirilerek" kurulduğu için sonuç şöyleydi:
+
+* **İngilizce / İngilizce Lügat:** soru "A-Z Remedy" okunuyordu. Bu metin
+  soru cümlesine benzemediği için kaydedilmiyordu ve bot hiç dokunmuyordu.
+  Simge atılsa da "Remedy" tek kelime: 8 harf alt sınırına ve soru biçimi
+  süzgecine yine takılıyordu.
+* **4 İşlem:** soru "2x2=H (4×8)+4 =?" diye, simgeyle birlikte
+  kaydediliyordu.
+
+Başlıktan alınan tek şey artık soru numarası:
+
+* **Başlık satırı soru havuzuna girmiyor.** Numaranın ya da sayacın
+  ("74", "(78)") satırı başlık sayılıyor ve soru metni o satırın altında
+  aranıyor. Simgenin yazısı kategoriye göre değiştiği için ona değil,
+  yanındaki sayılara bakılıyor. Kartın içinde tek başına duran bir sayı
+  başlık sayılmıyor, çünkü onun üstünde soru metni var. Tepedeki ilerleme
+  şeridi ("1 2 3 4 5 6 7") de aynı satırda üç sayı olduğu için sayılmıyor.
+* **Uzak parçalar birleşmiyor.** Kısa sorunun iki parçası ancak alt alta
+  bitişikse (ya da aynı satırdaysa) tek metin oluyor.
+* **Kısa soru kabul ediliyor, ama yalnızca soru ekranı kanıtlandığında.**
+  Dört şık kutusunun pikselden ölçülmüş olması, başlık satırının bulunması
+  ve metnin kartta şıklara en yakın parça olması gerekiyor. O zaman
+  "Remedy", "To recur" (soru işareti ya da Türkçe soru kelimesi yok) ya da
+  "(4×8)+4 = ?" uzunluk ve soru biçimi süzgecine takılmıyor. Bu işaretlerden biri eksik olan karede eski kurallar geçerli;
+  sonraki kare yeniden deniyor.
+* **Rakamlı işlem sorusu sayı sanılmıyor.** "125+375 = ?" gibi parçalar
+  eskiden "çoğunluğu rakam" kuralıyla arayüz sayısı diye atılıyordu.
+  "=" ya da "?" içeren parça artık bu kurala girmiyor.
+* **Arşivdeki simgeli kayıtlar.** Soru başındaki "2x2=4" (ya da "2x2=H",
+  "2x2=+") içerik etiketi gibi atılıyor ve karşılaştırmada yok sayılıyor.
+  Eski kayıt, simgesiz yeni okumayla eşleşiyor, metni temiz olanla
+  değişiyor ve cevabı kaybolmuyor. `tools/arsiv_temizle.py` de aynı şeyi
+  yapıyor ve dört şıklı kısa soruları artık "bozuk" diye silmiyor.
+
 ## "Kaç kez çıktı" nasıl sayılıyor?
 
 Bir soru ekranda dururken saniyede birkaç kez taranıyor ve her taramada OCR

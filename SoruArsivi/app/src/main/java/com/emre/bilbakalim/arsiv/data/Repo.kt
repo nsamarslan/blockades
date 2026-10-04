@@ -62,7 +62,9 @@ class Repo private constructor(context: Context) {
         val opts = options.map { TurkishText.cleanOcr(TurkishText.stripOptionPrefix(it)) }
             .filter { it.isNotBlank() }
 
-        if (q.length < 8 || opts.size < 2) return SaveResult.Rejected
+        // Soru biçimini ayrıştırıcı denetliyor; kısa soruyu ("Remedy") ancak
+        // soru ekranı kanıtlandığında geçiriyor. Burada yalnızca boş metin.
+        if (!TurkishText.kisaSoruYeterli(q) || opts.size < 2) return SaveResult.Rejected
 
         val fp = TurkishText.fingerprint(q, opts)
 

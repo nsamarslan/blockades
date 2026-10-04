@@ -71,7 +71,7 @@ object Importers {
 
     private fun row(o: JSONObject): Row? {
         val question = TurkishText.cleanOcr(o.str("soru") ?: return null)
-        if (question.length < 8) return null
+        if (!TurkishText.kisaSoruYeterli(question)) return null
 
         val options = o.optJSONArray("siklar")
             ?.let { arr -> (0 until arr.length()).mapNotNull { arr.optString(it).takeIf(String::isNotBlank) } }

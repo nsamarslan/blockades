@@ -286,4 +286,11 @@ class TekrarSorgusuTest {
         assertTrue(ayni(metin, siklar, "A69) $metin", siklar))
     }
 
+    @Test
+    fun `dort islem simgesiyle kaydedilmis soru simgesiz okumayla eslesir`() {
+        val siklar = listOf("35", "38", "36", "37")
+        assertTrue(ayni("2x2=H (4*8)+4 =?", siklar, "(4*8)+4 =?", siklar))
+        // Simge atılınca başka işlemler birbirine karışmıyor.
+        assertFalse(ayni("2x2=H (4*8)+4 =?", siklar, "(4*8)-4 =?", listOf("28", "30", "32", "36")))
+    }
 }

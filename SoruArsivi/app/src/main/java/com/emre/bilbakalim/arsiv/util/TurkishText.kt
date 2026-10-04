@@ -214,12 +214,28 @@ object TurkishText {
         "^(?:\\p{L}{0,3}\\d{1,3}\\s*[)¢;:]|\\p{L}{2,3}\\d{2,3}|\\p{L}{1,3}\\d{2,3}\\.)\\s+(?=\\S)"
     )
 
-    /** Metnin başındaki içerik etiketini atar (bkz. [SORU_ETIKETI]). */
+    /**
+     * 4 İşlem kategorisinin başlık simgesi: "2x2=4". Soru kartının üstünde
+     * duruyor ve eski sürüm onu soru metnine katıyordu ("2x2=H (4×8)+4 =?");
+     * OCR "4"ü "H" ya da "+" okuyabiliyor. Bu kayıtlar etiketsiz yeni
+     * okumayla eşleşsin diye etiket burada da atılıyor. Eşittirin sağı boş
+     * ya da "?" olan gerçek bir soru ("2x2 = ?") etiket sayılmıyor.
+     */
+    private val KATEGORI_SIMGESI = Regex("^2\\s*[x×*]\\s*2\\s*=\\s*[^\\s?=]{1,2}\\s+(?=\\S)")
+
+    /** Metnin başındaki içerik etiketini atar (bkz. [SORU_ETIKETI], [KATEGORI_SIMGESI]). */
     fun soruEtiketiniAt(s: String): String {
         val t = s.trimStart()
-        val m = SORU_ETIKETI.find(t) ?: return s
+        val m = SORU_ETIKETI.find(t) ?: KATEGORI_SIMGESI.find(t) ?: return s
         return t.substring(m.range.last + 1)
     }
+
+    /**
+     * Kısa sorunun (tek kelime, kısa işlem) kaydedilebilmesi için en az bu
+     * kadar harf ya da rakam olmalı. Uzunluk eşiği (8) yalnızca soru
+     * ekranının başka işaretlerle kanıtlanmadığı okumalar için geçerli.
+     */
+    fun kisaSoruYeterli(s: String): Boolean = s.count { it.isLetterOrDigit() } >= 2
     private val LEADING_CHROME = Regex(
         "^(süre\\s*bitti|sure\\s*bitti|süre\\s*doldu|zaman\\s*doldu|muhteşem|muhtesem|" +
             "biraz\\s*daha\\s*gayret|tebrikler|harika|bravo|doğru\\s*cevap|kombo|combo|" +

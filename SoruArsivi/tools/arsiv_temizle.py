@@ -95,7 +95,7 @@ def onar(rows, rapor):
             ctext = r["siklar"][idx0]
         yeni = match_index(opts, ctext) if ctext else None
 
-        why = question_broken(q)
+        why = question_broken(q, len(opts))
         if why is None and len(opts) < 2:
             why = f"temizlikten sonra {len(opts)} şık kaldı"
         if why:

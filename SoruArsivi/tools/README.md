@@ -15,7 +15,7 @@ Bağımlılığı yok, saf Python 3.
 
 | Adım | Ne düzeltiliyor |
 | --- | --- |
-| Metin onarımı | Soruya yapışan süre balonu (`4,sn`), soru numarası (`(6s)`), joker rozeti (`X2`) ve puan balonu (`+5`) |
+| Metin onarımı | Soruya yapışan süre balonu (`4,sn`), soru numarası (`(6s)`), joker rozeti (`X2`), puan balonu (`+5`) ve 4 İşlem simgesi (`2x2=4`) |
 | Şık temizliği | Şık sanılmış joker/puan rozetleri: `['Kiminle?', 'Nerede?', '50,', '50']` |
 | Tekrar birleştirme | Aynı sorunun birden çok satırı; sayaçlar toplanmaz, en büyüğü alınır |
 | Yarım kayıt | Tam metnin yalnızca sonundan ibaret satırlar |

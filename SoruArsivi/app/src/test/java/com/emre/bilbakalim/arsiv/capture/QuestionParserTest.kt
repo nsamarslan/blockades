@@ -123,4 +123,15 @@ class QuestionParserTest {
         assertFalse(QuestionParser.okunamayanKabulEdilir(4, 0, true))
     }
 
+    @Test
+    fun `rakamli islem sorusu sayi sanilmaz`() {
+        // 4 İşlem: soru kartında yalnızca işlem duruyor.
+        assertTrue(keptOutside("125+375 = ?"))
+        assertTrue(keptOutside("(4×8)+4 = ?"))
+        assertTrue(keptOutside("36:4=?"))
+        // Şerit, altın, sayaç yine eleniyor.
+        listOf("41.470", "1 2 3 4 5", "(78)", "2.").forEach {
+            assertFalse("\"$it\" elenmeli", keptOutside(it))
+        }
+    }
 }

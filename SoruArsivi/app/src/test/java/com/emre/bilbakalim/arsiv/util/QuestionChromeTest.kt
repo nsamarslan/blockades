@@ -1,6 +1,8 @@
 package com.emre.bilbakalim.arsiv.util
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -117,6 +119,29 @@ class QuestionChromeTest {
             assertEquals(etiket, soru, TurkishText.stripQuestionChrome("$etiket $soru"))
         }
         assertEquals("Dik açı kaç derecedir?", TurkishText.soruEtiketiniAt("S179. Dik açı kaç derecedir?"))
+    }
+
+    @Test
+    fun `dort islem simgesi soru basindan atiliyor`() {
+        // Eski sürüm kartın üstündeki "2x2=4" simgesini soruya katıyordu;
+        // OCR "4"ü "H" ya da "+" okuyabiliyor.
+        assertEquals("(4*8)+4 =?", TurkishText.soruEtiketiniAt("2x2=H (4*8)+4 =?"))
+        assertEquals("(4x4)-(10+11) =?", TurkishText.stripQuestionChrome("2x2=H (4x4)-(10+11) =?"))
+        assertEquals("(4×8)+4 = ?", TurkishText.soruEtiketiniAt("2x2=4 (4×8)+4 = ?"))
+        assertEquals("(4×8)+4 = ?", TurkishText.soruEtiketiniAt("2x2= 4 (4×8)+4 = ?"))
+        assertEquals("12+7 = ?", TurkishText.soruEtiketiniAt("2x2=+ 12+7 = ?"))
+        // Sorunun kendisi "2x2" ise dokunulmuyor.
+        assertEquals("2x2 = ? işleminin sonucu kaçtır?", TurkishText.soruEtiketiniAt("2x2 = ? işleminin sonucu kaçtır?"))
+        assertEquals("2x2=?", TurkishText.soruEtiketiniAt("2x2=?"))
+    }
+
+    @Test
+    fun `kisa soru en az iki harf ya da rakam`() {
+        assertTrue(TurkishText.kisaSoruYeterli("Remedy"))
+        assertTrue(TurkishText.kisaSoruYeterli("Go"))
+        assertTrue(TurkishText.kisaSoruYeterli("5+3=?"))
+        assertFalse(TurkishText.kisaSoruYeterli("?"))
+        assertFalse(TurkishText.kisaSoruYeterli("A -"))
     }
 
     @Test

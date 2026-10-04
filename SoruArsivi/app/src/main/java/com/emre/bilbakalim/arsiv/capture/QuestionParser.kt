@@ -249,17 +249,44 @@ object QuestionParser {
 
         // --- 2. Soru metni -----------------------------------------------------
         val firstOptionTop = options.minOf { it.first.bounds.top }
-        val questionPool = cleaned.filter {
+        val bolgedekiler = cleaned.filter {
             it.bounds.bottom <= firstOptionTop + 4 &&
                 it.centerY in qTop..maxOf(qTop + 1, minOf(qBottom, firstOptionTop)) &&
                 it.centerX in soruX
         }
+        // Numara solda: seçilmiş soru bölgesinin sol yarısı, seçilmemişse
+        // ekranın sol %40'ı. Sayaç bunun aynası, sağda.
+        val numaraX = s.soruBolgesi?.let { b ->
+            b.yatay(screenW, BOLGE_YATAY_PAY).first..((b.sol + b.sag) / 2f * screenW).toInt()
+        } ?: 0..(screenW * NO_MAX_X).toInt()
+        val sayacX = s.soruBolgesi?.let { b ->
+            ((b.sol + b.sag) / 2f * screenW).toInt()..b.yatay(screenW, BOLGE_YATAY_PAY).last
+        } ?: (screenW * (1f - NO_MAX_X)).toInt()..screenW
+        // Kartın üstündeki başlık satırı soruya yapışmasın (bkz. [baslikSatiri]).
+        val baslik = baslikSatiri(
+            items.map { it.parca() }, bolgedekiler.map { it.parca() },
+            screenH, firstOptionTop, numaraX, sayacX
+        )
+        val questionPool =
+            if (baslik == null) bolgedekiler else bolgedekiler.filter { it.centerY > baslik }
         if (questionPool.isEmpty()) return reject("soru bölgesi boş")
 
-        val question = assembleQuestion(questionPool)
+        // Uzunluk ve soru biçimi süzgeçleri lobi başlıklarını elemek için
+        // var. Ama İngilizce Lügat'ta soru tek kelime ya da "?"siz bir ifade
+        // ("Remedy", "To recur"), 4 İşlem'de yalnızca işlem ("(4×8)+4 = ?").
+        // Dört şık kutusu pikselden ölçülmüş, kartın üstündeki başlık satırı
+        // (numara ya da sayaç) bulunmuş ve metin şıklara en yakın parçaysa
+        // ekranın soru ekranı olduğu zaten kanıtlı; o zaman süzgeçler yok.
+        val havuz = questionPool.map { it.parca() }
+        val kurulan = assembleQuestion(havuz, minUzunluk = 1)
+        val soruEkrani = knownOptions != null && optionTexts.size == 4 && baslik != null &&
+            kurulan != null && kurulan.alt >= havuz.maxOf { it.alt }
+        val question = kurulan?.metin
+            ?.takeIf { it.length >= 8 || soruEkrani }
             ?.let { TurkishText.stripQuestionChrome(it) }
             ?: return reject("soru metni kurulamadı")
-        if (question.length < 8) return reject("soru metni çok kısa")
+        if (!(if (soruEkrani) TurkishText.kisaSoruYeterli(question) else question.length >= 8))
+            return reject("soru metni çok kısa")
 
         // Soru metni şıklardan biriyle aynıysa yanlış ayrıştırdık demektir.
         if (optionTexts.any { TurkishText.similarity(it, question) > 0.9f })
@@ -267,7 +294,7 @@ object QuestionParser {
 
         // Lobi/skor ekranlarındaki başlıkları elemek için: metin gerçekten
         // soru cümlesine benziyor mu?
-        if (s.requireQuestionShape && !TurkishText.looksLikeQuestion(question)) {
+        if (s.requireQuestionShape && !soruEkrani && !TurkishText.looksLikeQuestion(question)) {
             return reject("soru cümlesine benzemiyor: \"" + question.take(40) + "\"")
         }
 
@@ -297,14 +324,7 @@ object QuestionParser {
             optionRects = options.map { Rect(it.first.bounds) },
             category = category,
             confidence = conf,
-            number = detectQuestionNumber(
-                items, screenH, questionPool.minOf { it.bounds.top },
-                // Numara soru kartının solunda: seçilmiş soru bölgesinin sol
-                // yarısı, seçilmemişse ekranın sol %40'ı.
-                s.soruBolgesi?.let { b ->
-                    b.yatay(screenW, BOLGE_YATAY_PAY).first..((b.sol + b.sag) / 2f * screenW).toInt()
-                } ?: 0..(screenW * NO_MAX_X).toInt()
-            )
+            number = detectQuestionNumber(items, screenH, questionPool.minOf { it.bounds.top }, numaraX)
         )
     }
 
@@ -488,10 +508,13 @@ object QuestionParser {
             // Parantez ve köşeli parantez de burada: "1)" ve "(44)" gibi
             // parçalar eskiden bu süzgeçten kaçıp soru metnine yapışıyordu.
             if (t.matches(ONLY_NUMERIC)) return true
-            // Çoğunluğu rakam olan parçalar (soru numarası şeridi vb.)
+            // Çoğunluğu rakam olan parçalar (soru numarası şeridi vb.). "=" ya
+            // da "?" içeren parça işlem sorusu ("125+375 = ?"): şeritte,
+            // sayaçta, altında bunlar yok.
             val visible = t.count { !it.isWhitespace() }
             val digits = t.count { it.isDigit() }
-            if (visible > 0 && digits.toFloat() / visible > 0.60f) return true
+            val islem = t.contains('=') || t.contains('?')
+            if (!islem && visible > 0 && digits.toFloat() / visible > 0.60f) return true
         }
 
         val key = TurkishText.lower(t).trim(' ', ':', '.', '!', '-')
@@ -667,35 +690,120 @@ object QuestionParser {
     }
 
     /**
+     * Konum hesapları için metin parçası: yalnızca metin ve kutusu.
+     *
+     * [TextItem]'ın kutusu `android.graphics.Rect`; birim testte o sınıf
+     * boş bir taklit olduğu için bu hesaplar düz sayılarla yapılıyor.
+     */
+    internal data class Parca(val metin: String, val sol: Int, val ust: Int, val sag: Int, val alt: Int) {
+        val ortaX: Int get() = (sol + sag) / 2
+        val ortaY: Int get() = (ust + alt) / 2
+        val yukseklik: Int get() = alt - ust
+    }
+
+    private fun TextItem.parca() = Parca(text, bounds.left, bounds.top, bounds.right, bounds.bottom)
+
+    /** Başlıktaki geri sayım: "74", "(78)", "87)", "(67". */
+    private val SAYAC = Regex("^[(\\[{]?\\s*\\d{1,3}\\s*[)\\]}]?\$")
+
+    /**
+     * Soru kartının üstündeki başlık satırı; dönen değer satırın alt
+     * kenarı, soru metni bunun altında aranır. Bulunamazsa null.
+     *
+     * Başlıkta solda soru numarası ("2."), sağda geri sayım ("74"), ortada
+     * kategorinin simgesi duruyor. Simge bazı kategorilerde yazı: İngilizce
+     * Lügat'ta kitabın üstündeki "A-Z", 4 İşlem'de "2x2=4". OCR bunları da
+     * okuyor ve sayı süzgecinden geçiyorlar (harf ya da "=" içeriyorlar);
+     * kısa soruda en uzun iki parça birleştirildiği için soru "A-Z Remedy"
+     * ya da "2x2=4 (4×8)+4 = ?" oluyordu. İlki soru biçimine benzemediği
+     * için hiç kaydedilmiyor, bot da dokunmuyordu; ikincisi etiketiyle
+     * kaydoluyordu.
+     *
+     * Başlıktan bize gereken tek şey numara. Simgenin yazısı kategoriye göre
+     * değiştiği için ona değil, yanındaki sayılara bakıyoruz: numara ya da
+     * sayaç hangisi okunduysa onun satırı başlıktır. Kartın içinde de tek
+     * başına bir sayı olabilir (resimli soru); başlık sayılmak için
+     * üstünde soru metni adayı kalmamalı. Tepedeki ilerleme şeridi ("1 2 3
+     * 4 5 6 7") aynı satırdaki üç sayıdan tanınıp dışarıda bırakılıyor.
+     *
+     * @param hepsi bütün metin parçaları (süzülmemiş: numara ve sayaç burada).
+     * @param havuz soru metni adayları.
+     */
+    internal fun baslikSatiri(
+        hepsi: List<Parca>,
+        havuz: List<Parca>,
+        screenH: Int,
+        ilkSikUst: Int,
+        numaraX: IntRange,
+        sayacX: IntRange
+    ): Int? {
+        fun numara(p: Parca) = QUESTION_NO.matches(p.metin.trim())
+        fun sayac(p: Parca) = SAYAC.matches(p.metin.trim())
+        val sayilar = hepsi.filter { it.alt <= ilkSikUst && (numara(it) || sayac(it)) }
+        if (sayilar.isEmpty()) return null
+        val serit = satirlar(sayilar, screenH).filter { it.size >= 3 }.flatten().toSet()
+        return sayilar
+            .filter { it !in serit }
+            .filter { numara(it) && it.ortaX in numaraX || sayac(it) && it.ortaX in sayacX }
+            .sortedByDescending { it.ortaY }
+            .firstOrNull { aday -> havuz.none { it.alt < aday.ust } }
+            ?.alt
+    }
+
+    /** [groupIntoRows]'un [Parca] için olanı. */
+    private fun satirlar(items: List<Parca>, screenH: Int): List<List<Parca>> {
+        val tol = (screenH * 0.035f).toInt().coerceAtLeast(12)
+        val rows = ArrayList<MutableList<Parca>>()
+        for (it in items.sortedBy { it.ortaY }) {
+            val row = rows.lastOrNull()
+            if (row != null && kotlin.math.abs(row.last().ortaY - it.ortaY) <= tol) row.add(it)
+            else rows.add(mutableListOf(it))
+        }
+        return rows
+    }
+
+    /** Kurulan soru metni ve kullanılan parçaların en alt kenarı. */
+    internal data class Kurulan(val metin: String, val alt: Int)
+
+    /**
      * Soru birden fazla satıra/düğüme bölünmüş olabilir. En uzun parçayı
      * çekirdek alıp ona dikey olarak bitişik parçaları okuma sırasında ekliyoruz.
      */
-    private fun assembleQuestion(pool: List<TextItem>): String? {
-        val core = pool.maxByOrNull { it.text.length } ?: return null
-        if (core.text.length >= 25) {
+    internal fun assembleQuestion(pool: List<Parca>, minUzunluk: Int = 8): Kurulan? {
+        val core = pool.maxByOrNull { it.metin.length } ?: return null
+        if (core.metin.length >= 25) {
             // Yeterince uzun: aynı bloktaki komşu satırları da al.
             val sameColumn = pool.filter {
-                kotlin.math.abs(it.centerX - core.centerX) < core.bounds.width().coerceAtLeast(40)
-            }.sortedBy { it.bounds.top }
+                kotlin.math.abs(it.ortaX - core.ortaX) < (core.sag - core.sol).coerceAtLeast(40)
+            }.sortedBy { it.ust }
 
             val joined = StringBuilder()
             var lastBottom = Int.MIN_VALUE
             for (it in sameColumn) {
-                val gap = if (lastBottom == Int.MIN_VALUE) 0 else it.bounds.top - lastBottom
-                val lineH = it.bounds.height().coerceAtLeast(1)
+                val gap = if (lastBottom == Int.MIN_VALUE) 0 else it.ust - lastBottom
+                val lineH = it.yukseklik.coerceAtLeast(1)
                 if (lastBottom != Int.MIN_VALUE && gap > lineH * 1.6f) continue
                 if (joined.isNotEmpty()) joined.append(' ')
-                joined.append(it.text)
-                lastBottom = it.bounds.bottom
+                joined.append(it.metin)
+                lastBottom = it.alt
             }
             val result = TurkishText.cleanOcr(joined.toString())
-            return if (result.length >= core.text.length) result else core.text
+            return if (result.length >= core.metin.length) Kurulan(result, lastBottom)
+            else Kurulan(core.metin, core.alt)
         }
-        // Hiçbiri uzun değilse en uzun ikisini birleştirmeyi dene.
-        val top2 = pool.sortedByDescending { it.text.length }.take(2).sortedBy { it.bounds.top }
-        val merged = TurkishText.cleanOcr(top2.joinToString(" ") { it.text })
-        return merged.takeIf { it.length >= 8 }
+        // Hiçbiri uzun değilse en uzun ikisini birleştirmeyi dene — ama
+        // yalnızca birbirine bitişiklerse. Aralarında boşluk olan iki parça
+        // tek sorunun satırları değil: kartın üstündeki bir yazı ("A-Z")
+        // ile kartın içindeki soru ("Remedy") böyle birleşiyordu.
+        val top2 = pool.sortedByDescending { it.metin.length }.take(2).sortedBy { it.ust }
+        val parcalar = if (top2.size == 2 && bitisik(top2[0], top2[1])) top2 else listOf(core)
+        val merged = TurkishText.cleanOcr(parcalar.joinToString(" ") { it.metin })
+        return Kurulan(merged, parcalar.maxOf { it.alt }).takeIf { merged.length >= minUzunluk }
     }
+
+    /** [ust] parçasının hemen altında (ya da aynı satırında) mı duruyor? */
+    private fun bitisik(ust: Parca, alt: Parca): Boolean =
+        alt.ust - ust.alt <= maxOf(ust.yukseklik, alt.yukseklik, 1) * 1.6f
 
     /**
      * Ekranda kategori listesindeki bir ad (ya da adı değiştirilmiş bir

@@ -80,8 +80,13 @@ PREFIX = re.compile(
 # soruda "+ 2" gerçekten sorunun parçası.
 SUFFIX = re.compile(r"(?<=[^0-9\s])[\s(]*[+\-±]\s*\d{1,4}\s*[)!.,:;]*\s*$")
 
+# 4 İşlem kategorisinin başlık simgesi ("2x2=4"; OCR "4"ü "H"/"+" okuyabiliyor).
+# Eski sürüm onu soruya katıyordu: "2x2=H (4*8)+4 =?". Uygulamadaki
+# TurkishText.KATEGORI_SIMGESI ile aynı; "2x2 = ?" gibi gerçek soru dokunulmuyor.
+KATEGORI_SIMGESI = re.compile(r"^2\s*[x×*]\s*2\s*=\s*[^\s?=]{1,2}\s+(?=\S)")
+
 def fix_question(q):
-    t = (q or "").strip()
+    t = KATEGORI_SIMGESI.sub("", (q or "").strip())
     # Baştaki joker/puan/süre rozetleri arka arkaya gelebiliyor:
     # "X2 (57) +4 Sn Hangi filozofu..." — hepsini tek tek soyuyoruz.
     t = re.sub(r"^(?:\s*(?:[xX]\s*2|2\s*[xX]|[+±]\s*\d{1,3}|\(\s*\d{1,3}\s*\)"
@@ -168,10 +173,18 @@ def clean_options(raw):
 UI_TEXT = re.compile(r"oyundan ayrılmak|oyundan ayrilmak|emin misin|reklam izle"
                      r"|bilme oranı|bilme orani", re.I)
 
-def question_broken(q):
-    if len(q) < 12:
+# İşlem sorusu: "(4×8)+4 = ?", "125+375=?".
+ISLEM = re.compile(r"\d\s*[-+*/x×÷:]\s*\(?\s*\d.*[=?]|\d\s*\)\s*[-+*/x×÷:]")
+
+def question_broken(q, sik_sayisi=0):
+    # Dört şıklı kayıtta kısa soru gerçek olabilir: İngilizce Lügat'ta tek
+    # kelime ("Remedy"), 4 İşlem'de yalnızca işlem. Uygulama bunları ancak
+    # dört şık kutusu ve kartın başlığı görüldüğünde kaydediyor.
+    kisa_olabilir = sik_sayisi >= 4 and sum(c.isalnum() for c in q) >= 2
+    if len(q) < 12 and not kisa_olabilir:
         return "soru metni çok kısa"
-    if not re.search(r"[A-Za-zÇĞİÖŞÜçğıöşü]{4}", q):
+    if not re.search(r"[A-Za-zÇĞİÖŞÜçğıöşü]{4}", q) and not (kisa_olabilir and (
+            ISLEM.search(q) or re.search(r"[A-Za-zÇĞİÖŞÜçğıöşü]{2}", q))):
         return "soru metninde sözcük yok"
     if UI_TEXT.search(q):
         return "oyun arayüz metni, soru değil"
