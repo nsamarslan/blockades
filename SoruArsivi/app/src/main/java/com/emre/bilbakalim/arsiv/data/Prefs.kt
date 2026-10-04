@@ -127,7 +127,25 @@ class Prefs private constructor(context: Context) {
          */
         val unknownChime: Boolean = false,
         /** Bilgilendirme ekranı gösterildi mi. */
-        val onboarded: Boolean = false
+        val onboarded: Boolean = false,
+        /**
+         * Oyun uzakta: oyunu başkası oynuyor, sen yayınını bu telefonda
+         * izliyorsun (bkz. `capture/UzakIzleyici`). Açıkken yerel yakalama
+         * ve otomatik mod tümüyle duruyor; ekrana dokunulmuyor, arşive
+         * hiçbir şey yazılmıyor, yalnızca bilinen cevap yayının üstünde
+         * gösteriliyor.
+         */
+        val uzakMod: Boolean = false,
+        /**
+         * Uzak modda yayının içindeki soru ve şık bölgeleri (ekran oranı).
+         * Yerel moddaki [soruBolgesi] / [sikBolgesi]'nden ayrı: yayındaki
+         * oyunun yeri, telefondaki oyununkiyle ilgisiz.
+         */
+        val uzakSoruBolgesi: EkranBolgesi? = null,
+        val uzakSikBolgesi: EkranBolgesi? = null,
+        /** Uzak moddaki yüzen düğmenin yeri (ekran oranı); null ise sol üst. */
+        val uzakDugmeX: Float? = null,
+        val uzakDugmeY: Float? = null
     ) {
         /**
          * Kategori listesi eski adlarıyla birlikte. Bir kez kuruluyor: ad
@@ -174,7 +192,12 @@ class Prefs private constructor(context: Context) {
         autoUseKnownAnswer = sp.getBoolean(K_AUTO_KNOWN, true),
         autoRandomWhenUnknown = sp.getBoolean(K_AUTO_RANDOM_UNKNOWN, true),
         unknownChime = sp.getBoolean(K_UNKNOWN_CHIME, false),
-        onboarded = sp.getBoolean(K_ONBOARDED, false)
+        onboarded = sp.getBoolean(K_ONBOARDED, false),
+        uzakMod = sp.getBoolean(K_UZAK_MOD, false),
+        uzakSoruBolgesi = EkranBolgesi.oku(sp.getString(K_UZAK_SORU, null)),
+        uzakSikBolgesi = EkranBolgesi.oku(sp.getString(K_UZAK_SIK, null)),
+        uzakDugmeX = sp.getFloat(K_UZAK_DUGME_X, -1f).takeIf { it in 0f..1f },
+        uzakDugmeY = sp.getFloat(K_UZAK_DUGME_Y, -1f).takeIf { it in 0f..1f }
     )
 
     private fun commit(block: SharedPreferences.Editor.() -> Unit) {
@@ -203,6 +226,17 @@ class Prefs private constructor(context: Context) {
     fun setAutoRandomWhenUnknown(v: Boolean) = commit { putBoolean(K_AUTO_RANDOM_UNKNOWN, v) }
     fun setUnknownChime(v: Boolean) = commit { putBoolean(K_UNKNOWN_CHIME, v) }
     fun setOnboarded(v: Boolean) = commit { putBoolean(K_ONBOARDED, v) }
+    fun setUzakMod(v: Boolean) = commit { putBoolean(K_UZAK_MOD, v) }
+
+    fun setUzakBolgeleri(soru: EkranBolgesi, sik: EkranBolgesi) = commit {
+        putString(K_UZAK_SORU, soru.metin())
+        putString(K_UZAK_SIK, sik.metin())
+    }
+
+    fun setUzakDugme(x: Float, y: Float) = commit {
+        putFloat(K_UZAK_DUGME_X, x.coerceIn(0f, 1f))
+        putFloat(K_UZAK_DUGME_Y, y.coerceIn(0f, 1f))
+    }
 
     fun setRegions(qTop: Float, qBottom: Float, oTop: Float, oBottom: Float) = commit {
         putFloat(K_Q_TOP, qTop); putFloat(K_Q_BOTTOM, qBottom)
@@ -301,6 +335,11 @@ class Prefs private constructor(context: Context) {
         private const val K_UNKNOWN_CHIME = "bilinmeyen_uyari_sesi"
         private const val K_DEBUG = "teshis_dokumu"
         private const val K_ONBOARDED = "tanitim_goruldu"
+        private const val K_UZAK_MOD = "uzak_mod"
+        private const val K_UZAK_SORU = "uzak_bolge_soru"
+        private const val K_UZAK_SIK = "uzak_bolge_sik"
+        private const val K_UZAK_DUGME_X = "uzak_dugme_x"
+        private const val K_UZAK_DUGME_Y = "uzak_dugme_y"
 
         /** Bil Bakalım ve benzeri uygulamalarda geçen kategori adları. */
         val BILINEN_KATEGORILER = listOf(

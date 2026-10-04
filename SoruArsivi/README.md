@@ -1493,6 +1493,71 @@ Soru metnindeki üs ("(-4)²") ML Kit'in okuyamadığı bir şey; soru metni
 "(-6)" gibi bozuk görünebilir. Bu, cevabı etkilemiyor: soru kaydı şıklarla
 birlikte tanınıyor.
 
+## Oyun uzakta: yayındaki oyunda doğru şıkkı göstermek
+
+Ana ekrandaki mod seçiminde **Uzakta**. Oyunu başkası oynuyor, sen onun
+yayınını bu telefonda izliyorsun: YouTube, Twitch, Kick, Instagram, hangi
+uygulama olursa. Uygulama yayının içindeki soruyu okuyor ve arşivde arıyor:
+
+| Ekranda | Anlamı |
+| --- | --- |
+| Doğru şıkkın yanında yeşil ok, düğmede `✓ C · Deva` | Cevap arşivde var |
+| Düğmede `✓ Cevap: Deva`, sorunun yanında turuncu `!` | Cevap arşivde var ama ekrandaki şıklarda eşleşmedi; metni gösteriliyor |
+| Düğmede `? Arşivde var, cevabı yok`, turuncu `?` | Soru kayıtlı ama doğru cevabı henüz öğrenilmedi |
+| Düğmede `✗ Arşivde yok`, kırmızı `✗` | Soru arşivde hiç yok |
+| Düğmede `◎ Soru bekleniyor` | Seçilen bölgede soru okunamıyor (tur arası, geçiş) |
+
+Bilinmeyen soruda tahmin yok: ok yalnızca arşivde cevabı olan soruda çıkıyor.
+
+**Bu modda yapılmayanlar, bilerek:**
+
+* **Ekrana dokunulmuyor.** Hiçbir jest gönderilmiyor.
+* **Arşive yazılmıyor.** Arama salt okunur: yeni soru eklenmiyor, sayaç
+  artmıyor, yayıncının cevabı arşive yazılmıyor. Yayın görüntüsü bulanık
+  olabildiği için arşiv kirlenmesin diye.
+* **Yerel yakalama ve otomatik mod duruyor.** Manuel'e ya da Otomatik'e
+  dönünce eskisi gibi çalışıyorlar. Yerel moddaki bölge ayarlarına da
+  dokunulmuyor, uzak modun bölgeleri ayrı saklanıyor.
+
+### Bölge seçimi
+
+Mod açılınca ekranda yüzen bir düğme beliriyor. Düğmeye dokununca görüntü
+donuyor. Önce soru kartını, sonra dört şıkkı birlikte çerçevelersin. Şık
+bölgesini çizince bulunan şık kutuları mavi gösteriliyor ("✓ 4 şık kutusu
+bulundu"). Panel çizimin önüne geçerse `▲▼` ile yukarı alınabiliyor.
+Düğme sürüklenerek taşınabiliyor.
+
+Yayıncı düzeni değiştirirse ya da telefonu çevirirsen bölgeleri yeniden
+seç: bölgeler ekrana oranla saklanıyor ve yön değişince yerleri kayıyor.
+
+### Nasıl okunuyor
+
+Yayında oyun ekranın küçük bir parçası. Şık kutusu ölçümü ve ayrıştırıcı
+tam ekran için yazıldı: eşikleri görüntü boyuna oranlı (şık hapı boyun
+%3,5–13'ü). Bu yüzden yalnızca seçilen iki bölge (biraz payla) kırpılıyor,
+küçükse üç kata kadar büyütülüyor ve bir ekranmış gibi okunuyor. Yerel
+yakalamanın kutu ölçümü, OCR'ı ve ayrıştırıcısı değişmeden kullanılıyor.
+Bölgeler elle seçildiği için tek kelimelik ve soru işaretsiz sorular da
+kabul ediliyor (dört şık okunduysa).
+
+Arama kayıtla aynı iki kademeyi kullanıyor: birebir parmak izi, sonra
+bulanık eşleşme. Doğru cevap ekrandaki şıklarda metinden aranıyor; şıklar
+her turda karıştığı için sıra değil metin.
+
+Ok ve rozet, okunan bölgenin **dışına** konuyor: ekran görüntüsüne de
+giriyorlar ve içeride kalsalar yeşil ok bir sonraki karede şık hapı
+sanılırdı. Oyunun iki yanında da yer yoksa ok çıkmıyor; cevap düğmede
+yazıyor. Düğme okunan bölgenin üstüne bırakılırsa aynı sebeple en yakın
+kenara itiliyor.
+
+Günlükte `UZAK SORU «…» · A«…» B«…» … → BİLİNİYOR C «…»` ya da
+`→ ARŞİVDE YOK` satırları, okunamayan karelerde `uzak · okunamadı: …`.
+
+Sınırlar: Android 10 ve öncesinde ekranı okumak için hızlı yakalamanın açık
+olması gerekiyor. Görüntüsünün kaydedilmesine izin vermeyen uygulamalarda
+(bazı film uygulamaları) ekran siyah okunuyor. Yayın kalitesi düşükse
+OCR şıkları okuyamayabilir.
+
 ## Kartın üstündeki başlık: "A-Z", "2x2=4"
 
 Soru kartının hemen üstünde bir başlık satırı var: solda soru numarası

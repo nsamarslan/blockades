@@ -190,7 +190,14 @@ object QuestionParser {
          * doldurulsun mu? Yakalama tarafı bunu ancak aynı sonuç üst üste
          * geldiğinde açıyor (ML Kit'in tanımadığı bir simge).
          */
-        okunamayanaIzin: Boolean = false
+        okunamayanaIzin: Boolean = false,
+        /**
+         * Soru ve şık bölgesi kullanıcı tarafından elle seçildi ve metin
+         * yalnızca o bölgelerden geliyor (uzak mod: yayının bir köşesindeki
+         * oyun). Ekranın soru ekranı olduğu o zaman zaten kanıtlı; dört şık
+         * okunduysa başlık satırı aranmadan kısa soru ve "?"siz ifade kabul.
+         */
+        bolgeSecili: Boolean = false
     ): Parsed? {
         if (screenW <= 0 || screenH <= 0) return reject("ekranda metin yok")
         if (raw.isEmpty() && knownOptions.isNullOrEmpty()) return reject("ekranda metin yok")
@@ -279,7 +286,8 @@ object QuestionParser {
         // ekranın soru ekranı olduğu zaten kanıtlı; o zaman süzgeçler yok.
         val havuz = questionPool.map { it.parca() }
         val kurulan = assembleQuestion(havuz, minUzunluk = 1)
-        val soruEkrani = knownOptions != null && optionTexts.size == 4 && baslik != null &&
+        val soruEkrani = optionTexts.size == 4 &&
+            (knownOptions != null && baslik != null || bolgeSecili) &&
             kurulan != null && kurulan.alt >= havuz.maxOf { it.alt }
         val question = kurulan?.metin
             ?.takeIf { it.length >= 8 || soruEkrani }

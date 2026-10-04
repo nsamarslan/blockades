@@ -186,6 +186,7 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setRequireQuestionShape(v: Boolean) = prefs.setRequireQuestionShape(v)
     fun setRequireFourOptions(v: Boolean) = prefs.setRequireFourOptions(v)
     fun setAutoPlay(v: Boolean) = prefs.setAutoPlay(v)
+    fun setUzakMod(v: Boolean) = prefs.setUzakMod(v)
     fun setAutoAnswerDelay(ms: Long) = prefs.setAutoAnswerDelay(ms)
     fun setAutoRestart(v: Boolean) = prefs.setAutoRestart(v)
     fun setAutoRefillLives(v: Boolean) = prefs.setAutoRefillLives(v)

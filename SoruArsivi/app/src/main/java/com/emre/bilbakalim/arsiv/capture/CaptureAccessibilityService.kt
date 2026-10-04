@@ -73,6 +73,8 @@ class CaptureAccessibilityService : AccessibilityService() {
     private lateinit var prefs: Prefs
     private lateinit var repo: Repo
     private lateinit var auto: AutoPlayer
+    /** "Oyun uzakta" modu (bkz. [UzakIzleyici]); açıkken yerel yakalama durur. */
+    private var uzak: UzakIzleyici? = null
 
     @Volatile private var lastKey: String? = null
     @Volatile private var lastShotAt = 0L
@@ -376,13 +378,38 @@ class CaptureAccessibilityService : AccessibilityService() {
         auto = AutoPlayer(this) { line -> log(line) }
         running.value = true
 
+        uzak = UzakIzleyici(
+            this, prefs, repo,
+            ekranGoruntusu = { captureScreen() },
+            ekranBoyu = { ProjectionService.screenSize(this) },
+            log = { log(it) }
+        )
+
         applyTargets(prefs.state.value.targetPackages)
-        if (prefs.state.value.autoPlay) ensurePolling()
+        if (prefs.state.value.uzakMod) uzak?.baslat()
+        else if (prefs.state.value.autoPlay) ensurePolling()
 
         scope.launch {
             var wasAuto = prefs.state.value.autoPlay
+            var wasUzak = prefs.state.value.uzakMod
             var hedefler = prefs.state.value.targetPackages
             prefs.state.collect { s ->
+                // Uzak mod yerel yakalamanın yerine geçiyor: açılınca
+                // yoklama ve otomatik oyun duruyor, kapanınca eskisi gibi.
+                if (s.uzakMod != wasUzak) {
+                    wasUzak = s.uzakMod
+                    if (s.uzakMod) {
+                        autoJob?.cancel()
+                        burstJob?.cancel()
+                        pollJob?.cancel()
+                        pendingAnswer = null
+                        uzak?.baslat()
+                    } else {
+                        uzak?.durdur()
+                        auto.reset()
+                        if (s.autoPlay || s.targetPackages.isNotEmpty()) ensurePolling()
+                    }
+                }
                 // Ayarlar her taramada yeniden yayınlanıyor (teşhis dökümü de
                 // bir ayar); hedefler değişmediyse sisteme yeniden
                 // serviceInfo göndermenin anlamı yok.
@@ -394,7 +421,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                     wasAuto = s.autoPlay
                     auto.reset()
                     autoJob?.cancel()
-                    if (s.autoPlay) ensurePolling()
+                    if (s.autoPlay && !s.uzakMod) ensurePolling()
                     log(if (s.autoPlay) "otomatik mod açıldı" else "manuel moda dönüldü")
                 }
             }
@@ -438,7 +465,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         if (!::prefs.isInitialized) return
 
         val s = prefs.state.value
-        if (s.paused || s.targetPackages.isEmpty()) return
+        if (s.paused || s.uzakMod || s.targetPackages.isEmpty()) return
 
         val pkg = event.packageName?.toString() ?: return
         if (pkg !in s.targetPackages) return
@@ -487,7 +514,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                     pollAdim("uyku")
                     delay(if (fastCapture) POLL_FAST_MS else POLL_SLOW_MS)
                     val cur = prefs.state.value
-                    if (cur.targetPackages.isEmpty()) break
+                    if (cur.targetPackages.isEmpty() || cur.uzakMod) break
 
                     pollAdim("onplan_sorgu")
                     val active = withContext(Dispatchers.Main) {
@@ -560,7 +587,9 @@ class CaptureAccessibilityService : AccessibilityService() {
                 // bitmişse — mod kapandı, servis düşüyor — scope da iptal
                 // olduğu için bu launch hiç çalışmaz, yani kapatma yolu
                 // etkilenmiyor.
-                if (running.value && prefs.state.value.targetPackages.isNotEmpty()) {
+                if (running.value && prefs.state.value.targetPackages.isNotEmpty() &&
+                    !prefs.state.value.uzakMod
+                ) {
                     scope.launch {
                         delay(IDLE_POLL_MS)
                         ensurePolling()
@@ -593,7 +622,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                     if (dirty && waited < MAX_SETTLE_WAIT_MS) continue
                     waited = 0L
                     val cur = prefs.state.value
-                    if (cur.paused || cur.targetPackages.isEmpty()) break
+                    if (cur.paused || cur.uzakMod || cur.targetPackages.isEmpty()) break
                     runCatching { scan(cur) }
                         .onFailure { Log.w(TAG, "Tarama hatası: ${it.message}") }
                     delay(MIN_SCAN_GAP_MS)
@@ -2806,6 +2835,8 @@ class CaptureAccessibilityService : AccessibilityService() {
         burstJob?.cancel()
         autoJob?.cancel()
         watchdogJob?.cancel()
+        uzak?.kapat()
+        uzak = null
         return super.onUnbind(intent)
     }
 
@@ -2816,6 +2847,8 @@ class CaptureAccessibilityService : AccessibilityService() {
         burstJob?.cancel()
         autoJob?.cancel()
         watchdogJob?.cancel()
+        uzak?.kapat()
+        uzak = null
         super.onDestroy()
     }
 

@@ -608,6 +608,26 @@ class Repo private constructor(context: Context) {
      */
     suspend fun isKnownFingerprint(fp: String): Boolean = dao.byFingerprint(fp) != null
 
+    /**
+     * Soruyu arşivde arar, **hiçbir şey yazmadan** (uzak mod).
+     *
+     * [save] ile aynı iki kademe: önce birebir parmak izi, sonra tekrar
+     * denetiminin bulanık kuralları ([TekrarSorgusu]). Yayından okunan
+     * metin sıkıştırma yüzünden telefondakinden daha bozuk olabiliyor;
+     * bulanık kademe olmadan bilinen soruların çoğu "yok" görünürdü.
+     * Sayaç artmıyor, metin ve şıklar onarılmıyor, parmak izi yenilenmiyor.
+     */
+    suspend fun saltOkunurBul(question: String, options: List<String>): QuestionEntity? {
+        val q = TurkishText.cleanOcr(question)
+        val opts = options.map { TurkishText.cleanOcr(TurkishText.stripOptionPrefix(it)) }
+            .filter { it.isNotBlank() }
+        if (!TurkishText.kisaSoruYeterli(q) || opts.size < 2) return null
+        dao.byFingerprint(TurkishText.fingerprint(q, opts))?.let { return it }
+        val sorgu = TekrarSorgusu(q, opts)
+        val hit = tekrarAdaylari().firstOrNull { sorgu.matches(it) } ?: return null
+        return dao.byId(hit.id)
+    }
+
     suspend fun updateManual(q: QuestionEntity) {
         dao.update(q.copy(edited = true))
         adaylariUnut()

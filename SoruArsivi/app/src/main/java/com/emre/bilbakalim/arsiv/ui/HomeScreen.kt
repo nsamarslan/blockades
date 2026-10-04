@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -93,7 +94,8 @@ fun HomeScreen(
         onDispose { owner.lifecycle.removeObserver(obs) }
     }
 
-    val hazir = a11yOn && settings.targetPackages.isNotEmpty() && !settings.paused
+    // Uzak modda hedef uygulama gerekmiyor: yayın her uygulamada olabilir.
+    val hazir = a11yOn && (settings.uzakMod || settings.targetPackages.isNotEmpty()) && !settings.paused
 
     // ---- Kategori düzenleme -------------------------------------------------
     var kategoriEkle by remember { mutableStateOf(false) }
@@ -182,8 +184,10 @@ fun HomeScreen(
                             Text(
                                 when {
                                     !a11yOn -> "Erişilebilirlik servisi kapalı"
-                                    settings.targetPackages.isEmpty() -> "Hedef uygulama seçilmedi"
                                     settings.paused -> "Elle duraklatıldı"
+                                    settings.uzakMod ->
+                                        "Yayını aç; ekrandaki düğmeye dokunup soru ve şık bölgesini seç"
+                                    settings.targetPackages.isEmpty() -> "Hedef uygulama seçilmedi"
                                     settings.autoPlay ->
                                         "Oyunu aç ve bırak — uygulama kendi oynayıp soruları toplayacak"
                                     else -> "Oyunu aç ve oyna — sorular kendiliğinden kaydedilecek"
@@ -191,7 +195,7 @@ fun HomeScreen(
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
-                        if (a11yOn && settings.targetPackages.isNotEmpty()) {
+                        if (a11yOn && (settings.uzakMod || settings.targetPackages.isNotEmpty())) {
                             IconButton(onClick = { vm.setPaused(!settings.paused) }) {
                                 Icon(
                                     if (settings.paused) Icons.Default.PlayArrow else Icons.Default.Pause,
@@ -213,7 +217,7 @@ fun HomeScreen(
                                 "\"indirilen uygulamalar\" veya \"yüklü servisler\" başlığı altında gösterir.",
                             style = MaterialTheme.typography.bodySmall
                         )
-                    } else if (settings.targetPackages.isEmpty()) {
+                    } else if (settings.targetPackages.isEmpty() && !settings.uzakMod) {
                         Spacer(Modifier.height(12.dp))
                         Button(onClick = onPickApp, modifier = Modifier.fillMaxWidth()) {
                             Icon(Icons.Default.Apps, contentDescription = null)
@@ -226,28 +230,46 @@ fun HomeScreen(
 
             // ---- Mod seçimi -----------------------------------------------
             item {
+                val uzak = settings.uzakMod
+                val oto = settings.autoPlay && !uzak
                 SectionCard(
-                    container = if (settings.autoPlay)
-                        MaterialTheme.colorScheme.tertiaryContainer else null
+                    container = when {
+                        uzak -> MaterialTheme.colorScheme.secondaryContainer
+                        oto -> MaterialTheme.colorScheme.tertiaryContainer
+                        else -> null
+                    }
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            if (settings.autoPlay) Icons.Default.SmartToy else Icons.Default.TouchApp,
+                            when {
+                                uzak -> Icons.Default.Visibility
+                                oto -> Icons.Default.SmartToy
+                                else -> Icons.Default.TouchApp
+                            },
                             contentDescription = null
                         )
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(
-                                if (settings.autoPlay) "Otomatik mod" else "Manuel mod",
+                                when {
+                                    uzak -> "Oyun uzakta"
+                                    oto -> "Otomatik mod"
+                                    else -> "Manuel mod"
+                                },
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                if (settings.autoPlay)
-                                    "Cevabı arşivde olan soruda doğru şıkka, olmayanda " +
+                                when {
+                                    uzak -> "Oyunu başkası oynuyor, sen yayınını izliyorsun. " +
+                                        "Cevabı arşivde olan soruda doğru şıkkın yanına ok " +
+                                        "konuyor, olmayanda \"Arşivde yok\" yazıyor. Ekrana " +
+                                        "dokunulmuyor, arşive bir şey yazılmıyor."
+                                    oto -> "Cevabı arşivde olan soruda doğru şıkka, olmayanda " +
                                         "rastgele birine basıyor; tur bitince " +
                                         "\"Tekrar Oyna\"ya dokunuyor."
-                                else "Oyunu sen oynuyorsun; uygulama sadece okuyup kaydediyor.",
+                                    else -> "Oyunu sen oynuyorsun; uygulama sadece okuyup kaydediyor."
+                                },
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
@@ -255,19 +277,45 @@ fun HomeScreen(
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(
-                            selected = !settings.autoPlay,
-                            onClick = { vm.setAutoPlay(false) },
+                            selected = !oto && !uzak,
+                            onClick = { vm.setUzakMod(false); vm.setAutoPlay(false) },
                             label = { Text("Manuel") },
                             modifier = Modifier.weight(1f)
                         )
                         FilterChip(
-                            selected = settings.autoPlay,
-                            onClick = { vm.setAutoPlay(true) },
+                            selected = oto,
+                            onClick = { vm.setUzakMod(false); vm.setAutoPlay(true) },
                             label = { Text("Otomatik") },
                             modifier = Modifier.weight(1f)
                         )
+                        FilterChip(
+                            selected = uzak,
+                            onClick = { vm.setUzakMod(true) },
+                            label = { Text("Uzakta") },
+                            modifier = Modifier.weight(1f)
+                        )
                     }
-                    if (settings.autoPlay) {
+                    if (uzak) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "Yayını tam ekran ya da küçük pencerede aç. Ekranda beliren " +
+                                "düğmeye dokun: görüntü donar, önce soruyu sonra dört " +
+                                "şıkkı çerçevele. Düğmeyi sürükleyerek oyunun dışına " +
+                                "koy. Yayıncı düzeni değiştirir ya da telefonu " +
+                                "çevirirsen yeniden seç.",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R && !fastOn) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "Bu Android sürümünde ekranı okumak için aşağıdan " +
+                                    "hızlı yakalamayı açman gerekiyor.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                    if (oto) {
                         Spacer(Modifier.height(10.dp))
                         Text(
                             "Otomatik modda uygulama ekrana dokunur. Telefonu bırakıp " +
