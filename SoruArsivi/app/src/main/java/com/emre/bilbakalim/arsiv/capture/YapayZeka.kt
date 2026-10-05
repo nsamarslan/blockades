@@ -1,6 +1,7 @@
 package com.emre.bilbakalim.arsiv.capture
 
 import android.os.SystemClock
+import com.emre.bilbakalim.arsiv.data.AnahtarKotasi
 import com.emre.bilbakalim.arsiv.util.TurkishText
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -167,10 +168,7 @@ class YapayZeka(
     }
 
     /** Bu anahtar/model kaç ms daha ceza beklemede (0: hazır). */
-    fun bekleme(a: Anahtar, model: String): Long {
-        val kadar = synchronized(bekle) { bekle[bekleAnahtari(a, model)] ?: 0L }
-        return (kadar - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
-    }
+    fun bekleme(a: Anahtar, model: String): Long = kalanCeza(a, model)
 
     /**
      * Birçok soruyu tek istekte sorar (arşivi toplu kontrol için). Kota
@@ -228,6 +226,12 @@ class YapayZeka(
             val kod = c.responseCode
             val akis = if (kod in 200..299) c.inputStream else c.errorStream
             val metin = akis?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+            AnahtarKotasi.kaydet(
+                sag.ad, anahtar, kod,
+                if (kod == 200) null else hataOzeti(kod, metin),
+                c.getHeaderField("x-ratelimit-remaining-requests")?.trim()?.toIntOrNull(),
+                c.getHeaderField("x-ratelimit-limit-requests")?.trim()?.toIntOrNull()
+            )
             val bekleSn = c.getHeaderField("retry-after")?.trim()?.toLongOrNull()
             val onlem = onlemSuresiMs(
                 c.getHeaderField("x-ratelimit-remaining-requests"),
@@ -237,6 +241,7 @@ class YapayZeka(
             )
             return Yanit(kod, if (bekleSn != null && kod == 429) "$metin\nretry-after=$bekleSn" else metin, onlem)
         } catch (e: IOException) {
+            AnahtarKotasi.kaydet(sag.ad, anahtar, -1, "bağlantı: ${e.message ?: e.javaClass.simpleName}", null, null)
             return Yanit(-1, e.message ?: e.javaClass.simpleName)
         } finally {
             c.disconnect()
@@ -250,6 +255,12 @@ class YapayZeka(
          * aynı kotayı kullanıyor, biri 429 aldıysa öteki de beklesin.
          */
         private val BEKLE = HashMap<String, Long>()
+
+        /** Bu anahtar/model kaç ms daha ceza beklemede (0: hazır). Ayarlar ekranı için. */
+        fun kalanCeza(a: Anahtar, model: String): Long {
+            val kadar = synchronized(BEKLE) { BEKLE[bekleAnahtari(a, model)] ?: 0L }
+            return (kadar - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        }
 
         /** Toplu istekte bir partideki soru sayısı. */
         const val TOPLU_PARTI = 25
@@ -328,7 +339,7 @@ class YapayZeka(
         }
 
         /** Bekleme tablosunun anahtarı; anahtarın kendisi değil özeti tutuluyor. */
-        private fun bekleAnahtari(a: Anahtar, model: String) =
+        internal fun bekleAnahtari(a: Anahtar, model: String) =
             "${a.saglayici.name}/${a.deger.hashCode()}/$model"
 
         /**

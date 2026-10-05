@@ -9,6 +9,7 @@ class ArsivApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        com.emre.bilbakalim.arsiv.data.AnahtarKotasi.baslat(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,

@@ -54,7 +54,11 @@ import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import com.emre.bilbakalim.arsiv.data.AnahtarKotasi
 import com.emre.bilbakalim.arsiv.data.Repo
+import com.emre.bilbakalim.arsiv.capture.YapayZeka
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.LaunchedEffect
 import com.emre.bilbakalim.arsiv.data.YapayZekaIstatistik
 
 @Composable
@@ -690,6 +694,7 @@ private fun YapayZekaAyarlari(
             Checkbox(checked = goster, onCheckedChange = { goster = it })
             Text("Anahtarları göster", style = MaterialTheme.typography.bodySmall)
         }
+        AnahtarDurumlari(groqKeys, geminiKeys)
         Text(
             "Sorular anahtarlar arasında sırayla dağıtılır: Groq 1, Gemini 1, " +
                 "Groq 2, Gemini 2… Biri cevap veremezse ya da kotası dolarsa " +
@@ -717,6 +722,60 @@ private fun YapayZekaAyarlari(
             "Anahtarlar yalnızca bu telefonda saklanır ve yalnızca soru ile " +
                 "şıkları göndermek için kullanılır. Ücretsiz anahtar: " +
                 "console.groq.com ve aistudio.google.com.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * Her anahtarın bugünkü kullanımı ve şu anki durumu (kota bekleniyor mu,
+ * reddedildi mi). Kota beklemesi geri saydığı için birkaç saniyede bir
+ * yenileniyor.
+ */
+@Composable
+private fun AnahtarDurumlari(groqKeys: List<String>, geminiKeys: List<String>) {
+    val anahtarlar = YapayZeka.anahtarSirasi(groqKeys, geminiKeys)
+    if (anahtarlar.isEmpty()) return
+    val durumlar by AnahtarKotasi.durumlar.collectAsState()
+    var tik by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) { delay(5_000); tik++ }
+    }
+    // Kota cezası bellekte duruyor (akış değil); her tikte yeniden okunuyor.
+    val cezaHaritasi = remember(tik, anahtarlar) {
+        anahtarlar.associateWith { a -> YapayZeka.modeller(a.saglayici).map { YapayZeka.kalanCeza(a, it) } }
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Text("Anahtarların durumu (bugün)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+        anahtarlar.forEach { a ->
+            val d = AnahtarKotasi.bugunku(durumlar[AnahtarKotasi.ozet(a.saglayici.ad, a.deger)])
+            val cezalar = cezaHaritasi[a].orEmpty().ifEmpty { listOf(0L) }
+            val durum = when {
+                cezalar.all { it > 0 } -> "⏳ kota dolu, ~${cezalar.min() / 60_000 + 1} dk sonra açılır"
+                cezalar.first() > 0 -> "⚠ asıl modelin kotası dolu (~${cezalar.first() / 60_000 + 1} dk), yedek model kullanılıyor"
+                d.istek == 0 -> "henüz kullanılmadı"
+                else -> "✓ hazır"
+            }
+            val kalan = if (d.kalanIstek != null && d.istekSiniri != null)
+                " · kalan ${d.kalanIstek}/${d.istekSiniri} istek" else ""
+            Text(
+                "${a.ad}: ${d.istek} istek" +
+                    (if (d.kotaHatasi > 0) " (${d.kotaHatasi} kez kotaya takıldı)" else "") +
+                    "$kalan · $durum",
+                style = MaterialTheme.typography.bodySmall
+            )
+            if (d.sonHata != null && d.sonHataAt > d.sonBasariAt) {
+                Text(
+                    "   son hata ${formatTime(d.sonHataAt)}: ${d.sonHata.take(90)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+        Text(
+            "Groq kalan günlük isteği kendisi bildiriyor; Gemini bildirmediği için " +
+                "yalnızca sayılıyor. Kota oyun, oyun uzakta ve toplu kontrol arasında ortak.",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
