@@ -105,7 +105,7 @@ interface QuestionDao {
     @Query("SELECT COUNT(*) FROM questions WHERE correctIndex IS NOT NULL")
     fun observeAnswered(): Flow<Int>
 
-    @Query("SELECT category, COUNT(*) AS adet FROM questions GROUP BY category ORDER BY adet DESC")
+    @Query("SELECT category, COUNT(*) AS adet FROM questions GROUP BY category ORDER BY adet DESC, category")
     fun observeCategoryCounts(): Flow<List<CategoryCount>>
 
     /** Arşivde geçen kategori adları, yazıldıkları gibi. */

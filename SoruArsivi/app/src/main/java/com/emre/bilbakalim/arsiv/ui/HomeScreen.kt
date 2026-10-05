@@ -487,7 +487,9 @@ fun HomeScreen(
             if (categories.isNotEmpty()) {
                 item {
                     SectionCard("Arşivdeki dağılım") {
-                        categories.take(8).forEach { c ->
+                        // Hepsi, çoktan aza (sıralama sorguda). Eskiden ilk
+                        // 8'i gösteriliyordu; 15 kategorinin 7'si görünmüyordu.
+                        categories.filter { it.adet > 0 }.forEach { c ->
                             val ad = c.category
                             // Listede olmayan (elle yazılmış, yedekten gelmiş)
                             // kategorilerin adı da buradan değiştirilebiliyor.
