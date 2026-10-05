@@ -20,10 +20,17 @@ import org.json.JSONObject
  *  - **Groq** (groq.com, anahtar `gsk_` ile başlar) — çok hızlı, ~0,4 sn.
  *  - **Gemini** (Google AI Studio) — biraz daha yavaş, ~0,7 sn.
  *
- * Sırayla deneniyor: biri hata verirse, kotası dolarsa ("token hakkı
- * kalmadı", HTTP 429) ya da süre aşılırsa diğerine soruluyor. Kotası dolan
- * sağlayıcı bir süre hiç denenmiyor; her soruda boşuna bekleyip oyunun
- * süresini yememek için.
+ * Sağlayıcılar **dönüşümlü** kullanılıyor: bir soru Groq'a, sonraki
+ * Gemini'ye... Ücretsiz kotalar dakikalık (Groq: model başına dakikada
+ * 8.000 token, yani ~20 soru) ve günlük (Groq: model başına günde 1.000
+ * istek) tutulduğu için yükü bölmek ikisinin de dakikalık sınırına
+ * takılmayı önlüyor ve günlük kotaları eşit eritiyor.
+ *
+ * Sıradaki hata verirse, kotası dolarsa (HTTP 429) ya da süre aşılırsa
+ * aynı soru ötekine soruluyor. Kotası dolan model bir süre hiç
+ * denenmiyor; Groq kalan kotayı yanıt başlıklarında da bildirdiği için
+ * kota bitmeden önce de kenara alınabiliyor. Böylece her soruda boşuna
+ * bekleyip oyunun süresini yemiyoruz.
  *
  * İstem modelden yalnızca tek bir harf istiyor (A, B, C, D); dönen metin
  * [harfiCoz] ile şık sırasına çevriliyor. Model ne derse desin bot yine
@@ -47,61 +54,70 @@ class YapayZeka(private val log: (String) -> Unit) {
     /** Sağlayıcı/model bazında "şu ana kadar deneme" (SystemClock.elapsedRealtime). */
     private val bekle = HashMap<String, Long>()
 
+    /** Dönüşüm sayacı: her soruda bir sonraki sağlayıcıdan başlanıyor. */
+    @Volatile private var tur = 0
+
     suspend fun sor(
         soru: String,
         siklar: List<String>,
         groqAnahtari: String,
-        geminiAnahtari: String,
-        onceGemini: Boolean
+        geminiAnahtari: String
     ): Sonuc = withContext(Dispatchers.IO) {
         val bas = SystemClock.elapsedRealtime()
         val hatalar = ArrayList<String>()
-        val sira = buildList {
+        val saglayicilar = buildList {
             if (groqAnahtari.isNotBlank()) add(Saglayici.GROQ)
             if (geminiAnahtari.isNotBlank()) add(Saglayici.GEMINI)
-        }.let { if (onceGemini) it.reversed() else it }
+        }
+        val sira = siralama(saglayicilar, tur++)
+        // Anahtarı reddedilen sağlayıcının öteki modelleri bu soruda atlanıyor.
+        val reddedilen = HashSet<Saglayici>()
 
-        for (sag in sira) {
+        for ((sag, model) in sira) {
+            if (sag in reddedilen) continue
             val anahtar = (if (sag == Saglayici.GROQ) groqAnahtari else geminiAnahtari).trim()
-            for (model in modeller(sag)) {
-                val gecen = SystemClock.elapsedRealtime() - bas
-                if (gecen > TOPLAM_BUTCE_MS) {
-                    hatalar += "süre doldu"
-                    return@withContext Sonuc(null, null, null, gecen, hatalar)
-                }
-                val k = "${sag.name}/$model"
-                val simdi = SystemClock.elapsedRealtime()
-                val kadar = synchronized(bekle) { bekle[k] ?: 0L }
-                if (simdi < kadar) {
-                    hatalar += "${sag.ad} $model: kota/anahtar sorunu, ${(kadar - simdi) / 1000} sn atlanıyor"
-                    continue
-                }
-                // Süre sınırını bağlantının kendi zaman aşımları koyuyor.
-                val yanit = runCatching { istek(sag, model, anahtar, soru, siklar) }
-                    .getOrElse { Yanit(-1, it.message ?: it.javaClass.simpleName) }
+            val gecen = SystemClock.elapsedRealtime() - bas
+            if (gecen > TOPLAM_BUTCE_MS) {
+                hatalar += "süre doldu"
+                return@withContext Sonuc(null, null, null, gecen, hatalar)
+            }
+            val k = "${sag.name}/$model"
+            val simdi = SystemClock.elapsedRealtime()
+            val kadar = synchronized(bekle) { bekle[k] ?: 0L }
+            if (simdi < kadar) {
+                hatalar += "${sag.ad} $model: kota/anahtar sorunu, ${(kadar - simdi) / 1000} sn atlanıyor"
+                continue
+            }
+            // Süre sınırını bağlantının kendi zaman aşımları koyuyor.
+            val yanit = runCatching { istek(sag, model, anahtar, soru, siklar) }
+                .getOrElse { Yanit(-1, it.message ?: it.javaClass.simpleName) }
 
-                if (yanit.kod == 200) {
-                    val metin = runCatching { cevapMetni(sag, yanit.govde) }.getOrNull()
-                    val index = metin?.let { harfiCoz(it, siklar) }
-                    if (index != null) {
-                        return@withContext Sonuc(
-                            index, sag, model, SystemClock.elapsedRealtime() - bas, hatalar
-                        )
-                    }
-                    hatalar += "${sag.ad} $model: anlaşılmayan cevap «${metin?.take(40) ?: yanit.govde.take(80)}»"
-                    continue
+            // Kota bitmek üzereyse (Groq başlıkları) model şimdiden
+            // kenara alınıyor: sıradaki soru boşuna 429 yemesin.
+            if (yanit.onlemMs > 0) {
+                synchronized(bekle) { bekle[k] = SystemClock.elapsedRealtime() + yanit.onlemMs }
+            }
+            if (yanit.kod == 200) {
+                val metin = runCatching { cevapMetni(sag, yanit.govde) }.getOrNull()
+                val index = metin?.let { harfiCoz(it, siklar) }
+                if (index != null) {
+                    return@withContext Sonuc(
+                        index, sag, model, SystemClock.elapsedRealtime() - bas, hatalar
+                    )
                 }
+                hatalar += "${sag.ad} $model: anlaşılmayan cevap «${metin?.take(40) ?: yanit.govde.take(80)}»"
+                continue
+            }
 
-                val ceza = cezaSuresiMs(yanit.kod, yanit.govde)
-                if (ceza > 0) synchronized(bekle) { bekle[k] = SystemClock.elapsedRealtime() + ceza }
-                hatalar += "${sag.ad} $model: ${hataOzeti(yanit.kod, yanit.govde)}"
-                // Anahtar geçersizse aynı sağlayıcının öteki modelini
-                // denemek boşuna.
-                if (yanit.kod == 401 || yanit.kod == 403) {
-                    modeller(sag).forEach { m ->
-                        synchronized(bekle) { bekle["${sag.name}/$m"] = SystemClock.elapsedRealtime() + ceza }
-                    }
-                    break
+            val ceza = cezaSuresiMs(yanit.kod, yanit.govde)
+            if (ceza > 0) synchronized(bekle) { bekle[k] = maxOf(bekle[k] ?: 0L, SystemClock.elapsedRealtime() + ceza) }
+            hatalar += "${sag.ad} $model: ${hataOzeti(yanit.kod, yanit.govde)}"
+            // Anahtar geçersizse aynı sağlayıcının öteki modelini
+            // denemek boşuna.
+            if (yanit.kod == 401 || yanit.kod == 403) {
+                reddedilen += sag
+                modeller(sag).forEach { m ->
+                    synchronized(bekle) { bekle["${sag.name}/$m"] = SystemClock.elapsedRealtime() + ceza }
                 }
             }
         }
@@ -111,7 +127,8 @@ class YapayZeka(private val log: (String) -> Unit) {
     /** Anahtar değişince eski cezalar unutulsun. */
     fun sifirla() = synchronized(bekle) { bekle.clear() }
 
-    private class Yanit(val kod: Int, val govde: String)
+    /** [onlemMs]: kota bitmek üzere olduğu için modelin kenara alınacağı süre. */
+    private class Yanit(val kod: Int, val govde: String, val onlemMs: Long = 0L)
 
     private fun istek(
         sag: Saglayici, model: String, anahtar: String, soru: String, siklar: List<String>
@@ -141,7 +158,13 @@ class YapayZeka(private val log: (String) -> Unit) {
             val akis = if (kod in 200..299) c.inputStream else c.errorStream
             val metin = akis?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
             val bekleSn = c.getHeaderField("retry-after")?.trim()?.toLongOrNull()
-            return Yanit(kod, if (bekleSn != null && kod == 429) "$metin\nretry-after=$bekleSn" else metin)
+            val onlem = onlemSuresiMs(
+                c.getHeaderField("x-ratelimit-remaining-requests"),
+                c.getHeaderField("x-ratelimit-reset-requests"),
+                c.getHeaderField("x-ratelimit-remaining-tokens"),
+                c.getHeaderField("x-ratelimit-reset-tokens")
+            )
+            return Yanit(kod, if (bekleSn != null && kod == 429) "$metin\nretry-after=$bekleSn" else metin, onlem)
         } catch (e: IOException) {
             return Yanit(-1, e.message ?: e.javaClass.simpleName)
         } finally {
@@ -161,6 +184,63 @@ class YapayZeka(private val log: (String) -> Unit) {
             Saglayici.GROQ -> listOf("openai/gpt-oss-120b", "openai/gpt-oss-20b")
             Saglayici.GEMINI -> listOf("gemini-3.5-flash-lite", "gemini-flash-lite-latest")
         }
+
+        /**
+         * Bir sorunun deneme sırası: önce her sağlayıcının asıl modeli
+         * (sağlayıcılar [tur]'a göre dönüşümlü), sonra yedek modeller.
+         * Groq cevap veremezse önce Gemini'ye soruluyor, Groq'un küçük
+         * modeline değil.
+         */
+        internal fun siralama(saglayicilar: List<Saglayici>, tur: Int): List<Pair<Saglayici, String>> {
+            if (saglayicilar.isEmpty()) return emptyList()
+            val bas = Math.floorMod(tur, saglayicilar.size)
+            val donmus = saglayicilar.drop(bas) + saglayicilar.take(bas)
+            val enCok = donmus.maxOf { modeller(it).size }
+            return (0 until enCok).flatMap { i ->
+                donmus.mapNotNull { sag -> modeller(sag).getOrNull(i)?.let { sag to it } }
+            }
+        }
+
+        /**
+         * Groq'un kota başlıklarından: kota bitmek üzereyse modelin ne
+         * kadar kenara alınacağı (ms), değilse 0. Gemini bu başlıkları
+         * göndermiyor; onda 429 gelince [cezaSuresiMs] devreye giriyor.
+         */
+        internal fun onlemSuresiMs(
+            kalanIstek: String?, istekSifirlanma: String?,
+            kalanToken: String?, tokenSifirlanma: String?
+        ): Long {
+            var ms = 0L
+            if (kalanIstek?.trim()?.toLongOrNull()?.let { it <= 0 } == true) {
+                ms = maxOf(ms, sureCoz(istekSifirlanma) ?: 60 * 60_000L)
+            }
+            if (kalanToken?.trim()?.toLongOrNull()?.let { it < TOKEN_ESIGI } == true) {
+                ms = maxOf(ms, sureCoz(tokenSifirlanma) ?: 60_000L)
+            }
+            return ms
+        }
+
+        /** Groq süre biçimi: "2.1s", "1m26.4s", "7.66ms", "1h2m3s". */
+        internal fun sureCoz(s: String?): Long? {
+            val t = s?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val parca = Regex("([0-9.]+)(ms|h|m|s)").findAll(t).toList()
+            if (parca.isEmpty() || parca.joinToString("") { it.value } != t) return null
+            return parca.sumOf { p ->
+                val v = p.groupValues[1].toDoubleOrNull() ?: return null
+                when (p.groupValues[2]) {
+                    "h" -> v * 3_600_000
+                    "m" -> v * 60_000
+                    "s" -> v * 1000
+                    else -> v
+                }
+            }.toLong()
+        }
+
+        /**
+         * Bir soru ~300-400 token tutuyor; dakikalık token kotasında bundan
+         * az kaldıysa sıradaki istek büyük ihtimalle 429 alır.
+         */
+        private const val TOKEN_ESIGI = 600L
 
         private const val BAGLANTI_SURESI_MS = 3000
         /** Tek isteğin süresi. Oyunun soru süresi kısa; uzun bekleyemeyiz. */

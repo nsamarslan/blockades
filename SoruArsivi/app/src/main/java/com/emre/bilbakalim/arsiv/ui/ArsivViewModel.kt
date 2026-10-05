@@ -197,7 +197,6 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setAiWhenUnknown(v: Boolean) = prefs.setAiWhenUnknown(v)
     fun setGroqKey(v: String) = prefs.setGroqKey(v)
     fun setGeminiKey(v: String) = prefs.setGeminiKey(v)
-    fun setAiOnceGemini(v: Boolean) = prefs.setAiOnceGemini(v)
 
     /**
      * Girilen anahtarları örnek bir soruyla tek tek dener; her sağlayıcı
@@ -219,7 +218,7 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 // Her denemede taze istemci: önceki hataların cezası
                 // denemeyi atlatmasın.
-                val r = YapayZeka {}.sor(soru, siklar, groq, gemini, onceGemini = false)
+                val r = YapayZeka {}.sor(soru, siklar, groq, gemini)
                 satirlar += if (r.index != null) {
                     "$ad: çalışıyor ✓ (${r.model}, ${r.sureMs} ms) → " +
                         "${'A' + r.index}) ${siklar[r.index]}" +

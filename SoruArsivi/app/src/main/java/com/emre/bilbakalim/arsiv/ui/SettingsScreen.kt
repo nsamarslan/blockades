@@ -168,9 +168,11 @@ fun SettingsScreen(
                         SettingSwitch(
                             "Bilinmeyen soruyu yapay zekâya sor",
                             "Cevabı arşivde olmayan soruda rastgele basmak yerine soru " +
-                                "ve şıklar Groq'a ya da Gemini'ye sorulur, onların seçtiği " +
-                                "şıkka basılır. Birinin kotası dolarsa (token hakkı kalmazsa) " +
-                                "ya da cevap veremezse ötekine sorulur. İkisi de cevap " +
+                                "ve şıklar yapay zekâya sorulur, onun seçtiği şıkka basılır. " +
+                                "İki anahtar da girildiyse sorular Groq ile Gemini arasında " +
+                                "dönüşümlü dağıtılır; böylece dakikalık ve günlük ücretsiz " +
+                                "kotalar eşit erir. Birinin kotası dolarsa (token hakkı " +
+                                "kalmazsa) ya da cevap veremezse soru ötekine sorulur. İkisi de cevap " +
                                 "veremezse yukarıdaki ayara göre rastgele basılır ya da " +
                                 "karar sana bırakılır. Doğru cevap yine oyunun tepkisinden " +
                                 "öğrenilip arşive yazılır.",
@@ -178,7 +180,7 @@ fun SettingsScreen(
                         ) { vm.setAiWhenUnknown(it) }
 
                         if (s.aiWhenUnknown) {
-                            YapayZekaAyarlari(vm, s.groqKey, s.geminiKey, s.aiOnceGemini)
+                            YapayZekaAyarlari(vm, s.groqKey, s.geminiKey)
                         }
 
                         Spacer(Modifier.height(8.dp))
@@ -507,8 +509,7 @@ fun SettingsScreen(
 private fun YapayZekaAyarlari(
     vm: ArsivViewModel,
     groqKey: String,
-    geminiKey: String,
-    onceGemini: Boolean
+    geminiKey: String
 ) {
     var groq by remember(groqKey) { mutableStateOf(groqKey) }
     var gemini by remember(geminiKey) { mutableStateOf(geminiKey) }
@@ -543,12 +544,6 @@ private fun YapayZekaAyarlari(
             Checkbox(checked = goster, onCheckedChange = { goster = it })
             Text("Anahtarları göster", style = MaterialTheme.typography.bodySmall)
         }
-        SettingSwitch(
-            "Önce Gemini'ye sor",
-            "Kapalıyken önce Groq'a sorulur (daha hızlı, ~0,5 sn); cevap " +
-                "alınamazsa Gemini'ye geçilir. Açıkken tersi.",
-            onceGemini
-        ) { vm.setAiOnceGemini(it) }
         OutlinedButton(
             onClick = {
                 deneniyor = true

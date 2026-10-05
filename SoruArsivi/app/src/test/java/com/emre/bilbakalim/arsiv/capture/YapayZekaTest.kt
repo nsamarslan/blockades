@@ -76,4 +76,39 @@ class YapayZekaTest {
         assertEquals(0L, YapayZeka.cezaSuresiMs(503, "overloaded"))
         assertEquals(0L, YapayZeka.cezaSuresiMs(-1, "timeout"))
     }
+
+    @Test
+    fun `sorular saglayicilar arasinda donusumlu dagitilir`() {
+        val ikisi = listOf(YapayZeka.Saglayici.GROQ, YapayZeka.Saglayici.GEMINI)
+        val ilk = YapayZeka.siralama(ikisi, 0)
+        val ikinci = YapayZeka.siralama(ikisi, 1)
+        assertEquals(YapayZeka.Saglayici.GROQ, ilk[0].first)
+        assertEquals(YapayZeka.Saglayici.GEMINI, ikinci[0].first)
+        assertEquals(YapayZeka.Saglayici.GROQ, YapayZeka.siralama(ikisi, 2)[0].first)
+        // Asıl model düşerse önce öteki sağlayıcıya, yedek modellere sonra.
+        assertEquals(YapayZeka.Saglayici.GEMINI, ilk[1].first)
+        assertEquals(YapayZeka.modeller(YapayZeka.Saglayici.GROQ)[1], ilk[2].second)
+        assertEquals(4, ilk.size)
+        // Tek anahtar girildiyse hep o.
+        val tek = YapayZeka.siralama(listOf(YapayZeka.Saglayici.GEMINI), 5)
+        assertTrue(tek.all { it.first == YapayZeka.Saglayici.GEMINI })
+        assertTrue(YapayZeka.siralama(emptyList(), 3).isEmpty())
+    }
+
+    @Test
+    fun `groq kota basliklari okunur`() {
+        assertEquals(2_100L, YapayZeka.sureCoz("2.1s"))
+        assertEquals(86_400L, YapayZeka.sureCoz("1m26.4s"))
+        assertEquals(7L, YapayZeka.sureCoz("7.66ms"))
+        assertEquals(3_723_000L, YapayZeka.sureCoz("1h2m3s"))
+        assertNull(YapayZeka.sureCoz("yarın"))
+        // Kota bol: kenara alınmaz.
+        assertEquals(0L, YapayZeka.onlemSuresiMs("999", "1m26.4s", "7720", "2.1s"))
+        // Dakikalık token bitmek üzere: sıfırlanana kadar.
+        assertEquals(30_000L, YapayZeka.onlemSuresiMs("500", "1m", "300", "30s"))
+        // Günlük istek bitti.
+        assertEquals(3_600_000L, YapayZeka.onlemSuresiMs("0", "1h", "7000", "1s"))
+        // Gemini başlık göndermiyor.
+        assertEquals(0L, YapayZeka.onlemSuresiMs(null, null, null, null))
+    }
 }

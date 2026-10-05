@@ -1657,7 +1657,7 @@ class CaptureAccessibilityService : AccessibilityService() {
                 val l = runCatching { repo.knownAnswerOnScreen(waiting.id, siklar, imzalar) }.getOrNull()
                 if (l is Repo.KnownAnswer.OnScreen) return@async null
             }
-            val r = yapayZeka.sor(soru, siklar, s.groqKey, s.geminiKey, s.aiOnceGemini)
+            val r = yapayZeka.sor(soru, siklar, s.groqKey, s.geminiKey)
             val once = if (r.hatalar.isEmpty()) "" else " · önce: " + r.hatalar.joinToString("; ")
             val i = r.index
             if (i == null) {
