@@ -136,6 +136,16 @@ class Prefs private constructor(context: Context) {
         /** Gemini API anahtarları (Google AI Studio). */
         val geminiKeys: List<String> = emptyList(),
         /**
+         * Yapay zekânın "eminim" sayılması için gereken güven (0-100). Model
+         * cevabıyla birlikte ne kadar emin olduğunu da söylüyor.
+         */
+        val aiGuvenEsigi: Int = 70,
+        /**
+         * Yapay zekâ eşiğin altında bir güvenle cevap verirse otomatik mod ne
+         * yapsın: true → dokunmaz, karar sende; false → yine onun şıkkına basar.
+         */
+        val aiEminDegilseBirak: Boolean = false,
+        /**
          * Cevabı arşivde bulunamayan soruda bildirim sesi çal.
          *
          * Manuel modda da çalışır: ekrana bakmadan "bu soru bizde yok"
@@ -210,6 +220,8 @@ class Prefs private constructor(context: Context) {
         aiWhenUnknown = sp.getBoolean(K_AI_UNKNOWN, false),
         groqKeys = anahtarListesi(sp.getString(K_GROQ_KEY, null)),
         geminiKeys = anahtarListesi(sp.getString(K_GEMINI_KEY, null)),
+        aiGuvenEsigi = sp.getInt(K_AI_ESIK, 70),
+        aiEminDegilseBirak = sp.getBoolean(K_AI_EMIN_DEGILSE_BIRAK, false),
         unknownChime = sp.getBoolean(K_UNKNOWN_CHIME, false),
         onboarded = sp.getBoolean(K_ONBOARDED, false),
         uzakMod = sp.getBoolean(K_UZAK_MOD, false),
@@ -244,6 +256,8 @@ class Prefs private constructor(context: Context) {
     fun setAutoUseKnownAnswer(v: Boolean) = commit { putBoolean(K_AUTO_KNOWN, v) }
     fun setAutoRandomWhenUnknown(v: Boolean) = commit { putBoolean(K_AUTO_RANDOM_UNKNOWN, v) }
     fun setAiWhenUnknown(v: Boolean) = commit { putBoolean(K_AI_UNKNOWN, v) }
+    fun setAiGuvenEsigi(v: Int) = commit { putInt(K_AI_ESIK, v.coerceIn(0, 100)) }
+    fun setAiEminDegilseBirak(v: Boolean) = commit { putBoolean(K_AI_EMIN_DEGILSE_BIRAK, v) }
     /** Boş alanlar da tutuluyor ki ekrandaki sıra kaymasın; kullanılırken atlanıyor. */
     fun setGroqKeys(v: List<String>) = commit { putString(K_GROQ_KEY, v.joinToString("\n") { it.trim() }) }
     fun setGeminiKeys(v: List<String>) = commit { putString(K_GEMINI_KEY, v.joinToString("\n") { it.trim() }) }
@@ -356,6 +370,8 @@ class Prefs private constructor(context: Context) {
         private const val K_AUTO_KNOWN = "otomatik_bilinen_cevap"
         private const val K_AUTO_RANDOM_UNKNOWN = "otomatik_bilinmeyende_rastgele"
         private const val K_AI_UNKNOWN = "otomatik_bilinmeyende_yapay_zeka"
+        private const val K_AI_ESIK = "yapay_zeka_guven_esigi"
+        private const val K_AI_EMIN_DEGILSE_BIRAK = "yapay_zeka_emin_degilse_birak"
         private const val K_GROQ_KEY = "groq_anahtari"
         private const val K_GEMINI_KEY = "gemini_anahtari"
         private const val K_UNKNOWN_CHIME = "bilinmeyen_uyari_sesi"

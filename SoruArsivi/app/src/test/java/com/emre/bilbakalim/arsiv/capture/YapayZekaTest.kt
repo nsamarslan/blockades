@@ -33,6 +33,17 @@ class YapayZekaTest {
     }
 
     @Test
+    fun `guvenli yanit harf ve sayi olarak okunur`() {
+        assertEquals(1, YapayZeka.harfiCoz("B 85", dort))
+        assertEquals(85, YapayZeka.guvenCoz("B 85"))
+        assertEquals(40, YapayZeka.guvenCoz("**C** 40"))
+        assertEquals(90, YapayZeka.guvenCoz("C) 1923 90"))
+        assertNull(YapayZeka.guvenCoz("B"))
+        // Sayı şıklarında da harf doğru okunur.
+        assertEquals(2, YapayZeka.harfiCoz("C 60", listOf("25", "55", "5", "15")))
+    }
+
+    @Test
     fun `harf yoksa sik metni aranir`() {
         assertEquals(2, YapayZeka.harfiCoz("ankara", dort))
         assertNull(YapayZeka.harfiCoz("bilmiyorum", dort))
@@ -43,9 +54,9 @@ class YapayZekaTest {
         val istem = YapayZeka.kullaniciIstemi("Başkent neresi?", dort)
         assertTrue(istem.contains("A) İstanbul"))
         assertTrue(istem.contains("D) Bursa"))
-        assertTrue(istem.contains("A, B, C, D"))
+        assertTrue(istem.contains("A/B/C/D"))
         val iki = YapayZeka.kullaniciIstemi("Doğru mu?", listOf("Evet", "Hayır"))
-        assertTrue(iki.contains("A, B") && !iki.contains("C"))
+        assertTrue(iki.contains("A/B ") && !iki.contains("C"))
     }
 
     @Test

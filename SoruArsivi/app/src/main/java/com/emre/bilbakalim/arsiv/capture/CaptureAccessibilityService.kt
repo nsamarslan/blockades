@@ -200,7 +200,13 @@ class CaptureAccessibilityService : AccessibilityService() {
      * onların içindeki sıra; şıklar sonradan karıştıysa metinden bulunuyor
      * (bkz. [aiSirasi]).
      */
-    private class AiTahmin(val siklar: List<String>, val index: Int, val kaynak: String)
+    private class AiTahmin(
+        val siklar: List<String>,
+        val index: Int,
+        val kaynak: String,
+        /** Modelin söylediği güven (0-100), söylemediyse null. */
+        val guven: Int?
+    )
 
     /**
      * Cevabı açılmayı bekleyen soru.
@@ -1566,6 +1572,20 @@ class CaptureAccessibilityService : AccessibilityService() {
             val aiIndex = ai?.let { aiSirasi(it, waiting.options) }
                 ?.takeIf { it in 0 until waiting.rects.size }
 
+            // Yapay zekâ emin değilse (ayara göre) dokunmuyoruz: karar sende.
+            // Güven yazmadıysa emin sayılıyor; eski davranış.
+            val eminDegil = ai?.guven?.let { it < cur.aiGuvenEsigi } == true
+            if (aiIndex != null && eminDegil && cur.aiEminDegilseBirak && known == null) {
+                if (!waiting.skippedUnknown) {
+                    waiting.skippedUnknown = true
+                    log(
+                        "otomatik #${waiting.id}: yapay zekâ emin değil (%${ai?.guven} < %${cur.aiGuvenEsigi}, " +
+                            "${optionLabel(waiting, aiIndex)} diyor), karar sende (ayar)"
+                    )
+                }
+                return@launch
+            }
+
             // Cevabı bilinmiyorsa ve kullanıcı "kararı bana bırak" dediyse
             // dokunmuyoruz. Soru ekranda kalır, sen cevaplarsın; doğrusu yine
             // renk okumasıyla arşive yazılır.
@@ -1633,7 +1653,8 @@ class CaptureAccessibilityService : AccessibilityService() {
             val neden = when {
                 lookup is Repo.KnownAnswer.OnScreen ->
                     if (lookup.imzayla) "bilinen cevap (piksel imzasıyla)" else "bilinen cevap"
-                aiIndex != null && index == aiIndex -> "yapay zekâ (${ai?.kaynak})"
+                aiIndex != null && index == aiIndex -> "yapay zekâ (${ai?.kaynak}" +
+                    (ai?.guven?.let { ", %$it" + if (eminDegil) " emin değil" else "" } ?: "") + ")"
                 lookup is Repo.KnownAnswer.Unmatched -> "rastgele (eşleşmedi)"
                 cur.autoUseKnownAnswer -> "rastgele (cevabı bilinmiyor)"
                 else -> "rastgele"
@@ -1690,9 +1711,10 @@ class CaptureAccessibilityService : AccessibilityService() {
             val kaynak = r.anahtar?.ad ?: "?"
             log(
                 "YAPAY ZEKÂ #${waiting.id} → ${'A' + i} «${siklar[i].take(28)}» · " +
+                    (r.guven?.let { "%$it emin · " } ?: "") +
                     "$kaynak ${r.model} · ${r.sureMs} ms$once"
             )
-            AiTahmin(siklar, i, kaynak)
+            AiTahmin(siklar, i, kaynak, r.guven)
         }
         waiting.aiIs = is_
         return is_

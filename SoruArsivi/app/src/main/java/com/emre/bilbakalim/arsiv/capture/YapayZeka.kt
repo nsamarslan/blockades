@@ -56,7 +56,9 @@ class YapayZeka(private val log: (String) -> Unit) {
         val model: String?,
         val sureMs: Long,
         /** Denenip başarısız olanlar, günlük için ("Groq: kota doldu"). */
-        val hatalar: List<String>
+        val hatalar: List<String>,
+        /** Modelin kendi söylediği güven (0-100); yazmadıysa null. */
+        val guven: Int? = null
     )
 
     /** Anahtar/model bazında "şu ana kadar deneme" (SystemClock.elapsedRealtime). */
@@ -107,7 +109,8 @@ class YapayZeka(private val log: (String) -> Unit) {
                 val index = metin?.let { harfiCoz(it, siklar) }
                 if (index != null) {
                     return@withContext Sonuc(
-                        index, a, model, SystemClock.elapsedRealtime() - bas, hatalar
+                        index, a, model, SystemClock.elapsedRealtime() - bas, hatalar,
+                        guvenCoz(metin)
                     )
                 }
                 hatalar += "${a.ad} $model: anlaşılmayan cevap «${metin?.take(40) ?: yanit.govde.take(80)}»"
@@ -281,8 +284,10 @@ class YapayZeka(private val log: (String) -> Unit) {
                 "şıklardan yalnızca biri doğru. Şık metinleri ekrandan karakter " +
                 "tanımayla okunduğu için küçük yazım hataları olabilir. " +
                 "Emin olmasan bile en olası şıkkı seç; asla boş bırakma. " +
-                "Yanıtın YALNIZCA doğru şıkkın tek büyük harfi olsun " +
-                "(örneğin: B). Açıklama, nokta, şık metni ya da başka hiçbir şey yazma."
+                "Yanıtın YALNIZCA şu biçimde olsun: doğru şıkkın büyük harfi, bir " +
+                "boşluk ve cevabından ne kadar emin olduğun (0-100 arası bir sayı). " +
+                "Örnek: B 85. Tahmin ediyorsan düşük, kesin biliyorsan yüksek sayı " +
+                "ver. Açıklama, şık metni ya da başka hiçbir şey yazma."
 
         internal fun kullaniciIstemi(soru: String, siklar: List<String>): String {
             val h = harfler(siklar.size)
@@ -291,7 +296,8 @@ class YapayZeka(private val log: (String) -> Unit) {
                 siklar.forEachIndexed { i, s ->
                     append(h[i]).append(") ").append(s.trim().replace('\n', ' ')).append('\n')
                 }
-                append("\nYalnızca şu harflerden birini yaz: ").append(h.joinToString(", "))
+                append("\nYanıt biçimi: ").append(h.joinToString("/"))
+                append(" harflerinden biri ve güven, örnek: ").append(h[1]).append(" 70")
             }
         }
 
@@ -374,6 +380,15 @@ class YapayZeka(private val log: (String) -> Unit) {
             }
             return eslesen.singleOrNull()
         }
+
+        /**
+         * Yanıttaki güven sayısı (0-100): "B 85" → 85. Birden çok sayı varsa
+         * sonuncusu (şık metni sayı olabilir: "C) 1923 90"). Yoksa null.
+         */
+        internal fun guvenCoz(yanit: String): Int? =
+            Regex("(?<![0-9])([0-9]{1,3})(?![0-9])").findAll(yanit)
+                .mapNotNull { it.groupValues[1].toIntOrNull() }
+                .lastOrNull { it in 0..100 }
 
         /**
          * Hata kodundan sonra bu sağlayıcı/model ne kadar süre denenmesin.

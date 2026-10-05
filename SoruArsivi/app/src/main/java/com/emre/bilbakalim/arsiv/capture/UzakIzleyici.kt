@@ -66,8 +66,17 @@ class UzakIzleyici(
         data object ArsivdeYok : Durum
         /** Arşivde cevabı yok, yapay zekâya soruluyor. */
         data object Soruluyor : Durum
-        /** Yapay zekânın tahmini; [kaynak] "Groq 1" gibi. */
-        data class Tahmin(val sira: Int, val metin: String, val kaynak: String) : Durum
+        /**
+         * Yapay zekânın tahmini; [kaynak] "Groq 1" gibi. [eminDegil]: model
+         * güveninin ayardaki eşiğin altında olduğunu söyledi (soluk ok).
+         */
+        data class Tahmin(
+            val sira: Int,
+            val metin: String,
+            val kaynak: String,
+            val guven: Int? = null,
+            val eminDegil: Boolean = false
+        ) : Durum
     }
 
     /**
@@ -247,12 +256,16 @@ class UzakIzleyici(
         val (soruldu, cevap, kaynak) = synchronized(aiCevaplari) {
             Triple(aiCevaplari.containsKey(iz), aiCevaplari[iz], aiKaynaklari[iz])
         }
+        val guven = synchronized(aiCevaplari) { aiGuvenleri[iz] }
         if (soruldu) {
             val metin = cevap ?: return d
             val hedef = TurkishText.normalizeKey(metin)
             val sira = o.siklar.indices.singleOrNull { TurkishText.normalizeKey(o.siklar[it]) == hedef }
                 ?: return d
-            return Durum.Tahmin(sira, o.siklar[sira], kaynak ?: "?")
+            return Durum.Tahmin(
+                sira, o.siklar[sira], kaynak ?: "?", guven,
+                eminDegil = guven != null && guven < s.aiGuvenEsigi
+            )
         }
         if (aiSorulan == null) {
             aiSorulan = iz
@@ -264,14 +277,16 @@ class UzakIzleyici(
                 synchronized(aiCevaplari) {
                     aiCevaplari[iz] = i?.let { siklar[it] }
                     r?.anahtar?.let { aiKaynaklari[iz] = it.ad }
+                    r?.guven?.let { aiGuvenleri[iz] = it }
                     while (aiCevaplari.size > ONBELLEK) {
                         val ilk = aiCevaplari.keys.first()
-                        aiCevaplari.remove(ilk); aiKaynaklari.remove(ilk)
+                        aiCevaplari.remove(ilk); aiKaynaklari.remove(ilk); aiGuvenleri.remove(ilk)
                     }
                 }
                 val once = r?.hatalar?.takeIf { it.isNotEmpty() }?.let { " · önce: " + it.joinToString("; ") } ?: ""
                 log(
                     if (i != null) "UZAK YAPAY ZEKÂ → ${'A' + i} «${siklar[i].take(28)}» · " +
+                        (r?.guven?.let { "%$it emin · " } ?: "") +
                         "${r?.anahtar?.ad} ${r?.model} · ${r?.sureMs} ms$once"
                     else "UZAK YAPAY ZEKÂ: cevap alınamadı$once"
                 )
@@ -282,6 +297,7 @@ class UzakIzleyici(
     }
 
     private val aiKaynaklari = HashMap<String, String>()
+    private val aiGuvenleri = HashMap<String, Int>()
 
     /** Arşivde arar; hiçbir şey yazmaz. */
     private suspend fun ara(o: UzakOkuyucu.Okuma): Durum {
@@ -329,7 +345,11 @@ class UzakIzleyici(
                 val hedef = UzakGeometri.piksel(kutu, w, h)
                 val okH = hedef.h.coerceIn(k.dp(28f), k.dp(64f))
                 val yer = UzakGeometri.isaretYeri(hedef, cerceve, w, okW, okH)
-                val renk = if (d is Durum.Tahmin) MOR else null
+                val renk = when {
+                    d !is Durum.Tahmin -> null
+                    d.eminDegil -> SOLUK_MOR
+                    else -> MOR
+                }
                 if (yer == null) k.isaretGizle()
                 else k.isaretGoster(yer, UzakKatman.Imge.Ok(yer.sagaBakar, renk))
             }
@@ -437,7 +457,9 @@ class UzakIzleyici(
             Durum.CevapYok -> "? Arşivde var, cevabı yok" to UzakKatman.Ton.TURUNCU
             Durum.ArsivdeYok -> "✗ Arşivde yok" to UzakKatman.Ton.KIRMIZI
             Durum.Soruluyor -> "… Yapay zekâya soruluyor" to UzakKatman.Ton.MOR
-            is Durum.Tahmin -> "🤖 ${'A' + d.sira} · ${d.metin.take(20)} (${d.kaynak})" to UzakKatman.Ton.MOR
+            is Durum.Tahmin ->
+                (if (d.eminDegil) "🤖? " else "🤖 ") + "${'A' + d.sira} · ${d.metin.take(20)} (" +
+                    d.kaynak + (d.guven?.let { ", %$it" } ?: "") + ")" to UzakKatman.Ton.MOR
         }
 
         private fun ozet(d: Durum): String = when (d) {
@@ -462,5 +484,7 @@ class UzakIzleyici(
         private val KIRMIZI = 0xFFC62828.toInt()
         private val TURUNCU = 0xFFEF6C00.toInt()
         private val MOR = 0xFF6A1B9A.toInt()
+        /** Emin olmadığı tahmin: aynı mor, soluk. */
+        private val SOLUK_MOR = 0x996A1B9A.toInt()
     }
 }

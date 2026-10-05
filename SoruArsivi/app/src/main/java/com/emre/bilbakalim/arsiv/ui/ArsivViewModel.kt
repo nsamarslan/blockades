@@ -196,6 +196,8 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setUnknownChime(v: Boolean) = prefs.setUnknownChime(v)
     fun setAiWhenUnknown(v: Boolean) = prefs.setAiWhenUnknown(v)
     fun setGroqKeys(v: List<String>) = prefs.setGroqKeys(v)
+    fun setAiGuvenEsigi(v: Int) = prefs.setAiGuvenEsigi(v)
+    fun setAiEminDegilseBirak(v: Boolean) = prefs.setAiEminDegilseBirak(v)
     fun setGeminiKeys(v: List<String>) = prefs.setGeminiKeys(v)
 
     /**
@@ -224,6 +226,7 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
                 if (r.index != null) {
                     "${a.ad}: çalışıyor ✓ (${r.model}, ${r.sureMs} ms) → " +
                         "${'A' + r.index}) ${siklar[r.index]}" +
+                        (r.guven?.let { " · %$it emin" } ?: "") +
                         (if (r.hatalar.isNotEmpty()) "\n   önce: ${r.hatalar.joinToString("; ")}" else "")
                 } else {
                     "${a.ad}: çalışmıyor ✗ ${r.hatalar.joinToString("; ")}"

@@ -96,5 +96,9 @@ class UzakGeometriTest {
         val tahmin = UzakIzleyici.gorunum(UzakIzleyici.Durum.Tahmin(1, "Ankara", "Groq 2"))
         assertEquals("🤖 B · Ankara (Groq 2)", tahmin.first)
         assertEquals(UzakKatman.Ton.MOR, tahmin.second)
+        val emin = UzakIzleyici.gorunum(UzakIzleyici.Durum.Tahmin(1, "Ankara", "Groq 2", 90))
+        assertEquals("🤖 B · Ankara (Groq 2, %90)", emin.first)
+        val degil = UzakIzleyici.gorunum(UzakIzleyici.Durum.Tahmin(1, "Ankara", "Groq 2", 40, eminDegil = true))
+        assertEquals("🤖? B · Ankara (Groq 2, %40)", degil.first)
     }
 }

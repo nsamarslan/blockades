@@ -222,6 +222,7 @@ fun SettingsScreen(
                     ) { vm.setAiWhenUnknown(it) }
 
                     if (s.aiWhenUnknown) {
+                        YapayZekaGuveni(vm, s.aiGuvenEsigi, s.aiEminDegilseBirak)
                         YapayZekaAyarlari(vm, s.groqKeys, s.geminiKeys)
                     }
 
@@ -575,6 +576,34 @@ private fun KesintisizCalisma() {
 private fun pilSerbest(context: Context): Boolean =
     context.getSystemService(PowerManager::class.java)
         ?.isIgnoringBatteryOptimizations(context.packageName) == true
+
+/** Yapay zekâ emin değilse ne yapılsın. */
+@Composable
+private fun YapayZekaGuveni(vm: ArsivViewModel, esik: Int, birak: Boolean) {
+    Column(Modifier.fillMaxWidth().padding(start = 8.dp)) {
+        Text("Emin sayılması için güven: %$esik", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Yapay zekâ cevabıyla birlikte ne kadar emin olduğunu da söylüyor " +
+                "(0-100). Bildiği sorularda 90-100, tahminlerde daha düşük.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Slider(
+            value = esik.toFloat(),
+            onValueChange = { vm.setAiGuvenEsigi((it / 5).toInt() * 5) },
+            valueRange = 30f..95f,
+            steps = 12
+        )
+        SettingSwitch(
+            "Emin değilse karar bende",
+            if (birak) "Açık: güven eşiğin altındaysa otomatik mod dokunmaz, soruyu " +
+                "sen cevaplarsın. Oyun uzakta modunda tahmin soluk okla gösterilir."
+            else "Kapalı: emin olmasa da yapay zekânın seçtiği şıkka basılır. " +
+                "Oyun uzakta modunda tahmin soluk okla gösterilir.",
+            birak
+        ) { vm.setAiEminDegilseBirak(it) }
+    }
+}
 
 /** Groq ve Gemini anahtarları (her birinden birden çok) ve "dene" düğmesi. */
 @Composable
