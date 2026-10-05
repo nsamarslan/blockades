@@ -180,7 +180,7 @@ fun SettingsScreen(
                         ) { vm.setAiWhenUnknown(it) }
 
                         if (s.aiWhenUnknown) {
-                            YapayZekaAyarlari(vm, s.groqKey, s.geminiKey)
+                            YapayZekaAyarlari(vm, s.groqKeys, s.geminiKeys)
                         }
 
                         Spacer(Modifier.height(8.dp))
@@ -504,15 +504,13 @@ fun SettingsScreen(
     }
 }
 
-/** Groq ve Gemini anahtarları, sıra ve "dene" düğmesi. */
+/** Groq ve Gemini anahtarları (her birinden birden çok) ve "dene" düğmesi. */
 @Composable
 private fun YapayZekaAyarlari(
     vm: ArsivViewModel,
-    groqKey: String,
-    geminiKey: String
+    groqKeys: List<String>,
+    geminiKeys: List<String>
 ) {
-    var groq by remember(groqKey) { mutableStateOf(groqKey) }
-    var gemini by remember(geminiKey) { mutableStateOf(geminiKey) }
     var goster by remember { mutableStateOf(false) }
     var deneniyor by remember { mutableStateOf(false) }
     var sonuc by remember { mutableStateOf<String?>(null) }
@@ -522,35 +520,28 @@ private fun YapayZekaAyarlari(
         Modifier.fillMaxWidth().padding(start = 8.dp, bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        OutlinedTextField(
-            value = groq,
-            onValueChange = { groq = it; vm.setGroqKey(it) },
-            label = { Text("Groq anahtarı (gsk_…)") },
-            singleLine = true,
-            visualTransformation = gizle,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier.fillMaxWidth()
-        )
-        OutlinedTextField(
-            value = gemini,
-            onValueChange = { gemini = it; vm.setGeminiKey(it) },
-            label = { Text("Gemini anahtarı") },
-            singleLine = true,
-            visualTransformation = gizle,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier.fillMaxWidth()
-        )
+        AnahtarAlanlari("Groq", "gsk_…", groqKeys, gizle) { vm.setGroqKeys(it) }
+        AnahtarAlanlari("Gemini", null, geminiKeys, gizle) { vm.setGeminiKeys(it) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = goster, onCheckedChange = { goster = it })
             Text("Anahtarları göster", style = MaterialTheme.typography.bodySmall)
         }
+        Text(
+            "Sorular anahtarlar arasında sırayla dağıtılır: Groq 1, Gemini 1, " +
+                "Groq 2, Gemini 2… Biri cevap veremezse ya da kotası dolarsa " +
+                "sıradakine sorulur. Ücretsiz kota hesap (Gemini'de proje) başına " +
+                "tutulduğu için kotayı artırmak istiyorsan anahtarları ayrı " +
+                "hesaplardan al; aynı hesabın anahtarları aynı kotayı paylaşır.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         OutlinedButton(
             onClick = {
                 deneniyor = true
                 sonuc = null
                 vm.yapayZekaDene { sonuc = it; deneniyor = false }
             },
-            enabled = !deneniyor && (groq.isNotBlank() || gemini.isNotBlank()),
+            enabled = !deneniyor && (groqKeys + geminiKeys).any { it.isNotBlank() },
             modifier = Modifier.fillMaxWidth()
         ) {
             Text(if (deneniyor) "Deneniyor…" else "Anahtarları dene")
@@ -567,6 +558,42 @@ private fun YapayZekaAyarlari(
         )
     }
 }
+
+/**
+ * Bir sağlayıcının anahtar alanları. Doldurdukça altına yeni boş alan
+ * açılıyor ([EN_COK_ANAHTAR]'a kadar).
+ */
+@Composable
+private fun AnahtarAlanlari(
+    ad: String,
+    ipucu: String?,
+    kayitli: List<String>,
+    gizle: VisualTransformation,
+    onChange: (List<String>) -> Unit
+) {
+    var liste by remember { mutableStateOf(kayitli) }
+    val gorunen = if (liste.size < EN_COK_ANAHTAR && liste.lastOrNull()?.isNotBlank() != false) {
+        liste + ""
+    } else liste
+    gorunen.forEachIndexed { i, deger ->
+        OutlinedTextField(
+            value = deger,
+            onValueChange = { yeni ->
+                val l = gorunen.toMutableList()
+                l[i] = yeni
+                liste = l.dropLastWhile { it.isBlank() }
+                onChange(liste)
+            },
+            label = { Text("$ad anahtarı ${i + 1}" + (ipucu?.let { " ($it)" } ?: "")) },
+            singleLine = true,
+            visualTransformation = gizle,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+private const val EN_COK_ANAHTAR = 6
 
 @Composable
 private fun SettingSwitch(

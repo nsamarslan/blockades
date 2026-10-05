@@ -128,10 +128,13 @@ class Prefs private constructor(context: Context) {
          * kararı sana bırakır.
          */
         val aiWhenUnknown: Boolean = false,
-        /** Groq API anahtarı (groq.com, `gsk_` ile başlar). */
-        val groqKey: String = "",
-        /** Gemini API anahtarı (Google AI Studio). */
-        val geminiKey: String = "",
+        /**
+         * Groq API anahtarları (groq.com, `gsk_` ile başlar). Birden çok
+         * girilebiliyor; sorular anahtarlar arasında dönüşümlü dağıtılıyor.
+         */
+        val groqKeys: List<String> = emptyList(),
+        /** Gemini API anahtarları (Google AI Studio). */
+        val geminiKeys: List<String> = emptyList(),
         /**
          * Cevabı arşivde bulunamayan soruda bildirim sesi çal.
          *
@@ -205,8 +208,8 @@ class Prefs private constructor(context: Context) {
         autoUseKnownAnswer = sp.getBoolean(K_AUTO_KNOWN, true),
         autoRandomWhenUnknown = sp.getBoolean(K_AUTO_RANDOM_UNKNOWN, true),
         aiWhenUnknown = sp.getBoolean(K_AI_UNKNOWN, false),
-        groqKey = sp.getString(K_GROQ_KEY, "") ?: "",
-        geminiKey = sp.getString(K_GEMINI_KEY, "") ?: "",
+        groqKeys = anahtarListesi(sp.getString(K_GROQ_KEY, null)),
+        geminiKeys = anahtarListesi(sp.getString(K_GEMINI_KEY, null)),
         unknownChime = sp.getBoolean(K_UNKNOWN_CHIME, false),
         onboarded = sp.getBoolean(K_ONBOARDED, false),
         uzakMod = sp.getBoolean(K_UZAK_MOD, false),
@@ -241,8 +244,9 @@ class Prefs private constructor(context: Context) {
     fun setAutoUseKnownAnswer(v: Boolean) = commit { putBoolean(K_AUTO_KNOWN, v) }
     fun setAutoRandomWhenUnknown(v: Boolean) = commit { putBoolean(K_AUTO_RANDOM_UNKNOWN, v) }
     fun setAiWhenUnknown(v: Boolean) = commit { putBoolean(K_AI_UNKNOWN, v) }
-    fun setGroqKey(v: String) = commit { putString(K_GROQ_KEY, v.trim()) }
-    fun setGeminiKey(v: String) = commit { putString(K_GEMINI_KEY, v.trim()) }
+    /** Boş alanlar da tutuluyor ki ekrandaki sıra kaymasın; kullanılırken atlanıyor. */
+    fun setGroqKeys(v: List<String>) = commit { putString(K_GROQ_KEY, v.joinToString("\n") { it.trim() }) }
+    fun setGeminiKeys(v: List<String>) = commit { putString(K_GEMINI_KEY, v.joinToString("\n") { it.trim() }) }
     fun setUnknownChime(v: Boolean) = commit { putBoolean(K_UNKNOWN_CHIME, v) }
     fun setOnboarded(v: Boolean) = commit { putBoolean(K_ONBOARDED, v) }
     fun setUzakMod(v: Boolean) = commit { putBoolean(K_UZAK_MOD, v) }
@@ -369,6 +373,10 @@ class Prefs private constructor(context: Context) {
             "Sanat ve Edebiyat", "Spor", "Müzik", "Sinema", "Din Kültürü",
             "Matematik", "Teknoloji", "Doğa", "Türkçe", "Psikoloji", "Sağlık"
         )
+
+        /** Satır başına bir anahtar (eski sürümde tek anahtar tutuluyordu, o da okunuyor). */
+        private fun anahtarListesi(s: String?): List<String> =
+            s?.split('\n')?.map { it.trim() }?.dropLastWhile { it.isEmpty() } ?: emptyList()
 
         @Volatile private var INSTANCE: Prefs? = null
         fun get(context: Context): Prefs =

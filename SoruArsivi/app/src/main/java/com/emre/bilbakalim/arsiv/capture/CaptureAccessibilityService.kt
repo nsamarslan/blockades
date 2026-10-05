@@ -79,7 +79,7 @@ class CaptureAccessibilityService : AccessibilityService() {
     /** Bilinmeyen soruyu Groq / Gemini'ye soran istemci (bkz. [YapayZeka]). */
     private val yapayZeka = YapayZeka { line -> log(line) }
     /** Son kullanılan anahtarlar: değişince eski kota cezaları unutuluyor. */
-    @Volatile private var sonAnahtarlar: Pair<String, String>? = null
+    @Volatile private var sonAnahtarlar: Pair<List<String>, List<String>>? = null
     /** "Oyun uzakta" modu (bkz. [UzakIzleyici]); açıkken yerel yakalama durur. */
     private var uzak: UzakIzleyici? = null
 
@@ -1642,9 +1642,9 @@ class CaptureAccessibilityService : AccessibilityService() {
     private fun yapayZekaBaslat(waiting: PendingAnswer, s: Prefs.Settings): Deferred<AiTahmin?>? {
         waiting.aiIs?.let { return it }
         if (!s.aiWhenUnknown) return null
-        if (s.groqKey.isBlank() && s.geminiKey.isBlank()) return null
+        if (s.groqKeys.all { it.isBlank() } && s.geminiKeys.all { it.isBlank() }) return null
         if (waiting.options.size < 2 || waiting.rects.size != waiting.options.size) return null
-        val anahtarlar = s.groqKey to s.geminiKey
+        val anahtarlar = s.groqKeys to s.geminiKeys
         if (sonAnahtarlar != anahtarlar) {
             sonAnahtarlar = anahtarlar
             yapayZeka.sifirla()
@@ -1657,14 +1657,14 @@ class CaptureAccessibilityService : AccessibilityService() {
                 val l = runCatching { repo.knownAnswerOnScreen(waiting.id, siklar, imzalar) }.getOrNull()
                 if (l is Repo.KnownAnswer.OnScreen) return@async null
             }
-            val r = yapayZeka.sor(soru, siklar, s.groqKey, s.geminiKey)
+            val r = yapayZeka.sor(soru, siklar, s.groqKeys, s.geminiKeys)
             val once = if (r.hatalar.isEmpty()) "" else " · önce: " + r.hatalar.joinToString("; ")
             val i = r.index
             if (i == null) {
                 log("YAPAY ZEKÂ #${waiting.id}: cevap alınamadı (${r.sureMs} ms)$once")
                 return@async null
             }
-            val kaynak = r.saglayici?.ad ?: "?"
+            val kaynak = r.anahtar?.ad ?: "?"
             log(
                 "YAPAY ZEKÂ #${waiting.id} → ${'A' + i} «${siklar[i].take(28)}» · " +
                     "$kaynak ${r.model} · ${r.sureMs} ms$once"

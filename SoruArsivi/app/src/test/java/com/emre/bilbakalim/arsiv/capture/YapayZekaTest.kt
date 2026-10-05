@@ -78,20 +78,26 @@ class YapayZekaTest {
     }
 
     @Test
-    fun `sorular saglayicilar arasinda donusumlu dagitilir`() {
-        val ikisi = listOf(YapayZeka.Saglayici.GROQ, YapayZeka.Saglayici.GEMINI)
-        val ilk = YapayZeka.siralama(ikisi, 0)
-        val ikinci = YapayZeka.siralama(ikisi, 1)
-        assertEquals(YapayZeka.Saglayici.GROQ, ilk[0].first)
-        assertEquals(YapayZeka.Saglayici.GEMINI, ikinci[0].first)
-        assertEquals(YapayZeka.Saglayici.GROQ, YapayZeka.siralama(ikisi, 2)[0].first)
-        // Asıl model düşerse önce öteki sağlayıcıya, yedek modellere sonra.
-        assertEquals(YapayZeka.Saglayici.GEMINI, ilk[1].first)
-        assertEquals(YapayZeka.modeller(YapayZeka.Saglayici.GROQ)[1], ilk[2].second)
-        assertEquals(4, ilk.size)
-        // Tek anahtar girildiyse hep o.
-        val tek = YapayZeka.siralama(listOf(YapayZeka.Saglayici.GEMINI), 5)
-        assertTrue(tek.all { it.first == YapayZeka.Saglayici.GEMINI })
+    fun `anahtarlar saglayicilar arasinda donusumlu dizilir`() {
+        val sira = YapayZeka.anahtarSirasi(listOf("g1", "g2", "g3"), listOf("m1", " ", "m2"))
+        // Boş bırakılan 2. alan atlanır ama numaralar alanlarla aynı kalır.
+        assertEquals(listOf("Groq 1", "Gemini 1", "Groq 2", "Gemini 3", "Groq 3"), sira.map { it.ad })
+        assertEquals(listOf("g1", "m1", "g2", "m2", "g3"), sira.map { it.deger })
+        // Aynı anahtar iki kez girildiyse bir kez sayılır.
+        assertEquals(1, YapayZeka.anahtarSirasi(listOf("g1", "g1"), emptyList()).size)
+        assertTrue(YapayZeka.anahtarSirasi(listOf(""), emptyList()).isEmpty())
+    }
+
+    @Test
+    fun `her soru siradaki anahtardan baslar`() {
+        val anahtarlar = YapayZeka.anahtarSirasi(listOf("g1", "g2"), listOf("m1", "m2"))
+        val ilkler = (0 until 5).map { YapayZeka.siralama(anahtarlar, it)[0].first.ad }
+        assertEquals(listOf("Groq 1", "Gemini 1", "Groq 2", "Gemini 2", "Groq 1"), ilkler)
+        // Asıl model düşerse önce öteki anahtarlar, yedek modeller en sonda.
+        val sira = YapayZeka.siralama(anahtarlar, 1)
+        assertEquals(listOf("Gemini 1", "Groq 2", "Gemini 2", "Groq 1"), sira.take(4).map { it.first.ad })
+        assertEquals(8, sira.size)
+        assertEquals(YapayZeka.modeller(YapayZeka.Saglayici.GEMINI)[1], sira[4].second)
         assertTrue(YapayZeka.siralama(emptyList(), 3).isEmpty())
     }
 

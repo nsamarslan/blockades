@@ -195,36 +195,38 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setAutoRandomWhenUnknown(v: Boolean) = prefs.setAutoRandomWhenUnknown(v)
     fun setUnknownChime(v: Boolean) = prefs.setUnknownChime(v)
     fun setAiWhenUnknown(v: Boolean) = prefs.setAiWhenUnknown(v)
-    fun setGroqKey(v: String) = prefs.setGroqKey(v)
-    fun setGeminiKey(v: String) = prefs.setGeminiKey(v)
+    fun setGroqKeys(v: List<String>) = prefs.setGroqKeys(v)
+    fun setGeminiKeys(v: List<String>) = prefs.setGeminiKeys(v)
 
     /**
-     * Girilen anahtarları örnek bir soruyla tek tek dener; her sağlayıcı
-     * için bir satır döndürür. Ayar ekranındaki "Anahtarları dene" düğmesi.
+     * Girilen anahtarları örnek bir soruyla tek tek dener; her anahtar için
+     * bir satır döndürür. Ayar ekranındaki "Anahtarları dene" düğmesi.
      */
     fun yapayZekaDene(onResult: (String) -> Unit) {
         val s = prefs.state.value
         viewModelScope.launch {
             val soru = "Türkiye'nin başkenti neresidir?"
             val siklar = listOf("İstanbul", "İzmir", "Ankara", "Bursa")
-            val satirlar = ArrayList<String>()
-            for ((ad, groq, gemini) in listOf(
-                Triple("Groq", s.groqKey, ""),
-                Triple("Gemini", "", s.geminiKey)
-            )) {
-                if (groq.isBlank() && gemini.isBlank()) {
-                    satirlar += "$ad: anahtar girilmedi"
-                    continue
+            val anahtarlar = YapayZeka.anahtarSirasi(s.groqKeys, s.geminiKeys)
+            if (anahtarlar.isEmpty()) {
+                onResult("Anahtar girilmedi.")
+                return@launch
+            }
+            val satirlar = anahtarlar.map { a ->
+                // Her anahtar ayrı ve taze istemciyle: önceki hataların
+                // cezası denemeyi atlatmasın.
+                val tek = listOf(a.deger)
+                val r = if (a.saglayici == YapayZeka.Saglayici.GROQ) {
+                    YapayZeka {}.sor(soru, siklar, tek, emptyList())
+                } else {
+                    YapayZeka {}.sor(soru, siklar, emptyList(), tek)
                 }
-                // Her denemede taze istemci: önceki hataların cezası
-                // denemeyi atlatmasın.
-                val r = YapayZeka {}.sor(soru, siklar, groq, gemini)
-                satirlar += if (r.index != null) {
-                    "$ad: çalışıyor ✓ (${r.model}, ${r.sureMs} ms) → " +
+                if (r.index != null) {
+                    "${a.ad}: çalışıyor ✓ (${r.model}, ${r.sureMs} ms) → " +
                         "${'A' + r.index}) ${siklar[r.index]}" +
                         (if (r.hatalar.isNotEmpty()) "\n   önce: ${r.hatalar.joinToString("; ")}" else "")
                 } else {
-                    "$ad: çalışmıyor ✗ ${r.hatalar.joinToString("; ")}"
+                    "${a.ad}: çalışmıyor ✗ ${r.hatalar.joinToString("; ")}"
                 }
             }
             onResult(satirlar.joinToString("\n\n"))

@@ -20,8 +20,9 @@ import org.json.JSONObject
  *  - **Groq** (groq.com, anahtar `gsk_` ile başlar) — çok hızlı, ~0,4 sn.
  *  - **Gemini** (Google AI Studio) — biraz daha yavaş, ~0,7 sn.
  *
- * Sağlayıcılar **dönüşümlü** kullanılıyor: bir soru Groq'a, sonraki
- * Gemini'ye... Ücretsiz kotalar dakikalık (Groq: model başına dakikada
+ * Her sağlayıcıya birden çok anahtar girilebiliyor ve anahtarlar
+ * **dönüşümlü** kullanılıyor: Groq 1, Gemini 1, Groq 2, Gemini 2, ...
+ * Ücretsiz kotalar dakikalık (Groq: model başına dakikada
  * 8.000 token, yani ~20 soru) ve günlük (Groq: model başına günde 1.000
  * istek) tutulduğu için yükü bölmek ikisinin de dakikalık sınırına
  * takılmayı önlüyor ve günlük kotaları eşit eritiyor.
@@ -41,51 +42,55 @@ class YapayZeka(private val log: (String) -> Unit) {
 
     enum class Saglayici(val ad: String) { GROQ("Groq"), GEMINI("Gemini") }
 
-    /** Bir sorunun sonucu. [index] null ise hiçbir sağlayıcı cevap veremedi. */
+    /** Bir anahtar: hangi sağlayıcının kaçıncısı ([no] 1'den başlar). */
+    data class Anahtar(val saglayici: Saglayici, val no: Int, val deger: String) {
+        /** Günlükte görünen ad: "Groq 2". Anahtarın kendisi yazılmıyor. */
+        val ad: String get() = "${saglayici.ad} $no"
+        override fun toString() = ad
+    }
+
+    /** Bir sorunun sonucu. [index] null ise hiçbir anahtar cevap veremedi. */
     data class Sonuc(
         val index: Int?,
-        val saglayici: Saglayici?,
+        val anahtar: Anahtar?,
         val model: String?,
         val sureMs: Long,
         /** Denenip başarısız olanlar, günlük için ("Groq: kota doldu"). */
         val hatalar: List<String>
     )
 
-    /** Sağlayıcı/model bazında "şu ana kadar deneme" (SystemClock.elapsedRealtime). */
+    /** Anahtar/model bazında "şu ana kadar deneme" (SystemClock.elapsedRealtime). */
     private val bekle = HashMap<String, Long>()
 
-    /** Dönüşüm sayacı: her soruda bir sonraki sağlayıcıdan başlanıyor. */
+    /** Dönüşüm sayacı: her soruda bir sonraki anahtardan başlanıyor. */
     @Volatile private var tur = 0
 
     suspend fun sor(
         soru: String,
         siklar: List<String>,
-        groqAnahtari: String,
-        geminiAnahtari: String
+        groqAnahtarlari: List<String>,
+        geminiAnahtarlari: List<String>
     ): Sonuc = withContext(Dispatchers.IO) {
         val bas = SystemClock.elapsedRealtime()
         val hatalar = ArrayList<String>()
-        val saglayicilar = buildList {
-            if (groqAnahtari.isNotBlank()) add(Saglayici.GROQ)
-            if (geminiAnahtari.isNotBlank()) add(Saglayici.GEMINI)
-        }
-        val sira = siralama(saglayicilar, tur++)
-        // Anahtarı reddedilen sağlayıcının öteki modelleri bu soruda atlanıyor.
-        val reddedilen = HashSet<Saglayici>()
+        val sira = siralama(anahtarSirasi(groqAnahtarlari, geminiAnahtarlari), tur++)
+        // Reddedilen anahtarın öteki modelleri bu soruda atlanıyor.
+        val reddedilen = HashSet<Anahtar>()
 
-        for ((sag, model) in sira) {
-            if (sag in reddedilen) continue
-            val anahtar = (if (sag == Saglayici.GROQ) groqAnahtari else geminiAnahtari).trim()
+        for ((a, model) in sira) {
+            if (a in reddedilen) continue
+            val sag = a.saglayici
+            val anahtar = a.deger
             val gecen = SystemClock.elapsedRealtime() - bas
             if (gecen > TOPLAM_BUTCE_MS) {
                 hatalar += "süre doldu"
                 return@withContext Sonuc(null, null, null, gecen, hatalar)
             }
-            val k = "${sag.name}/$model"
+            val k = bekleAnahtari(a, model)
             val simdi = SystemClock.elapsedRealtime()
             val kadar = synchronized(bekle) { bekle[k] ?: 0L }
             if (simdi < kadar) {
-                hatalar += "${sag.ad} $model: kota/anahtar sorunu, ${(kadar - simdi) / 1000} sn atlanıyor"
+                hatalar += "${a.ad} $model: kota/anahtar sorunu, ${(kadar - simdi) / 1000} sn atlanıyor"
                 continue
             }
             // Süre sınırını bağlantının kendi zaman aşımları koyuyor.
@@ -102,22 +107,22 @@ class YapayZeka(private val log: (String) -> Unit) {
                 val index = metin?.let { harfiCoz(it, siklar) }
                 if (index != null) {
                     return@withContext Sonuc(
-                        index, sag, model, SystemClock.elapsedRealtime() - bas, hatalar
+                        index, a, model, SystemClock.elapsedRealtime() - bas, hatalar
                     )
                 }
-                hatalar += "${sag.ad} $model: anlaşılmayan cevap «${metin?.take(40) ?: yanit.govde.take(80)}»"
+                hatalar += "${a.ad} $model: anlaşılmayan cevap «${metin?.take(40) ?: yanit.govde.take(80)}»"
                 continue
             }
 
             val ceza = cezaSuresiMs(yanit.kod, yanit.govde)
             if (ceza > 0) synchronized(bekle) { bekle[k] = maxOf(bekle[k] ?: 0L, SystemClock.elapsedRealtime() + ceza) }
-            hatalar += "${sag.ad} $model: ${hataOzeti(yanit.kod, yanit.govde)}"
-            // Anahtar geçersizse aynı sağlayıcının öteki modelini
-            // denemek boşuna.
+            hatalar += "${a.ad} $model: ${hataOzeti(yanit.kod, yanit.govde)}"
+            // Anahtar geçersizse aynı anahtarla öteki modeli denemek
+            // boşuna.
             if (yanit.kod == 401 || yanit.kod == 403) {
-                reddedilen += sag
+                reddedilen += a
                 modeller(sag).forEach { m ->
-                    synchronized(bekle) { bekle["${sag.name}/$m"] = SystemClock.elapsedRealtime() + ceza }
+                    synchronized(bekle) { bekle[bekleAnahtari(a, m)] = SystemClock.elapsedRealtime() + ceza }
                 }
             }
         }
@@ -185,19 +190,39 @@ class YapayZeka(private val log: (String) -> Unit) {
             Saglayici.GEMINI -> listOf("gemini-3.5-flash-lite", "gemini-flash-lite-latest")
         }
 
+        /** Bekleme tablosunun anahtarı; anahtarın kendisi değil özeti tutuluyor. */
+        private fun bekleAnahtari(a: Anahtar, model: String) =
+            "${a.saglayici.name}/${a.deger.hashCode()}/$model"
+
         /**
-         * Bir sorunun deneme sırası: önce her sağlayıcının asıl modeli
-         * (sağlayıcılar [tur]'a göre dönüşümlü), sonra yedek modeller.
-         * Groq cevap veremezse önce Gemini'ye soruluyor, Groq'un küçük
+         * Girilen anahtarları dönüşüm sırasına dizer: Groq 1, Gemini 1,
+         * Groq 2, Gemini 2, ... Sayılar eşit değilse fazlası sona kalır
+         * (Groq 3, Groq 4). Boşlar ve aynı anahtarın tekrarı atlanıyor;
+         * numara ayar ekranındaki alanın numarası.
+         */
+        internal fun anahtarSirasi(groq: List<String>, gemini: List<String>): List<Anahtar> {
+            fun diz(sag: Saglayici, l: List<String>) =
+                l.mapIndexed { i, d -> Anahtar(sag, i + 1, d.trim()) }
+                    .filter { it.deger.isNotEmpty() }
+                    .distinctBy { it.deger }
+            val g = diz(Saglayici.GROQ, groq)
+            val m = diz(Saglayici.GEMINI, gemini)
+            return (0 until maxOf(g.size, m.size)).flatMap { i -> listOfNotNull(g.getOrNull(i), m.getOrNull(i)) }
+        }
+
+        /**
+         * Bir sorunun deneme sırası: önce her anahtarın asıl modeli
+         * (anahtarlar [tur]'a göre dönüşümlü), sonra yedek modeller.
+         * Groq 1 cevap veremezse önce Gemini 1'e soruluyor, Groq'un küçük
          * modeline değil.
          */
-        internal fun siralama(saglayicilar: List<Saglayici>, tur: Int): List<Pair<Saglayici, String>> {
-            if (saglayicilar.isEmpty()) return emptyList()
-            val bas = Math.floorMod(tur, saglayicilar.size)
-            val donmus = saglayicilar.drop(bas) + saglayicilar.take(bas)
-            val enCok = donmus.maxOf { modeller(it).size }
+        internal fun siralama(anahtarlar: List<Anahtar>, tur: Int): List<Pair<Anahtar, String>> {
+            if (anahtarlar.isEmpty()) return emptyList()
+            val bas = Math.floorMod(tur, anahtarlar.size)
+            val donmus = anahtarlar.drop(bas) + anahtarlar.take(bas)
+            val enCok = donmus.maxOf { modeller(it.saglayici).size }
             return (0 until enCok).flatMap { i ->
-                donmus.mapNotNull { sag -> modeller(sag).getOrNull(i)?.let { sag to it } }
+                donmus.mapNotNull { a -> modeller(a.saglayici).getOrNull(i)?.let { a to it } }
             }
         }
 
