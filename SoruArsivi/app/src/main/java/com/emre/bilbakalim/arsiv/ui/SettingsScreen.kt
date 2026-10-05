@@ -55,6 +55,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.emre.bilbakalim.arsiv.data.Repo
+import com.emre.bilbakalim.arsiv.data.YapayZekaIstatistik
 
 @Composable
 fun SettingsScreen(
@@ -223,6 +224,7 @@ fun SettingsScreen(
 
                     if (s.aiWhenUnknown) {
                         YapayZekaGuveni(vm, s.aiGuvenEsigi, s.aiEminDegilseBirak)
+                        YapayZekaBasarisi(vm)
                         YapayZekaAyarlari(vm, s.groqKeys, s.geminiKeys)
                     }
 
@@ -576,6 +578,63 @@ private fun KesintisizCalisma() {
 private fun pilSerbest(context: Context): Boolean =
     context.getSystemService(PowerManager::class.java)
         ?.isIgnoringBatteryOptimizations(context.packageName) == true
+
+/**
+ * Yapay zekânın gerçek başarısı: oyunun gösterdiği doğru cevapla
+ * karşılaştırılan tahminler, sağlayıcıya, güvene ve kategoriye göre.
+ */
+@Composable
+private fun YapayZekaBasarisi(vm: ArsivViewModel) {
+    val veri by vm.aiIstatistik.collectAsState()
+    var acik by remember { mutableStateOf(false) }
+    var sifirlaSor by remember { mutableStateOf(false) }
+    if (sifirlaSor) {
+        AlertDialog(
+            onDismissRequest = { sifirlaSor = false },
+            title = { Text("Başarı istatistiği silinsin mi?") },
+            text = { Text("Sayaçlar sıfırlanır; arşive dokunulmaz.") },
+            confirmButton = { TextButton(onClick = { vm.aiIstatistikSifirla(); sifirlaSor = false }) { Text("Sil") } },
+            dismissButton = { TextButton(onClick = { sifirlaSor = false }) { Text("Vazgeç") } }
+        )
+    }
+    Column(Modifier.fillMaxWidth().padding(start = 8.dp, top = 4.dp, bottom = 8.dp)) {
+        Text("Yapay zekânın başarısı", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+        if (veri.isEmpty()) {
+            Text(
+                "Henüz veri yok. Yapay zekâya sorulan bir sorunun doğru cevabı " +
+                    "oyunda açıldıkça burada sayılır.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            return@Column
+        }
+        fun satir(s: YapayZekaIstatistik.Sayac) = "%${s.yuzde ?: 0} (${s.dogru}/${s.toplam})"
+        veri.entries.sortedByDescending { it.value.toplam.toplam }.forEach { (ad, s) ->
+            Text("$ad: ${satir(s.toplam)} doğru", style = MaterialTheme.typography.bodyMedium)
+        }
+        TextButton(onClick = { acik = !acik }) { Text(if (acik) "Ayrıntıyı gizle" else "Güvene ve kategoriye göre") }
+        if (acik) {
+            veri.entries.sortedByDescending { it.value.toplam.toplam }.forEach { (ad, s) ->
+                Text(ad, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                YapayZekaIstatistik.GUVEN_ARALIKLARI.forEach { g ->
+                    s.guven[g]?.let {
+                        Text("  güven $g: ${satir(it)}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                s.kategori.entries.sortedByDescending { it.value.toplam }.forEach { (k, v) ->
+                    Text("  $k: ${satir(v)}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Text(
+                "Güven aralıkları eşiği seçmek için: düşük güvenli tahminlerin " +
+                    "başarısı düşükse eşiği o aralığın üstüne çek.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            TextButton(onClick = { sifirlaSor = true }) { Text("Sıfırla") }
+        }
+    }
+}
 
 /** Yapay zekâ emin değilse ne yapılsın. */
 @Composable

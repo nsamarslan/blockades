@@ -20,6 +20,7 @@ import com.emre.bilbakalim.arsiv.R
 import com.emre.bilbakalim.arsiv.data.CaptureSource
 import com.emre.bilbakalim.arsiv.data.Prefs
 import com.emre.bilbakalim.arsiv.data.Repo
+import com.emre.bilbakalim.arsiv.data.YapayZekaIstatistik
 import com.emre.bilbakalim.arsiv.util.SoruGorseli
 import com.emre.bilbakalim.arsiv.util.TurkishText
 import java.io.File
@@ -368,7 +369,9 @@ class CaptureAccessibilityService : AccessibilityService() {
          * karışınca sıfırlanmıyor: cevap şık metniyle tutulduğu için
          * yeni sıradaki yeri bulunuyor ve kota boşuna harcanmıyor.
          */
-        var aiIs: Deferred<AiTahmin?>? = null
+        var aiIs: Deferred<AiTahmin?>? = null,
+        /** Yapay zekânın tahmini başarı istatistiğine yazıldı mı (bir kez). */
+        var aiSayildi: Boolean = false
     )
     @Volatile private var pendingAnswer: PendingAnswer? = null
     @Volatile private var burstJob: Job? = null
@@ -2409,6 +2412,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             log("atlandı #${waiting.id}: okunamayan şıklar kayıttakilerle eşleşmedi")
             return
         }
+        aiSonucunuSay(waiting, index, evidence)
         waiting.knownIndex?.let { known ->
             if (known != index) {
                 log(
@@ -2426,6 +2430,28 @@ class CaptureAccessibilityService : AccessibilityService() {
             evidence = evidence,
             screenSigs = waiting.imzalar
         )?.let { neden -> log("CEVAP YAZILMADI #${waiting.id}: $neden") }
+    }
+
+    /**
+     * Yapay zekâya sorulmuş bir sorunun doğru cevabı kesin öğrenildiyse
+     * tahmini başarı istatistiğine yazar. Zayıf kanıt (dokunuş) sayılmıyor.
+     */
+    private suspend fun aiSonucunuSay(waiting: PendingAnswer, dogru: Int, evidence: Repo.AnswerEvidence) {
+        if (waiting.aiSayildi || evidence == Repo.AnswerEvidence.TOUCH) return
+        val d = waiting.aiIs ?: return
+        if (!d.isCompleted) return
+        val t = runCatching { d.await() }.getOrNull() ?: return
+        val tahmin = aiSirasi(t, waiting.options) ?: return
+        waiting.aiSayildi = true
+        val saglayici = t.kaynak.substringBefore(' ')
+        val kategori = runCatching { repo.byId(waiting.id)?.category }.getOrNull()
+        YapayZekaIstatistik.get(this).ekle(saglayici, kategori, t.guven, tahmin == dogru)
+        if (tahmin != dogru) {
+            log(
+                "YAPAY ZEKÂ YANILDI #${waiting.id}: ${optionLabel(waiting, tahmin)} demişti " +
+                    "(${t.kaynak}${t.guven?.let { ", %$it" } ?: ""}), doğrusu ${optionLabel(waiting, dogru)}"
+            )
+        }
     }
 
     /**

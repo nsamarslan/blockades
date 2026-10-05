@@ -25,6 +25,7 @@ import com.emre.bilbakalim.arsiv.data.KategoriListesi
 import com.emre.bilbakalim.arsiv.data.Prefs
 import com.emre.bilbakalim.arsiv.data.QuestionEntity
 import com.emre.bilbakalim.arsiv.data.Repo
+import com.emre.bilbakalim.arsiv.data.YapayZekaIstatistik
 import com.emre.bilbakalim.arsiv.util.DisaAktarimSirasi
 import com.emre.bilbakalim.arsiv.util.Exporters
 import com.emre.bilbakalim.arsiv.util.GorselDisaAktarim
@@ -197,6 +198,8 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setAiWhenUnknown(v: Boolean) = prefs.setAiWhenUnknown(v)
     fun setGroqKeys(v: List<String>) = prefs.setGroqKeys(v)
     fun setAiGuvenEsigi(v: Int) = prefs.setAiGuvenEsigi(v)
+    val aiIstatistik = YapayZekaIstatistik.get(app).durum
+    fun aiIstatistikSifirla() = YapayZekaIstatistik.get(getApplication()).sifirla()
     fun setAiEminDegilseBirak(v: Boolean) = prefs.setAiEminDegilseBirak(v)
     fun setGeminiKeys(v: List<String>) = prefs.setGeminiKeys(v)
 
