@@ -402,6 +402,7 @@ class CaptureAccessibilityService : AccessibilityService() {
             this, prefs, repo,
             ekranGoruntusu = { captureScreen() },
             ekranBoyu = { ProjectionService.screenSize(this) },
+            yapayZeka = yapayZeka,
             log = { log(it) }
         )
 

@@ -171,23 +171,6 @@ fun SettingsScreen(
                             s.autoRandomWhenUnknown
                         ) { vm.setAutoRandomWhenUnknown(it) }
 
-                        SettingSwitch(
-                            "Bilinmeyen soruyu yapay zekâya sor",
-                            "Cevabı arşivde olmayan soruda rastgele basmak yerine soru " +
-                                "ve şıklar yapay zekâya sorulur, onun seçtiği şıkka basılır. " +
-                                "İki anahtar da girildiyse sorular Groq ile Gemini arasında " +
-                                "dönüşümlü dağıtılır; böylece dakikalık ve günlük ücretsiz " +
-                                "kotalar eşit erir. Birinin kotası dolarsa (token hakkı " +
-                                "kalmazsa) ya da cevap veremezse soru ötekine sorulur. İkisi de cevap " +
-                                "veremezse yukarıdaki ayara göre rastgele basılır ya da " +
-                                "karar sana bırakılır. Doğru cevap yine oyunun tepkisinden " +
-                                "öğrenilip arşive yazılır.",
-                            s.aiWhenUnknown
-                        ) { vm.setAiWhenUnknown(it) }
-
-                        if (s.aiWhenUnknown) {
-                            YapayZekaAyarlari(vm, s.groqKeys, s.geminiKeys)
-                        }
 
                         Spacer(Modifier.height(8.dp))
                         Text(
@@ -217,6 +200,29 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+
+                    // Otomatik blokunun dışında: "oyun uzakta" modunda da
+                    // çalışıyor (yayındaki bilinmeyen soruya mor ok).
+                    SettingSwitch(
+                        "Bilinmeyen soruyu yapay zekâya sor",
+                        "Cevabı arşivde olmayan soruda rastgele basmak yerine soru " +
+                            "ve şıklar yapay zekâya sorulur, onun seçtiği şıkka basılır. " +
+                            "İki anahtar da girildiyse sorular Groq ile Gemini arasında " +
+                            "dönüşümlü dağıtılır; böylece dakikalık ve günlük ücretsiz " +
+                            "kotalar eşit erir. Birinin kotası dolarsa (token hakkı " +
+                            "kalmazsa) ya da cevap veremezse soru ötekine sorulur. İkisi de cevap " +
+                            "veremezse otomatik modun ayarına göre rastgele basılır ya da " +
+                            "karar sana bırakılır. Doğru cevap yine oyunun tepkisinden " +
+                            "öğrenilip arşive yazılır.\n" +
+                            "Oyun uzakta modunda da çalışır: yayındaki bilinmeyen sorunun " +
+                            "yapay zekânın seçtiği şıkkına mor ok konur (arşivden bilinen " +
+                            "cevap yeşil oktur).",
+                        s.aiWhenUnknown
+                    ) { vm.setAiWhenUnknown(it) }
+
+                    if (s.aiWhenUnknown) {
+                        YapayZekaAyarlari(vm, s.groqKeys, s.geminiKeys)
                     }
 
                     // Bilerek otomatik blokunun dışında: ses manuel modda da

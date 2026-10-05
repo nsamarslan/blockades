@@ -49,12 +49,15 @@ class UzakKatman(private val ctx: Context, private val olay: Olaylar) {
         GRI(0xD0424242.toInt()),
         YESIL(0xE02E7D32.toInt()),
         TURUNCU(0xE0EF6C00.toInt()),
+        /** Yapay zekâ tahmini: arşivden bilinen cevabın yeşilinden ayrı dursun. */
+        MOR(0xE06A1B9A.toInt()),
         KIRMIZI(0xE0C62828.toInt())
     }
 
     /** Okun ya da rozetin görünümü. */
     sealed interface Imge {
-        data class Ok(val sagaBakar: Boolean) : Imge
+        /** [renk] null ise yeşil (arşivden bilinen cevap). */
+        data class Ok(val sagaBakar: Boolean, val renk: Int? = null) : Imge
         data class Rozet(val metin: String, val renk: Int) : Imge
     }
 
@@ -248,7 +251,7 @@ class UzakKatman(private val ctx: Context, private val olay: Olaylar) {
                         path.lineTo(w * 0.95f, h / 2 + govdeY / 2)
                     }
                     path.close()
-                    dolgu.color = OK_RENGI
+                    dolgu.color = i.renk ?: OK_RENGI
                     canvas.drawPath(path, dolgu)
                     canvas.drawPath(path, kenar)
                 }

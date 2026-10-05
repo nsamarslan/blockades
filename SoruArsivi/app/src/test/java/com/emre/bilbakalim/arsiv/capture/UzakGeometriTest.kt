@@ -92,5 +92,9 @@ class UzakGeometriTest {
         assertEquals("✓ C · Deva", UzakIzleyici.gorunum(UzakIzleyici.Durum.Bilinen(2, "Deva")).first)
         assertEquals(UzakKatman.Ton.KIRMIZI, UzakIzleyici.gorunum(UzakIzleyici.Durum.ArsivdeYok).second)
         assertEquals(UzakKatman.Ton.TURUNCU, UzakIzleyici.gorunum(UzakIzleyici.Durum.CevapYok).second)
+        // Yapay zekâ tahmini bilinen cevaptan ayrı renkte, kaynağıyla.
+        val tahmin = UzakIzleyici.gorunum(UzakIzleyici.Durum.Tahmin(1, "Ankara", "Groq 2"))
+        assertEquals("🤖 B · Ankara (Groq 2)", tahmin.first)
+        assertEquals(UzakKatman.Ton.MOR, tahmin.second)
     }
 }

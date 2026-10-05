@@ -24,7 +24,10 @@ import kotlinx.coroutines.withContext
  * "Oyun uzakta" modu: oyunu başkası oynuyor, sen yayınını bu telefonda
  * izliyorsun (YouTube, Twitch, Kick… hangisi olursa). Yayının içindeki
  * soruyu okuyup arşivde arıyor; cevap biliniyorsa doğru şıkkın yanına ok
- * koyuyor, bilinmiyorsa bunu açıkça gösteriyor. Rastgele tahmin yok.
+ * koyuyor, bilinmiyorsa bunu açıkça gösteriyor. Rastgele tahmin yok;
+ * "bilinmeyen soruyu yapay zekâya sor" açıksa bilinmeyen soru Groq /
+ * Gemini'ye soruluyor ve onun seçtiği şık **mor** okla, arşivden bilinen
+ * cevabın yeşil okundan ayrı gösteriliyor.
  *
  * Yerel moddan üç farkı var, üçü de bilerek:
  *  • **Ekrana dokunulmuyor.** Hiçbir jest gönderilmiyor.
@@ -43,6 +46,8 @@ class UzakIzleyici(
     private val repo: Repo,
     private val ekranGoruntusu: suspend () -> Bitmap?,
     private val ekranBoyu: () -> Pair<Int, Int>,
+    /** Servisle ortak: kota cezaları ve anahtar dönüşümü paylaşılıyor. */
+    private val yapayZeka: YapayZeka,
     private val log: (String) -> Unit
 ) : UzakKatman.Olaylar {
 
@@ -59,7 +64,21 @@ class UzakIzleyici(
         /** Soru arşivde var, doğru cevabı henüz yok. */
         data object CevapYok : Durum
         data object ArsivdeYok : Durum
+        /** Arşivde cevabı yok, yapay zekâya soruluyor. */
+        data object Soruluyor : Durum
+        /** Yapay zekânın tahmini; [kaynak] "Groq 1" gibi. */
+        data class Tahmin(val sira: Int, val metin: String, val kaynak: String) : Durum
     }
+
+    /**
+     * Yapay zekânın bir soruya verdiği cevap, şık **metniyle**: oyun şıkları
+     * her turda karıştırıyor, sıra saklanırsa sonraki turda yanlış şıkkı
+     * gösterirdi. Anahtar parmak izi (şıklar sıralı), yani karışmış sıra
+     * aynı cevabı buluyor ve kota boşa harcanmıyor. null: sorulamadı.
+     */
+    private val aiCevaplari = LinkedHashMap<String, String?>()
+    /** Şu an yapay zekâya sorulan sorunun parmak izi (aynı anda tek istek). */
+    @Volatile private var aiSorulan: String? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var dongu: Job? = null
@@ -204,10 +223,65 @@ class UzakIzleyici(
                         okuma.siklar.mapIndexed { i, o -> "${'A' + i}«${o.take(20)}»" }.joinToString(" ") +
                         " · ${if (okuma.kutuYolu) "kutu" else "metin"} → ${ozet(yeni)}"
                 )
+                // Yayındaki soru bizde yok: yerel moddaki gibi sesle haber ver.
+                if ((yeni == Durum.ArsivdeYok || yeni == Durum.CevapYok) && s.unknownChime) {
+                    Chime.play(servis)?.let { log("SES ÇALINAMADI: $it") }
+                }
             }
-            gosterAna(yeni, okuma)
+            gosterAna(yapayZekaDurumu(yeni, okuma, s), okuma)
         }
     }
+
+    /**
+     * Cevabı bilinmeyen soruda yapay zekânın durumu: cevabı geldiyse
+     * tahmin, soruluyorsa "soruluyor", sorulamıyorsa arşivin durumu.
+     * Soru gerekiyorsa arka planda sorulur; döngü beklemez, cevap gelince
+     * sonraki turda gösterilir.
+     */
+    private fun yapayZekaDurumu(d: Durum, o: UzakOkuyucu.Okuma, s: Prefs.Settings): Durum {
+        if (d != Durum.ArsivdeYok && d != Durum.CevapYok) return d
+        if (!s.aiWhenUnknown) return d
+        if (s.groqKeys.all { it.isBlank() } && s.geminiKeys.all { it.isBlank() }) return d
+        if (o.siklar.size < 2) return d
+        val iz = TurkishText.fingerprint(o.soru, o.siklar)
+        val (soruldu, cevap, kaynak) = synchronized(aiCevaplari) {
+            Triple(aiCevaplari.containsKey(iz), aiCevaplari[iz], aiKaynaklari[iz])
+        }
+        if (soruldu) {
+            val metin = cevap ?: return d
+            val hedef = TurkishText.normalizeKey(metin)
+            val sira = o.siklar.indices.singleOrNull { TurkishText.normalizeKey(o.siklar[it]) == hedef }
+                ?: return d
+            return Durum.Tahmin(sira, o.siklar[sira], kaynak ?: "?")
+        }
+        if (aiSorulan == null) {
+            aiSorulan = iz
+            val soru = o.soru
+            val siklar = o.siklar.toList()
+            scope.launch {
+                val r = runCatching { yapayZeka.sor(soru, siklar, s.groqKeys, s.geminiKeys) }.getOrNull()
+                val i = r?.index
+                synchronized(aiCevaplari) {
+                    aiCevaplari[iz] = i?.let { siklar[it] }
+                    r?.anahtar?.let { aiKaynaklari[iz] = it.ad }
+                    while (aiCevaplari.size > ONBELLEK) {
+                        val ilk = aiCevaplari.keys.first()
+                        aiCevaplari.remove(ilk); aiKaynaklari.remove(ilk)
+                    }
+                }
+                val once = r?.hatalar?.takeIf { it.isNotEmpty() }?.let { " · önce: " + it.joinToString("; ") } ?: ""
+                log(
+                    if (i != null) "UZAK YAPAY ZEKÂ → ${'A' + i} «${siklar[i].take(28)}» · " +
+                        "${r?.anahtar?.ad} ${r?.model} · ${r?.sureMs} ms$once"
+                    else "UZAK YAPAY ZEKÂ: cevap alınamadı$once"
+                )
+                aiSorulan = null
+            }
+        }
+        return if (aiSorulan == iz) Durum.Soruluyor else d
+    }
+
+    private val aiKaynaklari = HashMap<String, String>()
 
     /** Arşivde arar; hiçbir şey yazmaz. */
     private suspend fun ara(o: UzakOkuyucu.Okuma): Durum {
@@ -248,22 +322,25 @@ class UzakIzleyici(
         }
         val okW = k.dp(OK_GENISLIK)
         when (d) {
-            is Durum.Bilinen -> {
-                val kutu = o?.sikKutulari?.getOrNull(d.sira)
+            is Durum.Bilinen, is Durum.Tahmin -> {
+                val sira = if (d is Durum.Bilinen) d.sira else (d as Durum.Tahmin).sira
+                val kutu = o?.sikKutulari?.getOrNull(sira)
                 if (kutu == null) { k.isaretGizle(); return }
                 val hedef = UzakGeometri.piksel(kutu, w, h)
                 val okH = hedef.h.coerceIn(k.dp(28f), k.dp(64f))
                 val yer = UzakGeometri.isaretYeri(hedef, cerceve, w, okW, okH)
+                val renk = if (d is Durum.Tahmin) MOR else null
                 if (yer == null) k.isaretGizle()
-                else k.isaretGoster(yer, UzakKatman.Imge.Ok(yer.sagaBakar))
+                else k.isaretGoster(yer, UzakKatman.Imge.Ok(yer.sagaBakar, renk))
             }
-            Durum.ArsivdeYok, Durum.CevapYok, is Durum.Eslesmedi -> {
+            Durum.ArsivdeYok, Durum.CevapYok, Durum.Soruluyor, is Durum.Eslesmedi -> {
                 val hedef = UzakGeometri.piksel(soru, w, h)
                 val r = k.dp(ROZET)
                 val yer = UzakGeometri.isaretYeri(hedef, cerceve, w, r, r)
                 val (yazi, renk) = when (d) {
                     Durum.ArsivdeYok -> "✗" to KIRMIZI
                     Durum.CevapYok -> "?" to TURUNCU
+                    Durum.Soruluyor -> "…" to MOR
                     else -> "!" to TURUNCU
                 }
                 if (yer == null) k.isaretGizle()
@@ -359,6 +436,8 @@ class UzakIzleyici(
             is Durum.Eslesmedi -> "✓ Cevap: ${d.metin.take(24)}" to UzakKatman.Ton.YESIL
             Durum.CevapYok -> "? Arşivde var, cevabı yok" to UzakKatman.Ton.TURUNCU
             Durum.ArsivdeYok -> "✗ Arşivde yok" to UzakKatman.Ton.KIRMIZI
+            Durum.Soruluyor -> "… Yapay zekâya soruluyor" to UzakKatman.Ton.MOR
+            is Durum.Tahmin -> "🤖 ${'A' + d.sira} · ${d.metin.take(20)} (${d.kaynak})" to UzakKatman.Ton.MOR
         }
 
         private fun ozet(d: Durum): String = when (d) {
@@ -366,6 +445,7 @@ class UzakIzleyici(
             is Durum.Eslesmedi -> "BİLİNİYOR ama şıklarda yok: «${d.metin.take(30)}»"
             Durum.CevapYok -> "arşivde var, cevabı yok"
             Durum.ArsivdeYok -> "ARŞİVDE YOK"
+            is Durum.Tahmin -> "YAPAY ZEKÂ ${'A' + d.sira} «${d.metin.take(30)}»"
             else -> d.toString()
         }
 
@@ -381,5 +461,6 @@ class UzakIzleyici(
         private const val ONBELLEK = 32
         private val KIRMIZI = 0xFFC62828.toInt()
         private val TURUNCU = 0xFFEF6C00.toInt()
+        private val MOR = 0xFF6A1B9A.toInt()
     }
 }
