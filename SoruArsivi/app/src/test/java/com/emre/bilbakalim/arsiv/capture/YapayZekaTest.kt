@@ -128,4 +128,19 @@ class YapayZekaTest {
         // Gemini başlık göndermiyor.
         assertEquals(0L, YapayZeka.onlemSuresiMs(null, null, null, null))
     }
+
+    @Test
+    fun `toplu cevap json olarak okunur`() {
+        val sik = listOf(4, 4, 2, 4)
+        assertEquals(
+            listOf(1, 3, null, null),
+            YapayZeka.topluCoz("```json\n{\"1\":\"B\",\"2\":\"d\",\"3\":\"C\"}\n```", sik)
+        )
+        assertEquals(listOf(null, null, null, null), YapayZeka.topluCoz("bozuk", sik))
+        val istem = YapayZeka.topluIstem(listOf("Month" to listOf("Gün", "Ay"), "Year" to listOf("Yıl", "Ay")))
+        assertTrue(istem.contains("1. Month — A) Gün | B) Ay"))
+        assertTrue(istem.contains("2. Year"))
+        JSONObject(YapayZeka.topluGroqGovdesi("m", listOf("Q" to listOf("a", "b"))))
+        JSONObject(YapayZeka.topluGeminiGovdesi("m", listOf("Q" to listOf("a", "b"))))
+    }
 }

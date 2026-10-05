@@ -135,6 +135,23 @@ interface QuestionDao {
     @Query("SELECT * FROM questions ORDER BY capturedAt ASC")
     suspend fun allForExport(): List<QuestionEntity>
 
+    /**
+     * Toplu yapay zekâ kontrolünün adayları. [etiketsiz] 1 ise kategorisi
+     * olmayanlar, değilse [cat] kategorisi (null: hepsi). [cevap]: 0 hepsi,
+     * 1 cevabı olmayanlar, 2 cevabı olanlar.
+     */
+    @Query(
+        """
+        SELECT * FROM questions
+        WHERE (CASE WHEN :etiketsiz = 1 THEN category IS NULL
+                    ELSE (:cat IS NULL OR category = :cat) END)
+          AND (:cevap = 0 OR (:cevap = 1 AND correctIndex IS NULL)
+               OR (:cevap = 2 AND correctIndex IS NOT NULL))
+        ORDER BY capturedAt ASC
+        """
+    )
+    suspend fun kontrolAdaylari(cat: String?, etiketsiz: Int, cevap: Int): List<QuestionEntity>
+
     /** En son kaydedilen sorunun ekran görüntüsü (Ekranı ayarla). */
     @Query("SELECT screenshotPath FROM questions WHERE screenshotPath IS NOT NULL ORDER BY capturedAt DESC LIMIT 1")
     suspend fun sonEkranGoruntusu(): String?

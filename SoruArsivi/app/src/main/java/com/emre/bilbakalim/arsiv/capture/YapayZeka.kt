@@ -38,7 +38,15 @@ import org.json.JSONObject
  * ekrandaki şıklardan birine basıyor — cevap çözülemezse null dönüyor ve
  * çağıran taraf rastgeleye düşüyor.
  */
-class YapayZeka(private val log: (String) -> Unit) {
+class YapayZeka(
+    private val log: (String) -> Unit,
+    /**
+     * Kota cezası verilmiş anahtarları da dene. Yalnızca ayarlardaki
+     * "Anahtarları dene" düğmesi için: kullanıcı anahtarı düzelttiyse
+     * eski ceza denemeyi atlatmasın.
+     */
+    private val cezayiYoksay: Boolean = false
+) {
 
     enum class Saglayici(val ad: String) { GROQ("Groq"), GEMINI("Gemini") }
 
@@ -61,8 +69,7 @@ class YapayZeka(private val log: (String) -> Unit) {
         val guven: Int? = null
     )
 
-    /** Anahtar/model bazında "şu ana kadar deneme" (SystemClock.elapsedRealtime). */
-    private val bekle = HashMap<String, Long>()
+    private val bekle get() = BEKLE
 
     /** Dönüşüm sayacı: her soruda bir sonraki anahtardan başlanıyor. */
     @Volatile private var tur = 0
@@ -90,7 +97,7 @@ class YapayZeka(private val log: (String) -> Unit) {
             }
             val k = bekleAnahtari(a, model)
             val simdi = SystemClock.elapsedRealtime()
-            val kadar = synchronized(bekle) { bekle[k] ?: 0L }
+            val kadar = if (cezayiYoksay) 0L else synchronized(bekle) { bekle[k] ?: 0L }
             if (simdi < kadar) {
                 hatalar += "${a.ad} $model: kota/anahtar sorunu, ${(kadar - simdi) / 1000} sn atlanıyor"
                 continue
@@ -140,18 +147,74 @@ class YapayZeka(private val log: (String) -> Unit) {
 
     private fun istek(
         sag: Saglayici, model: String, anahtar: String, soru: String, siklar: List<String>
+    ): Yanit = gonder(
+        sag, model, anahtar,
+        when (sag) {
+            Saglayici.GROQ -> groqGovdesi(model, soru, siklar)
+            Saglayici.GEMINI -> geminiGovdesi(model, soru, siklar)
+        },
+        ISTEK_SURESI_MS
+    )
+
+    /** Toplu sorunun sonucu (bkz. [topluSor]). */
+    sealed interface Toplu {
+        /** Soru sırasıyla şık sıraları; anlaşılmayanlar null. */
+        data class Tamam(val cevaplar: List<Int?>) : Toplu
+        /** Bu anahtar/model şimdilik kullanılamaz (kota); [ms] sonra dene. */
+        data class Bekle(val ms: Long, val neden: String) : Toplu
+        /** Geçici hata (ağ, 5xx): biraz sonra yeniden denenebilir. */
+        data class Hata(val neden: String) : Toplu
+    }
+
+    /** Bu anahtar/model kaç ms daha ceza beklemede (0: hazır). */
+    fun bekleme(a: Anahtar, model: String): Long {
+        val kadar = synchronized(bekle) { bekle[bekleAnahtari(a, model)] ?: 0L }
+        return (kadar - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+    }
+
+    /**
+     * Birçok soruyu tek istekte sorar (arşivi toplu kontrol için). Kota
+     * cezaları oyunla ortak: biri doluysa öteki de bilir.
+     */
+    suspend fun topluSor(
+        a: Anahtar,
+        model: String,
+        sorular: List<Pair<String, List<String>>>
+    ): Toplu = withContext(Dispatchers.IO) {
+        val k = bekleAnahtari(a, model)
+        bekleme(a, model).takeIf { it > 0 }?.let { return@withContext Toplu.Bekle(it, "kota bekleniyor") }
+        val govde = when (a.saglayici) {
+            Saglayici.GROQ -> topluGroqGovdesi(model, sorular)
+            Saglayici.GEMINI -> topluGeminiGovdesi(model, sorular)
+        }
+        val yanit = runCatching { gonder(a.saglayici, model, a.deger, govde, TOPLU_SURE_MS) }
+            .getOrElse { Yanit(-1, it.message ?: it.javaClass.simpleName) }
+        if (yanit.onlemMs > 0) synchronized(bekle) { bekle[k] = SystemClock.elapsedRealtime() + yanit.onlemMs }
+        if (yanit.kod == 200) {
+            val metin = runCatching { cevapMetni(a.saglayici, yanit.govde) }.getOrNull()
+                ?: return@withContext Toplu.Hata("boş cevap")
+            return@withContext Toplu.Tamam(topluCoz(metin, sorular.map { it.second.size }))
+        }
+        val ceza = cezaSuresiMs(yanit.kod, yanit.govde)
+        if (ceza > 0) {
+            synchronized(bekle) { bekle[k] = maxOf(bekle[k] ?: 0L, SystemClock.elapsedRealtime() + ceza) }
+            return@withContext Toplu.Bekle(ceza, hataOzeti(yanit.kod, yanit.govde))
+        }
+        Toplu.Hata(hataOzeti(yanit.kod, yanit.govde))
+    }
+
+    private fun gonder(
+        sag: Saglayici, model: String, anahtar: String, govde: String, okumaSuresi: Int
     ): Yanit {
-        val (url, govde) = when (sag) {
-            Saglayici.GROQ -> GROQ_URL to groqGovdesi(model, soru, siklar)
-            Saglayici.GEMINI ->
-                "$GEMINI_URL${URLEncoder.encode(model, "UTF-8")}:generateContent" to
-                    geminiGovdesi(model, soru, siklar)
+        val url = when (sag) {
+            Saglayici.GROQ -> GROQ_URL
+            Saglayici.GEMINI -> "$GEMINI_URL${URLEncoder.encode(model, "UTF-8")}:generateContent"
         }
         val c = URL(url).openConnection() as HttpURLConnection
         try {
             c.requestMethod = "POST"
             c.connectTimeout = BAGLANTI_SURESI_MS
-            c.readTimeout = ISTEK_SURESI_MS
+            c.readTimeout = okumaSuresi
             c.doOutput = true
             c.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             // Groq, Cloudflare arkasında: kimliksiz istemcileri "error code:
@@ -181,6 +244,77 @@ class YapayZeka(private val log: (String) -> Unit) {
     }
 
     companion object {
+        /**
+         * Anahtar/model bazında "şu ana kadar deneme" (elapsedRealtime).
+         * Bütün istemcilerde ortak: oyundaki bot, uzak mod ve toplu kontrol
+         * aynı kotayı kullanıyor, biri 429 aldıysa öteki de beklesin.
+         */
+        private val BEKLE = HashMap<String, Long>()
+
+        /** Toplu istekte bir partideki soru sayısı. */
+        const val TOPLU_PARTI = 25
+        /** Toplu isteğin okuma süresi: 25 soru düşünmek uzun sürebiliyor. */
+        private const val TOPLU_SURE_MS = 90_000
+
+        internal val TOPLU_SISTEM: String =
+            "You are an expert quiz solver for a Turkish trivia game. You get numbered " +
+                "questions, each with lettered options (A-D); exactly one option is correct. " +
+                "Option texts are read from the screen by OCR and may contain small typos. " +
+                "Always pick the most likely option, never skip. Answer with ONLY a JSON " +
+                "object mapping each question number to its letter, e.g. {\"1\":\"B\",\"2\":\"D\"}. " +
+                "No explanation."
+
+        internal fun topluIstem(sorular: List<Pair<String, List<String>>>): String =
+            sorular.withIndex().joinToString("\n") { (i, s) ->
+                "${i + 1}. " + s.first.trim().replace('\n', ' ') + " — " +
+                    s.second.withIndex().joinToString(" | ") { (j, o) ->
+                        "${'A' + j}) ${o.trim().replace('\n', ' ')}"
+                    }
+            }
+
+        internal fun topluGroqGovdesi(model: String, sorular: List<Pair<String, List<String>>>): String =
+            JSONObject().apply {
+                put("model", model)
+                put("messages", JSONArray().apply {
+                    put(JSONObject().put("role", "system").put("content", TOPLU_SISTEM))
+                    put(JSONObject().put("role", "user").put("content", topluIstem(sorular)))
+                })
+                put("temperature", 0)
+                put("max_completion_tokens", 6000)
+                put("reasoning_effort", "low")
+                put("response_format", JSONObject().put("type", "json_object"))
+            }.toString()
+
+        internal fun topluGeminiGovdesi(model: String, sorular: List<Pair<String, List<String>>>): String =
+            JSONObject().apply {
+                put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", TOPLU_SISTEM))))
+                put("contents", JSONArray().put(
+                    JSONObject().put("role", "user")
+                        .put("parts", JSONArray().put(JSONObject().put("text", topluIstem(sorular))))
+                ))
+                put("generationConfig", JSONObject().apply {
+                    put("temperature", 0)
+                    put("responseMimeType", "application/json")
+                    put("thinkingConfig", JSONObject().put("thinkingLevel", "minimal"))
+                })
+            }.toString()
+
+        /**
+         * Toplu cevabı ({"1":"B",...}) şık sıralarına çevirir. [sikSayilari]
+         * soru sırasıyla şık sayıları; anlaşılmayan ya da şık sayısını aşan
+         * cevap null.
+         */
+        internal fun topluCoz(metin: String, sikSayilari: List<Int>): List<Int?> {
+            val j = Regex("\\{.*\\}", RegexOption.DOT_MATCHES_ALL).find(metin)?.value
+                ?.let { runCatching { JSONObject(it) }.getOrNull() }
+                ?: return sikSayilari.map { null }
+            return sikSayilari.mapIndexed { i, n ->
+                val h = j.optString((i + 1).toString()).trim().trimStart('(').firstOrNull()?.uppercaseChar()
+                    ?: return@mapIndexed null
+                (h - 'A').takeIf { it in 0 until n }
+            }
+        }
+
         private const val GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
         private const val GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/"
 

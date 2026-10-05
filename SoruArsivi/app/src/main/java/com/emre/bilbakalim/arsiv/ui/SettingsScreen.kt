@@ -63,7 +63,8 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onPickApp: () -> Unit,
     onOpenDebug: () -> Unit,
-    onOpenEkranAyarla: () -> Unit
+    onOpenEkranAyarla: () -> Unit,
+    onOpenYzKontrol: () -> Unit
 ) {
     val context = LocalContext.current
     val s by vm.settings.collectAsState()
@@ -225,6 +226,9 @@ fun SettingsScreen(
                     if (s.aiWhenUnknown) {
                         YapayZekaGuveni(vm, s.aiGuvenEsigi, s.aiEminDegilseBirak)
                         YapayZekaBasarisi(vm)
+                        OutlinedButton(onClick = onOpenYzKontrol, modifier = Modifier.fillMaxWidth()) {
+                            Text("Arşivi yapay zekâyla kontrol et")
+                        }
                         YapayZekaAyarlari(vm, s.groqKeys, s.geminiKeys)
                     }
 

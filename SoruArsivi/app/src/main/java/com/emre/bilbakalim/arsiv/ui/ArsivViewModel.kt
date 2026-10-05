@@ -25,6 +25,7 @@ import com.emre.bilbakalim.arsiv.data.KategoriListesi
 import com.emre.bilbakalim.arsiv.data.Prefs
 import com.emre.bilbakalim.arsiv.data.QuestionEntity
 import com.emre.bilbakalim.arsiv.data.Repo
+import com.emre.bilbakalim.arsiv.data.TopluKontrol
 import com.emre.bilbakalim.arsiv.data.YapayZekaIstatistik
 import com.emre.bilbakalim.arsiv.util.DisaAktarimSirasi
 import com.emre.bilbakalim.arsiv.util.Exporters
@@ -199,6 +200,18 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setGroqKeys(v: List<String>) = prefs.setGroqKeys(v)
     fun setAiGuvenEsigi(v: Int) = prefs.setAiGuvenEsigi(v)
     val aiIstatistik = YapayZekaIstatistik.get(app).durum
+
+    // --- Toplu yapay zekâ kontrolü ------------------------------------------
+    private val topluKontrol = TopluKontrol.get(app)
+    val topluDurum = topluKontrol.durum
+    val topluBekleyenler = topluKontrol.bekleyenler
+    fun topluBaslat(kategori: String?, etiketsiz: Boolean, cevap: Int) =
+        topluKontrol.baslat(kategori, etiketsiz, cevap)
+    fun topluDurdur() = topluKontrol.durdur()
+    fun topluSec(b: TopluKontrol.Bekleyen, index: Int?) = topluKontrol.sec(b, index)
+    fun topluListeyiTemizle() = topluKontrol.listeyiTemizle()
+    suspend fun kontrolSayisi(kategori: String?, etiketsiz: Boolean, cevap: Int): Int =
+        withContext(Dispatchers.IO) { repo.kontrolAdaylari(kategori, etiketsiz, cevap).count { it.options.size >= 2 } }
     fun aiIstatistikSifirla() = YapayZekaIstatistik.get(getApplication()).sifirla()
     fun setAiEminDegilseBirak(v: Boolean) = prefs.setAiEminDegilseBirak(v)
     fun setGeminiKeys(v: List<String>) = prefs.setGeminiKeys(v)
@@ -222,9 +235,9 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
                 // cezası denemeyi atlatmasın.
                 val tek = listOf(a.deger)
                 val r = if (a.saglayici == YapayZeka.Saglayici.GROQ) {
-                    YapayZeka {}.sor(soru, siklar, tek, emptyList())
+                    YapayZeka({}, cezayiYoksay = true).sor(soru, siklar, tek, emptyList())
                 } else {
-                    YapayZeka {}.sor(soru, siklar, emptyList(), tek)
+                    YapayZeka({}, cezayiYoksay = true).sor(soru, siklar, emptyList(), tek)
                 }
                 if (r.index != null) {
                     "${a.ad}: çalışıyor ✓ (${r.model}, ${r.sureMs} ms) → " +

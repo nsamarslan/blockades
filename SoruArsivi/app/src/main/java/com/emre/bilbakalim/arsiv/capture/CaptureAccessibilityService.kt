@@ -78,7 +78,7 @@ class CaptureAccessibilityService : AccessibilityService() {
     private lateinit var repo: Repo
     private lateinit var auto: AutoPlayer
     /** Bilinmeyen soruyu Groq / Gemini'ye soran istemci (bkz. [YapayZeka]). */
-    private val yapayZeka = YapayZeka { line -> log(line) }
+    private val yapayZeka = YapayZeka({ line -> log(line) })
     /** Son kullanılan anahtarlar: değişince eski kota cezaları unutuluyor. */
     @Volatile private var sonAnahtarlar: Pair<List<String>, List<String>>? = null
     /** "Oyun uzakta" modu (bkz. [UzakIzleyici]); açıkken yerel yakalama durur. */

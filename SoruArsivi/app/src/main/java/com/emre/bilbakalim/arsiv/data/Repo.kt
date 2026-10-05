@@ -641,6 +641,26 @@ class Repo private constructor(context: Context) {
         adaylariUnut()
     }
     suspend fun byId(id: Long) = dao.byId(id)
+
+    /** Toplu yapay zekâ kontrolünün adayları (bkz. [QuestionDao.kontrolAdaylari]). */
+    suspend fun kontrolAdaylari(kategori: String?, etiketsiz: Boolean, cevap: Int) =
+        dao.kontrolAdaylari(kategori, if (etiketsiz) 1 else 0, cevap)
+
+    /**
+     * İki yapay zekânın birlikte verdiği cevabı yazar. Elle düzeltilmiş
+     * kayda dokunulmuyor ([QuestionDao.setCorrect]); oyunda renkten görülen
+     * cevap da sonraki karşılaşmada bunun üstüne yazılır (kanıt gücü 0).
+     */
+    suspend fun yapayZekaCevabiYaz(id: Long, index: Int) {
+        dao.setCorrect(id, index, YAPAY_ZEKA)
+    }
+
+    /** Toplu kontrolde senin seçtiğin cevap: elle düzeltme sayılır. */
+    suspend fun elleCevapYaz(id: Long, index: Int) {
+        val q = dao.byId(id) ?: return
+        dao.update(q.copy(correctIndex = index, answerSource = ELLE_SECILDI, edited = true))
+        adaylariUnut()
+    }
     suspend fun sonEkranGoruntusu(): String? = dao.sonEkranGoruntusu()
     suspend fun allForExport() = dao.allForExport()
 
@@ -851,6 +871,8 @@ class Repo private constructor(context: Context) {
         /** [SaveResult.Duplicate.yol] değerleri. */
         /** Cevabı detay ekranında elle seçilmiş kaydın [QuestionEntity.answerSource]'u. */
         const val ELLE_SECILDI = "elle"
+        /** İki yapay zekânın birlikte verdiği cevap (toplu kontrol). */
+        const val YAPAY_ZEKA = "yapay zekâ"
         const val BENZERLIK = "benzerlik"
         const val PARMAK_IZI = "parmak izi"
 

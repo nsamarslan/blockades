@@ -156,7 +156,7 @@ object Importers {
 
         val gelenCevap = TurkishText.matchIndex(options, incoming.correctText)
         val icAktarimDuzeltmesi = existing.correctIndex != null && !existing.edited &&
-            existing.answerSource == ANSWER_SOURCE && gelenCevap != null
+            existing.answerSource in ZAYIF_KAYNAKLAR && gelenCevap != null
         val correct = if (icAktarimDuzeltmesi) gelenCevap else existing.correctIndex ?: gelenCevap
         // Kaynak yalnızca cevabın kendisi yedekten geldiyse değişir; kayıtta
         // zaten bir cevap varsa nereden geldiği de olduğu gibi kalmalı.
@@ -190,6 +190,12 @@ object Importers {
 
     /** Doğru cevabı yedekten aldığımızı gösterir. */
     const val ANSWER_SOURCE = "içe aktarım"
+
+    /**
+     * Oyunda hiç gözlenmemiş cevap kaynakları: yeni bir dosya bunları
+     * düzeltebilir (bkz. [merge]).
+     */
+    private val ZAYIF_KAYNAKLAR = setOf(ANSWER_SOURCE, "yapay zekâ")
 
     // --- küçük JSON yardımcıları -------------------------------------------
 
