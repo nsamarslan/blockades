@@ -120,6 +120,21 @@ class Prefs private constructor(context: Context) {
          */
         val autoRandomWhenUnknown: Boolean = true,
         /**
+         * Cevabı bilinmeyen soruyu yapay zekâya sor (bkz. `capture/YapayZeka`).
+         *
+         * Açıkken bot bilmediği soruda rastgele basmak yerine Groq'a ya da
+         * Gemini'ye sorup onların seçtiği şıkka basar. İkisi de cevap
+         * veremezse [autoRandomWhenUnknown]'a göre rastgele basar ya da
+         * kararı sana bırakır.
+         */
+        val aiWhenUnknown: Boolean = false,
+        /** Groq API anahtarı (groq.com, `gsk_` ile başlar). */
+        val groqKey: String = "",
+        /** Gemini API anahtarı (Google AI Studio). */
+        val geminiKey: String = "",
+        /** Önce Gemini'ye sor; varsayılan önce Groq (daha hızlı). */
+        val aiOnceGemini: Boolean = false,
+        /**
          * Cevabı arşivde bulunamayan soruda bildirim sesi çal.
          *
          * Manuel modda da çalışır: ekrana bakmadan "bu soru bizde yok"
@@ -191,6 +206,10 @@ class Prefs private constructor(context: Context) {
         autoRefillLives = sp.getBoolean(K_AUTO_REFILL, true),
         autoUseKnownAnswer = sp.getBoolean(K_AUTO_KNOWN, true),
         autoRandomWhenUnknown = sp.getBoolean(K_AUTO_RANDOM_UNKNOWN, true),
+        aiWhenUnknown = sp.getBoolean(K_AI_UNKNOWN, false),
+        groqKey = sp.getString(K_GROQ_KEY, "") ?: "",
+        geminiKey = sp.getString(K_GEMINI_KEY, "") ?: "",
+        aiOnceGemini = sp.getBoolean(K_AI_GEMINI_FIRST, false),
         unknownChime = sp.getBoolean(K_UNKNOWN_CHIME, false),
         onboarded = sp.getBoolean(K_ONBOARDED, false),
         uzakMod = sp.getBoolean(K_UZAK_MOD, false),
@@ -224,6 +243,10 @@ class Prefs private constructor(context: Context) {
     fun setAutoRefillLives(v: Boolean) = commit { putBoolean(K_AUTO_REFILL, v) }
     fun setAutoUseKnownAnswer(v: Boolean) = commit { putBoolean(K_AUTO_KNOWN, v) }
     fun setAutoRandomWhenUnknown(v: Boolean) = commit { putBoolean(K_AUTO_RANDOM_UNKNOWN, v) }
+    fun setAiWhenUnknown(v: Boolean) = commit { putBoolean(K_AI_UNKNOWN, v) }
+    fun setGroqKey(v: String) = commit { putString(K_GROQ_KEY, v.trim()) }
+    fun setGeminiKey(v: String) = commit { putString(K_GEMINI_KEY, v.trim()) }
+    fun setAiOnceGemini(v: Boolean) = commit { putBoolean(K_AI_GEMINI_FIRST, v) }
     fun setUnknownChime(v: Boolean) = commit { putBoolean(K_UNKNOWN_CHIME, v) }
     fun setOnboarded(v: Boolean) = commit { putBoolean(K_ONBOARDED, v) }
     fun setUzakMod(v: Boolean) = commit { putBoolean(K_UZAK_MOD, v) }
@@ -332,6 +355,10 @@ class Prefs private constructor(context: Context) {
         private const val K_AUTO_REFILL = "otomatik_can_doldur"
         private const val K_AUTO_KNOWN = "otomatik_bilinen_cevap"
         private const val K_AUTO_RANDOM_UNKNOWN = "otomatik_bilinmeyende_rastgele"
+        private const val K_AI_UNKNOWN = "otomatik_bilinmeyende_yapay_zeka"
+        private const val K_GROQ_KEY = "groq_anahtari"
+        private const val K_GEMINI_KEY = "gemini_anahtari"
+        private const val K_AI_GEMINI_FIRST = "yapay_zeka_once_gemini"
         private const val K_UNKNOWN_CHIME = "bilinmeyen_uyari_sesi"
         private const val K_DEBUG = "teshis_dokumu"
         private const val K_ONBOARDED = "tanitim_goruldu"

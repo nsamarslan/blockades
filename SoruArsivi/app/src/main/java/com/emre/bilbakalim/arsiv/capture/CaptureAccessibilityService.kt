@@ -29,15 +29,18 @@ import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Uygulamanın motoru.
@@ -73,6 +76,10 @@ class CaptureAccessibilityService : AccessibilityService() {
     private lateinit var prefs: Prefs
     private lateinit var repo: Repo
     private lateinit var auto: AutoPlayer
+    /** Bilinmeyen soruyu Groq / Gemini'ye soran istemci (bkz. [YapayZeka]). */
+    private val yapayZeka = YapayZeka { line -> log(line) }
+    /** Son kullanılan anahtarlar: değişince eski kota cezaları unutuluyor. */
+    @Volatile private var sonAnahtarlar: Pair<String, String>? = null
     /** "Oyun uzakta" modu (bkz. [UzakIzleyici]); açıkken yerel yakalama durur. */
     private var uzak: UzakIzleyici? = null
 
@@ -187,6 +194,13 @@ class CaptureAccessibilityService : AccessibilityService() {
         /** Kimse basmadı, süre doldu. */
         val timedOut: Boolean
     )
+
+    /**
+     * Yapay zekânın tahmini. [siklar] sorulduğu andaki şıklar, [index]
+     * onların içindeki sıra; şıklar sonradan karıştıysa metinden bulunuyor
+     * (bkz. [aiSirasi]).
+     */
+    private class AiTahmin(val siklar: List<String>, val index: Int, val kaynak: String)
 
     /**
      * Cevabı açılmayı bekleyen soru.
@@ -342,7 +356,13 @@ class CaptureAccessibilityService : AccessibilityService() {
          * arşive yazılıyordu. Bu yüzden bekleme süresi sorunun okunduğu andan
          * değil, kutuların çizildiği andan itibaren sayılıyor.
          */
-        var brightSince: Long = 0L
+        var brightSince: Long = 0L,
+        /**
+         * Yapay zekâya sorulan soru (bkz. [yapayZekaBaslat]). Şıklar
+         * karışınca sıfırlanmıyor: cevap şık metniyle tutulduğu için
+         * yeni sıradaki yeri bulunuyor ve kota boşuna harcanmıyor.
+         */
+        var aiIs: Deferred<AiTahmin?>? = null
     )
     @Volatile private var pendingAnswer: PendingAnswer? = null
     @Volatile private var burstJob: Job? = null
@@ -1428,6 +1448,9 @@ class CaptureAccessibilityService : AccessibilityService() {
             return
         }
         if (waiting.taps >= AUTO_MAX_TAPS) { otoNeden = "dokunus_bitti"; return }
+        // Yapay zekâya şimdiden soruluyor: cevap, dokunuştan önceki
+        // beklemeyle aynı anda gelsin, dokunuşu geciktirmesin.
+        if (waiting.taps == 0) yapayZekaBaslat(waiting, s)
         if (autoJob?.isActive == true) { otoNeden = "is_suruyor"; return }
 
         // İlk dokunuş şıklar yerine otursun diye bekliyor. Sonrakiler yeniden
@@ -1509,10 +1532,21 @@ class CaptureAccessibilityService : AccessibilityService() {
             val known = (lookup as? Repo.KnownAnswer.OnScreen)?.index
             val dbBitti = SystemClock.uptimeMillis()
 
+            // Cevabı bilinmiyorsa rastgele basmadan önce yapay zekâya
+            // soruyoruz (ayar açıksa). Soru çoğunlukla bekleme sırasında
+            // sorulmuş ve cevabı gelmiş oluyor.
+            val ai = if (known == null && cur.aiWhenUnknown) {
+                (waiting.aiIs ?: yapayZekaBaslat(waiting, cur))
+                    ?.let { d -> withTimeoutOrNull(AI_BEKLEME_MS) { runCatching { d.await() }.getOrNull() } }
+            } else null
+            if (pendingAnswer !== waiting) return@launch
+            val aiIndex = ai?.let { aiSirasi(it, waiting.options) }
+                ?.takeIf { it in 0 until waiting.rects.size }
+
             // Cevabı bilinmiyorsa ve kullanıcı "kararı bana bırak" dediyse
             // dokunmuyoruz. Soru ekranda kalır, sen cevaplarsın; doğrusu yine
             // renk okumasıyla arşive yazılır.
-            if (lookup !is Repo.KnownAnswer.OnScreen && !cur.autoRandomWhenUnknown) {
+            if (lookup !is Repo.KnownAnswer.OnScreen && aiIndex == null && !cur.autoRandomWhenUnknown) {
                 if (!waiting.skippedUnknown) {
                     waiting.skippedUnknown = true
                     log("otomatik #${waiting.id}: cevap bilinmiyor, karar sende (ayar)")
@@ -1522,7 +1556,7 @@ class CaptureAccessibilityService : AccessibilityService() {
 
             val retry = waiting.taps > 0
             val index = waiting.chosenIndex
-                ?: auto.pickOption(waiting.rects.size, known).also { waiting.chosenIndex = it }
+                ?: auto.pickOption(waiting.rects.size, known ?: aiIndex).also { waiting.chosenIndex = it }
             // Arşiv bir şık gösterdiği hâlde ona basmıyorsak sebebi
             // görünsün; yoksa "bilinen cevap" yazıp başka yere basmış
             // oluyorduk.
@@ -1573,11 +1607,13 @@ class CaptureAccessibilityService : AccessibilityService() {
             val jestBitti = SystemClock.uptimeMillis()
             // Neden rastgele seçtiğimizi de yazıyoruz: "yeni soru" ile
             // "arşivde cevap var ama bulunamadı" bambaşka iki durum.
-            val neden = when (lookup) {
-                is Repo.KnownAnswer.OnScreen -> if (lookup.imzayla) "bilinen cevap (piksel imzasıyla)" else "bilinen cevap"
-                is Repo.KnownAnswer.Unmatched -> "rastgele (eşleşmedi)"
-                Repo.KnownAnswer.None ->
-                    if (cur.autoUseKnownAnswer) "rastgele (cevabı bilinmiyor)" else "rastgele"
+            val neden = when {
+                lookup is Repo.KnownAnswer.OnScreen ->
+                    if (lookup.imzayla) "bilinen cevap (piksel imzasıyla)" else "bilinen cevap"
+                aiIndex != null && index == aiIndex -> "yapay zekâ (${ai?.kaynak})"
+                lookup is Repo.KnownAnswer.Unmatched -> "rastgele (eşleşmedi)"
+                cur.autoUseKnownAnswer -> "rastgele (cevabı bilinmiyor)"
+                else -> "rastgele"
             }
             val gecikme = SystemClock.uptimeMillis() - waiting.bornAt
             log(
@@ -1595,6 +1631,62 @@ class CaptureAccessibilityService : AccessibilityService() {
             // hemen başlatıyoruz ki cevabı kaçırmayalım.
             if (cur.detectAnswer) startVerdictBurst(waiting, screenW, screenH)
         }
+    }
+
+    /**
+     * Soruyu yapay zekâya sormaya başlar; zaten sorulduysa ya da sorulmayacaksa
+     * mevcut işi (ya da null) döndürür.
+     *
+     * Cevabı arşivde olan soruda kota harcanmıyor: önce arşive bakılıyor.
+     */
+    private fun yapayZekaBaslat(waiting: PendingAnswer, s: Prefs.Settings): Deferred<AiTahmin?>? {
+        waiting.aiIs?.let { return it }
+        if (!s.aiWhenUnknown) return null
+        if (s.groqKey.isBlank() && s.geminiKey.isBlank()) return null
+        if (waiting.options.size < 2 || waiting.rects.size != waiting.options.size) return null
+        val anahtarlar = s.groqKey to s.geminiKey
+        if (sonAnahtarlar != anahtarlar) {
+            sonAnahtarlar = anahtarlar
+            yapayZeka.sifirla()
+        }
+        val soru = waiting.question
+        val siklar = waiting.options.toList()
+        val imzalar = waiting.imzalar
+        val is_ = scope.async {
+            if (s.autoUseKnownAnswer && !waiting.cevapKullanilmaz) {
+                val l = runCatching { repo.knownAnswerOnScreen(waiting.id, siklar, imzalar) }.getOrNull()
+                if (l is Repo.KnownAnswer.OnScreen) return@async null
+            }
+            val r = yapayZeka.sor(soru, siklar, s.groqKey, s.geminiKey, s.aiOnceGemini)
+            val once = if (r.hatalar.isEmpty()) "" else " · önce: " + r.hatalar.joinToString("; ")
+            val i = r.index
+            if (i == null) {
+                log("YAPAY ZEKÂ #${waiting.id}: cevap alınamadı (${r.sureMs} ms)$once")
+                return@async null
+            }
+            val kaynak = r.saglayici?.ad ?: "?"
+            log(
+                "YAPAY ZEKÂ #${waiting.id} → ${'A' + i} «${siklar[i].take(28)}» · " +
+                    "$kaynak ${r.model} · ${r.sureMs} ms$once"
+            )
+            AiTahmin(siklar, i, kaynak)
+        }
+        waiting.aiIs = is_
+        return is_
+    }
+
+    /**
+     * Yapay zekânın seçtiği şıkkın şu anki ekrandaki sırası. Şıklar
+     * sorulduğundan beri karıştıysa metinden bulunuyor; metin tek bir şıkka
+     * denk gelmiyorsa (sembol şıklar, OCR farkı) null.
+     */
+    private fun aiSirasi(t: AiTahmin, ekrandaki: List<String>): Int? {
+        if (ekrandaki == t.siklar) return t.index
+        val hedef = TurkishText.normalizeKey(t.siklar[t.index])
+        if (hedef.isEmpty()) return null
+        return ekrandaki.indices
+            .filter { TurkishText.normalizeKey(ekrandaki[it]) == hedef }
+            .singleOrNull()
     }
 
     /**
@@ -2953,6 +3045,12 @@ class CaptureAccessibilityService : AccessibilityService() {
         private const val AUTO_MAX_TAPS = 3
         /** Dokunuşa yanıt gelmezse bu kadar sonra yeniden denenir. */
         private const val AUTO_RETAP_MS = 2500L
+        /**
+         * Yapay zekânın cevabı en fazla bu kadar beklenir; gelmezse
+         * rastgeleye (ya da ayara göre "karar sende"ye) düşülür. İstemcinin
+         * kendi toplam bütçesinden (9 sn) biraz uzun.
+         */
+        private const val AI_BEKLEME_MS = 10_000L
         /**
          * Dokunuştan sonra kaç kare renk değişimi görmezsek jestin yutulduğuna
          * hükmedip renk turunu erken bitiriyoruz. 100 ms'lik karelerde ~1 sn.

@@ -18,6 +18,7 @@ import com.emre.bilbakalim.arsiv.capture.CaptureAccessibilityService
 import com.emre.bilbakalim.arsiv.capture.OptionBoxFinder
 import com.emre.bilbakalim.arsiv.capture.ProjectionPermissionActivity
 import com.emre.bilbakalim.arsiv.capture.ProjectionService
+import com.emre.bilbakalim.arsiv.capture.YapayZeka
 import com.emre.bilbakalim.arsiv.data.CategoryCount
 import com.emre.bilbakalim.arsiv.data.EkranBolgesi
 import com.emre.bilbakalim.arsiv.data.KategoriListesi
@@ -193,6 +194,43 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setAutoUseKnownAnswer(v: Boolean) = prefs.setAutoUseKnownAnswer(v)
     fun setAutoRandomWhenUnknown(v: Boolean) = prefs.setAutoRandomWhenUnknown(v)
     fun setUnknownChime(v: Boolean) = prefs.setUnknownChime(v)
+    fun setAiWhenUnknown(v: Boolean) = prefs.setAiWhenUnknown(v)
+    fun setGroqKey(v: String) = prefs.setGroqKey(v)
+    fun setGeminiKey(v: String) = prefs.setGeminiKey(v)
+    fun setAiOnceGemini(v: Boolean) = prefs.setAiOnceGemini(v)
+
+    /**
+     * Girilen anahtarları örnek bir soruyla tek tek dener; her sağlayıcı
+     * için bir satır döndürür. Ayar ekranındaki "Anahtarları dene" düğmesi.
+     */
+    fun yapayZekaDene(onResult: (String) -> Unit) {
+        val s = prefs.state.value
+        viewModelScope.launch {
+            val soru = "Türkiye'nin başkenti neresidir?"
+            val siklar = listOf("İstanbul", "İzmir", "Ankara", "Bursa")
+            val satirlar = ArrayList<String>()
+            for ((ad, groq, gemini) in listOf(
+                Triple("Groq", s.groqKey, ""),
+                Triple("Gemini", "", s.geminiKey)
+            )) {
+                if (groq.isBlank() && gemini.isBlank()) {
+                    satirlar += "$ad: anahtar girilmedi"
+                    continue
+                }
+                // Her denemede taze istemci: önceki hataların cezası
+                // denemeyi atlatmasın.
+                val r = YapayZeka {}.sor(soru, siklar, groq, gemini, onceGemini = false)
+                satirlar += if (r.index != null) {
+                    "$ad: çalışıyor ✓ (${r.model}, ${r.sureMs} ms) → " +
+                        "${'A' + r.index}) ${siklar[r.index]}" +
+                        (if (r.hatalar.isNotEmpty()) "\n   önce: ${r.hatalar.joinToString("; ")}" else "")
+                } else {
+                    "$ad: çalışmıyor ✗ ${r.hatalar.joinToString("; ")}"
+                }
+            }
+            onResult(satirlar.joinToString("\n\n"))
+        }
+    }
     fun setOnboarded(v: Boolean) = prefs.setOnboarded(v)
     fun setRegions(qt: Float, qb: Float, ot: Float, ob: Float) = prefs.setRegions(qt, qb, ot, ob)
     fun resetRegions() = prefs.resetRegions()

@@ -19,7 +19,10 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +42,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -158,6 +164,22 @@ fun SettingsScreen(
                                 "yazılır ama yanlış bir tahminle tur harcanmaz.",
                             s.autoRandomWhenUnknown
                         ) { vm.setAutoRandomWhenUnknown(it) }
+
+                        SettingSwitch(
+                            "Bilinmeyen soruyu yapay zekâya sor",
+                            "Cevabı arşivde olmayan soruda rastgele basmak yerine soru " +
+                                "ve şıklar Groq'a ya da Gemini'ye sorulur, onların seçtiği " +
+                                "şıkka basılır. Birinin kotası dolarsa (token hakkı kalmazsa) " +
+                                "ya da cevap veremezse ötekine sorulur. İkisi de cevap " +
+                                "veremezse yukarıdaki ayara göre rastgele basılır ya da " +
+                                "karar sana bırakılır. Doğru cevap yine oyunun tepkisinden " +
+                                "öğrenilip arşive yazılır.",
+                            s.aiWhenUnknown
+                        ) { vm.setAiWhenUnknown(it) }
+
+                        if (s.aiWhenUnknown) {
+                            YapayZekaAyarlari(vm, s.groqKey, s.geminiKey, s.aiOnceGemini)
+                        }
 
                         Spacer(Modifier.height(8.dp))
                         Text(
@@ -476,6 +498,77 @@ fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { confirmWipe = false }) { Text("Vazgeç") }
             }
+        )
+    }
+}
+
+/** Groq ve Gemini anahtarları, sıra ve "dene" düğmesi. */
+@Composable
+private fun YapayZekaAyarlari(
+    vm: ArsivViewModel,
+    groqKey: String,
+    geminiKey: String,
+    onceGemini: Boolean
+) {
+    var groq by remember(groqKey) { mutableStateOf(groqKey) }
+    var gemini by remember(geminiKey) { mutableStateOf(geminiKey) }
+    var goster by remember { mutableStateOf(false) }
+    var deneniyor by remember { mutableStateOf(false) }
+    var sonuc by remember { mutableStateOf<String?>(null) }
+    val gizle = if (goster) VisualTransformation.None else PasswordVisualTransformation()
+
+    Column(
+        Modifier.fillMaxWidth().padding(start = 8.dp, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        OutlinedTextField(
+            value = groq,
+            onValueChange = { groq = it; vm.setGroqKey(it) },
+            label = { Text("Groq anahtarı (gsk_…)") },
+            singleLine = true,
+            visualTransformation = gizle,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = gemini,
+            onValueChange = { gemini = it; vm.setGeminiKey(it) },
+            label = { Text("Gemini anahtarı") },
+            singleLine = true,
+            visualTransformation = gizle,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = goster, onCheckedChange = { goster = it })
+            Text("Anahtarları göster", style = MaterialTheme.typography.bodySmall)
+        }
+        SettingSwitch(
+            "Önce Gemini'ye sor",
+            "Kapalıyken önce Groq'a sorulur (daha hızlı, ~0,5 sn); cevap " +
+                "alınamazsa Gemini'ye geçilir. Açıkken tersi.",
+            onceGemini
+        ) { vm.setAiOnceGemini(it) }
+        OutlinedButton(
+            onClick = {
+                deneniyor = true
+                sonuc = null
+                vm.yapayZekaDene { sonuc = it; deneniyor = false }
+            },
+            enabled = !deneniyor && (groq.isNotBlank() || gemini.isNotBlank()),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(if (deneniyor) "Deneniyor…" else "Anahtarları dene")
+        }
+        sonuc?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall)
+        }
+        Text(
+            "Anahtarlar yalnızca bu telefonda saklanır ve yalnızca soru ile " +
+                "şıkları göndermek için kullanılır. Ücretsiz anahtar: " +
+                "console.groq.com ve aistudio.google.com.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
