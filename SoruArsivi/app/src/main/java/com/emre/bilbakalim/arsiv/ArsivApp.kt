@@ -19,12 +19,24 @@ class ArsivApp : Application() {
                 setShowBadge(false)
                 enableVibration(false)
             }
-            getSystemService(NotificationManager::class.java)
-                ?.createNotificationChannel(channel)
+            // Sesli ve öne çıkan ayrı kanal: "hızlı yakalama kapandı" gibi
+            // kullanıcının hemen görmesi gereken uyarılar.
+            val uyari = NotificationChannel(
+                UYARI_CHANNEL_ID,
+                "Uyarılar",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Ekran yakalama kapandığında haber verir"
+            }
+            getSystemService(NotificationManager::class.java)?.apply {
+                createNotificationChannel(channel)
+                createNotificationChannel(uyari)
+            }
         }
     }
 
     companion object {
         const val CHANNEL_ID = "yakalama_durumu"
+        const val UYARI_CHANNEL_ID = "uyarilar"
     }
 }

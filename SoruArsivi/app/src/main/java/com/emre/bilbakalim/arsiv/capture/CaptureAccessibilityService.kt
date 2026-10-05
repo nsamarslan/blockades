@@ -405,6 +405,25 @@ class CaptureAccessibilityService : AccessibilityService() {
             log = { log(it) }
         )
 
+        // Hızlı yakalamanın kapanması günlükte görünsün: kapandığında
+        // sorular yavaş yoldan okunmaya devam ediyor ama cevaplar kaçıyor;
+        // "neden cevap kaydetmedi" sorusunun izi buradan sürülüyor.
+        scope.launch {
+            var acikti = ProjectionService.running.value
+            ProjectionService.running.collect { acik ->
+                if (acikti && !acik) {
+                    log(
+                        "HIZLI YAKALAMA KAPANDI: " +
+                            (ProjectionService.sonDurma ?: "uygulamadan kapatıldı") +
+                            " · cevaplar artık kaydedilmeyebilir"
+                    )
+                } else if (!acikti && acik) {
+                    log("hızlı yakalama açıldı")
+                }
+                acikti = acik
+            }
+        }
+
         applyTargets(prefs.state.value.targetPackages)
         if (prefs.state.value.uzakMod) uzak?.baslat()
         else if (prefs.state.value.autoPlay) ensurePolling()
@@ -1367,8 +1386,11 @@ class CaptureAccessibilityService : AccessibilityService() {
                     repo.knownAnswerOnScreen(savedId, p.options, imzalar)
                 }.getOrDefault(Repo.KnownAnswer.None)
                 if (bilinen !is Repo.KnownAnswer.OnScreen) {
-                    log("BİLİNMİYOR #$savedId: cevap arşivde bulunamadı")
-                    if (s.unknownChime) Chime.play(this)
+                    // Ses, yapay zekâya sorulacak sorularda da çalıyor: soru
+                    // yapay zekâya tam bu anda gidiyor.
+                    val ses = if (s.unknownChime) Chime.play(this)?.let { " · SES ÇALINAMADI: $it" } ?: " · uyarı sesi"
+                        else ""
+                    log("BİLİNMİYOR #$savedId: cevap arşivde bulunamadı$ses")
                 }
                 log("SORU #$savedId «${p.question.take(70)}»")
                 log(okumaOzeti(savedId, yol, kutular.size))
@@ -1887,7 +1909,7 @@ class CaptureAccessibilityService : AccessibilityService() {
         // Çift ötüş: bu "cevabını bilmiyorum" değil, "soruyu okuyamıyorum".
         // İkisi aynı sesi çaldığı için arşivde kayıtlı bir soruda bile
         // "bilmiyorum" diyor sanılıyordu.
-        if (s.unknownChime) Chime.playTwice(this)
+        if (s.unknownChime) Chime.playTwice(this)?.let { log("SES ÇALINAMADI: $it") }
     }
 
     /** Kapıda geri çevrilen okumayı, aynı karede OCR'sız yeniden kullanılmak üzere saklar. */

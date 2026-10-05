@@ -146,6 +146,21 @@ class ImportersTest {
     }
 
     @Test
+    fun `ice aktarimla gelmis cevap yeni dosyayla duzeltilir`() {
+        // Cihazdaki "İzmir" de bir dosyadan gelmişti; düzeltilmiş dosya
+        // "Ankara" diyor. Oyunda gözlenmemiş cevap düzeltilebilmeli.
+        val yerel = kayit(correctIndex = 2).copy(answerSource = Importers.ANSWER_SOURCE)
+        val sonuc = Importers.merge(yerel, Importers.parse(yedek)[0])
+        assertEquals("Ankara", sonuc.correctText)
+
+        // Elle düzeltilmişse ya da oyunda renkten görülmüşse dokunulmaz.
+        val elle = Importers.merge(yerel.copy(edited = true), Importers.parse(yedek)[0])
+        assertEquals("İzmir", elle.correctText)
+        val renk = Importers.merge(yerel.copy(answerSource = "renk"), Importers.parse(yedek)[0])
+        assertEquals("İzmir", renk.correctText)
+    }
+
+    @Test
     fun `sayaclarda buyuk olan alinir ve iki kez almak sismez`() {
         val gelen = Importers.parse(yedek)[0]   // 4 / 3 / 2
         val yerel = kayit(seen = 2, answered = 5, correct = 1)

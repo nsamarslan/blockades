@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Yalnızca "bilinmeyen soruyu yapay zekâya sor" için (Groq / Gemini). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Hızlı yakalama açıkken ekran kapanıp kilitlenmesin (kilit yansıtmayı bitiriyor). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Ayarlardaki "pil kısıtlamasını kaldır" düğmesi. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 

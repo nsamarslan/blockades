@@ -46,6 +46,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.emre.bilbakalim.arsiv.data.Repo
@@ -218,8 +224,10 @@ fun SettingsScreen(
                     // bilgisini veriyor.
                     SettingSwitch(
                         "Cevabı bilinmeyen soruda uyarı sesi",
-                        "Telefonun bildirim sesi çalar; manuel modda da çalışır, " +
-                            "telefon sessizdeyse duyulmaz. İki ayrı uyarı var:\n" +
+                        "Telefonun bildirim sesi medya ses seviyesinden çalar (oyunu " +
+                            "duyuyorsan bunu da duyarsın; oyun modları ve Rahatsız Etmeyin " +
+                            "susturamaz). Manuel modda da çalışır; yapay zekâya sorulan " +
+                            "sorularda da çalar. İki ayrı uyarı var:\n" +
                             "• Tek ötüş — soru okundu ama cevabı arşivde yok " +
                             "(ya da kayıttaki cevap ekrandaki şıklara uymuyor).\n" +
                             "• Çift ötüş — ekranda soru var ama şıklar okunamıyor. " +
@@ -229,6 +237,8 @@ fun SettingsScreen(
                     ) { vm.setUnknownChime(it) }
                 }
             }
+
+            item { KesintisizCalisma() }
 
             item {
                 SectionCard("Okuma yöntemi") {
@@ -503,6 +513,62 @@ fun SettingsScreen(
         )
     }
 }
+
+/**
+ * Pil kısıtlaması: telefon uygulamayı arka planda uyuttuğunda ekran
+ * yakalama kapanıyor ve cevaplar kaydedilmiyordu. Durum ekrana her
+ * dönüldüğünde yeniden okunuyor (ayardan geri gelince güncellensin).
+ */
+@Composable
+private fun KesintisizCalisma() {
+    val context = LocalContext.current
+    var serbest by remember { mutableStateOf(pilSerbest(context)) }
+    LifecycleResumeEffect(Unit) {
+        serbest = pilSerbest(context)
+        onPauseOrDispose { }
+    }
+    SectionCard("Kesintisiz çalışma") {
+        Text(
+            if (serbest) "Pil kısıtlaması kaldırılmış ✓"
+            else "Pil kısıtlaması açık: telefon uygulamayı arka planda durdurabilir.",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
+        Text(
+            "Hızlı yakalama kapanırsa sorular yine kaydedilir ama cevaplar " +
+                "kaçar. Kapanmasının üç sebebi var: telefonun pil tasarrufu " +
+                "uygulamayı durdurur, ekran kilitlenir ya da bildirimden " +
+                "\"paylaşımı durdur\" denir. Hızlı yakalama açıkken ekran artık " +
+                "kendiliğinden kapanmıyor; yine de kapanırsa sesli bir bildirim " +
+                "gelir, dokunup yeniden açabilirsin. Sebebi teşhis günlüğünde " +
+                "\"HIZLI YAKALAMA KAPANDI\" satırında yazar.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (!serbest) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                .setData(Uri.parse("package:${context.packageName}"))
+                        )
+                    }.onFailure {
+                        runCatching {
+                            context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Pil kısıtlamasını kaldır") }
+        }
+    }
+}
+
+private fun pilSerbest(context: Context): Boolean =
+    context.getSystemService(PowerManager::class.java)
+        ?.isIgnoringBatteryOptimizations(context.packageName) == true
 
 /** Groq ve Gemini anahtarları (her birinden birden çok) ve "dene" düğmesi. */
 @Composable

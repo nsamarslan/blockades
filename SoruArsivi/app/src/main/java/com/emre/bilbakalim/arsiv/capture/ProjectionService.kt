@@ -1,6 +1,7 @@
 package com.emre.bilbakalim.arsiv.capture
 
 import android.app.Notification
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -17,10 +18,12 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import com.emre.bilbakalim.arsiv.ArsivApp
 import com.emre.bilbakalim.arsiv.R
 
@@ -46,12 +49,59 @@ class ProjectionService : Service() {
     /** Üst üste kaç kez kare alınamadı (hata fırlatarak). */
     @Volatile private var acquireFails = 0
 
+    /**
+     * Ekran açık kalsın diye tutulan kilit. Ekran zaman aşımıyla kararıp
+     * kilitlenince sistem ekran yansıtmayı kendisi bitiriyor (yeni Android
+     * sürümlerinde gizlilik gereği); otomatik modda kimse ekrana
+     * dokunmadığı için bu birkaç dakikada bir oluyordu ve uygulama sessizce
+     * yavaş yola düşüp cevapları kaçırıyordu.
+     */
+    private var ekranKilidi: PowerManager.WakeLock? = null
+
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             Log.i(TAG, "Ekran yakalama durduruldu")
-            teardown()
+            durdu(
+                "sistem durdurdu (ekran kilitlendi, bildirimden \"paylaşımı durdur\" " +
+                    "dendi ya da başka bir uygulama ekran kaydı başlattı)"
+            )
             stopSelf()
         }
+    }
+
+    /**
+     * Hızlı yakalama beklenmedik şekilde kapandı: sebebi saklanır, ses
+     * çalınır ve dokununca yeniden açan bir bildirim gösterilir. Eskiden
+     * sessizce kapanıyordu; uygulama soruları yavaş yoldan okumaya devam
+     * ettiği için kimse fark etmiyor, ama cevaplar (yarım saniyelik renk)
+     * kaçıyordu.
+     */
+    private fun durdu(neden: String) {
+        val acikti = instance === this
+        teardown()
+        if (!acikti || elleKapatiliyor) return
+        sonDurma = neden
+        sonDurmaAt = System.currentTimeMillis()
+        Log.w(TAG, "Hizli yakalama kapandi: $neden")
+        runCatching { Chime.play(this) }
+        val ac = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, ProjectionPermissionActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val n = NotificationCompat.Builder(this, ArsivApp.UYARI_CHANNEL_ID)
+            .setContentTitle("Hızlı yakalama kapandı")
+            .setContentText("Cevaplar kaydedilmiyor. Yeniden açmak için dokun.")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(
+                "Cevaplar kaydedilmiyor. Yeniden açmak için dokun.\nSebep: $neden"
+            ))
+            .setSmallIcon(R.drawable.ic_notif_screen)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(ac)
+            .build()
+        runCatching { NotificationManagerCompat.from(this).notify(KAPANDI_NOTIF_ID, n) }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -95,6 +145,10 @@ class ProjectionService : Service() {
             acquireFails = 0
             instance = this
             running.value = true
+            elleKapatiliyor = false
+            sonDurma = null
+            runCatching { NotificationManagerCompat.from(this).cancel(KAPANDI_NOTIF_ID) }
+            ekraniAcikTut()
             Log.i(TAG, "Ekran yakalama hazir: ${w}x$h")
         } catch (t: Throwable) {
             Log.e(TAG, "Ekran yakalama baslatilamadi: ${t.message}")
@@ -102,6 +156,19 @@ class ProjectionService : Service() {
             stopSelf()
         }
         return START_NOT_STICKY
+    }
+
+    @Suppress("DEPRECATION")
+    private fun ekraniAcikTut() {
+        if (ekranKilidi?.isHeld == true) return
+        // SCREEN_DIM eski ama hâlâ çalışan tek yol: servisin penceresi yok,
+        // FLAG_KEEP_SCREEN_ON kullanılamıyor. Ekran kararabilir ama
+        // kapanıp kilitlenmez.
+        ekranKilidi = runCatching {
+            getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK, "SoruArsivi:yakalama")
+                .apply { setReferenceCounted(false); acquire() }
+        }.getOrNull()
     }
 
     private fun startForegroundCompat() {
@@ -241,12 +308,14 @@ class ProjectionService : Service() {
             restartCount++
         } else {
             Log.e(TAG, "Kare akisi yenilenemedi, hizli yakalama kapaniyor")
-            teardown()
+            durdu("kare akışı kesildi ve yeniden kurulamadı ($neden)")
             stopSelf()
         }
     }
 
     private fun teardown() {
+        runCatching { if (ekranKilidi?.isHeld == true) ekranKilidi?.release() }
+        ekranKilidi = null
         runCatching { paddedFrame?.recycle() }
         runCatching { exactFrame?.recycle() }
         paddedFrame = null
@@ -266,7 +335,8 @@ class ProjectionService : Service() {
     }
 
     override fun onDestroy() {
-        teardown()
+        // Servisi sistem sonlandırdıysa (bellek, pil kısıtlaması) da haber ver.
+        durdu("servis sonlandırıldı (pil tasarrufu ya da bellek yetersizliği olabilir)")
         super.onDestroy()
     }
 
@@ -332,8 +402,20 @@ class ProjectionService : Service() {
         fun peek(): Bitmap? = instance?.readFrame(copy = false)
 
         fun stop(context: Context) {
+            // Kullanıcı kendisi kapattı: "beklenmedik kapanma" uyarısı yok.
+            elleKapatiliyor = true
             runCatching { context.stopService(Intent(context, ProjectionService::class.java)) }
         }
+
+        /** Uygulamanın kendi düğmesiyle kapatılıyor mu. */
+        @Volatile private var elleKapatiliyor = false
+
+        /** Hızlı yakalamanın son beklenmedik kapanma sebebi (açılınca silinir). */
+        @Volatile var sonDurma: String? = null
+            private set
+        @Volatile var sonDurmaAt = 0L
+            private set
+        private const val KAPANDI_NOTIF_ID = 43
 
         @Suppress("DEPRECATION")
         fun screenSize(context: Context): Pair<Int, Int> {

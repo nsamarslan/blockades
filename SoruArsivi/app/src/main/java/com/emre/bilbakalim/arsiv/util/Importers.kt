@@ -135,6 +135,12 @@ object Importers {
      *
      * Kural: hiçbir bilgi kaybolmaz, hiçbir bilgi ezilmez. Cihazdaki kayıt
      * neyi biliyorsa o kalır; yalnızca eksikleri yedekten tamamlanır.
+     *
+     * Tek istisna: cihazdaki cevap da bir içe aktarımdan geldiyse (oyunda hiç
+     * gözlenmemiş, elle düzeltilmemiş) yeni dosyanın cevabı geçerli olur.
+     * Yanlış işaretlenmiş bir dosyayı düzeltip yeniden yüklemenin başka yolu
+     * yoktu: düzeltilmiş cevaplar sessizce yok sayılıyordu. Oyunda renkten
+     * görülen ya da elle seçilen cevaba yine dokunulmuyor.
      * Sayaçlarda toplama değil **büyük olan** alınıyor: aynı dosyayı iki kez
      * içe aktarmak sayıları şişirmesin diye. Böylece içe aktarma yinelenebilir
      * bir işlem oluyor.
@@ -148,11 +154,13 @@ object Importers {
             if (TurkishText.matchIndex(options, o) == null) options.add(o)
         }
 
-        val correct = existing.correctIndex
-            ?: TurkishText.matchIndex(options, incoming.correctText)
+        val gelenCevap = TurkishText.matchIndex(options, incoming.correctText)
+        val icAktarimDuzeltmesi = existing.correctIndex != null && !existing.edited &&
+            existing.answerSource == ANSWER_SOURCE && gelenCevap != null
+        val correct = if (icAktarimDuzeltmesi) gelenCevap else existing.correctIndex ?: gelenCevap
         // Kaynak yalnızca cevabın kendisi yedekten geldiyse değişir; kayıtta
         // zaten bir cevap varsa nereden geldiği de olduğu gibi kalmalı.
-        val answerFromBackup = existing.correctIndex == null && correct != null
+        val answerFromBackup = (existing.correctIndex == null || icAktarimDuzeltmesi) && correct != null
         val answered = maxOf(existing.answeredCount, incoming.answeredCount)
 
         return existing.copy(
