@@ -29,6 +29,7 @@ import com.emre.bilbakalim.arsiv.data.TopluKontrol
 import com.emre.bilbakalim.arsiv.data.YapayZekaIstatistik
 import com.emre.bilbakalim.arsiv.util.DisaAktarimSirasi
 import com.emre.bilbakalim.arsiv.util.Exporters
+import com.emre.bilbakalim.arsiv.util.OtomatikYedek
 import com.emre.bilbakalim.arsiv.util.GorselDisaAktarim
 import java.io.File
 import java.text.SimpleDateFormat
@@ -214,6 +215,14 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
         withContext(Dispatchers.IO) { repo.kontrolAdaylari(kategori, etiketsiz, cevap).count { it.options.size >= 2 } }
     fun aiIstatistikSifirla() = YapayZekaIstatistik.get(getApplication()).sifirla()
     fun setAiEminDegilseBirak(v: Boolean) = prefs.setAiEminDegilseBirak(v)
+    fun setOtomatikYedek(v: Boolean) = prefs.setOtomatikYedek(v)
+    val sonYedek = OtomatikYedek.son
+    fun simdiYedekle(sonuc: (String) -> Unit) {
+        viewModelScope.launch {
+            val r = OtomatikYedek.yedekle(getApplication())
+            sonuc(r.fold({ "${it.adet} soru yedeklendi: ${it.yer}" }, { "Yedek alınamadı: ${it.message}" }))
+        }
+    }
     fun setGeminiKeys(v: List<String>) = prefs.setGeminiKeys(v)
 
     /**

@@ -88,6 +88,9 @@ object Exporters {
         }
     }
 
+    /** Dışa aktarmanın JSON'u; otomatik yedek de bunu yazıyor (içe aktarılabilir). */
+    fun jsonMetni(rows: List<QuestionEntity>): String = toJson(rows)
+
     private fun toJson(rows: List<QuestionEntity>): String {
         val arr = JSONArray()
         for (r in rows) {

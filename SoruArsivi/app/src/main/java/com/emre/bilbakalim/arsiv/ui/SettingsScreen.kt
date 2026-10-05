@@ -55,6 +55,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.emre.bilbakalim.arsiv.data.AnahtarKotasi
+import com.emre.bilbakalim.arsiv.util.OtomatikYedek
 import com.emre.bilbakalim.arsiv.data.Repo
 import com.emre.bilbakalim.arsiv.capture.YapayZeka
 import kotlinx.coroutines.delay
@@ -484,6 +485,22 @@ fun SettingsScreen(
                             modifier = Modifier.weight(1f)
                         ) { Text("İçe aktar") }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    val sonYedek by vm.sonYedek.collectAsState()
+                    SettingSwitch(
+                        "Günlük otomatik yedek",
+                        "Arşiv günde bir kez İndirilenler/SoruArsivi/Yedekler klasörüne " +
+                            "JSON olarak yedeklenir; son ${OtomatikYedek.SAKLANAN} gün tutulur. " +
+                            "Toplu bir düzeltme ya da içe aktarma arşivi bozarsa o günün " +
+                            "dosyasını İçe aktar ile geri yükleyebilirsin." +
+                            (sonYedek?.let { "\nSon yedek: ${formatTime(it.zaman)} · ${it.adet} soru · ${it.yer}" }
+                                ?: "\nHenüz yedek alınmadı."),
+                        s.otomatikYedek
+                    ) { vm.setOtomatikYedek(it) }
+                    OutlinedButton(
+                        onClick = { vm.simdiYedekle { backupMessage = it } },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Şimdi yedekle") }
                 }
             }
 
