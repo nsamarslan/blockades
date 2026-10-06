@@ -26,6 +26,7 @@ import com.emre.bilbakalim.arsiv.data.Prefs
 import com.emre.bilbakalim.arsiv.data.QuestionEntity
 import com.emre.bilbakalim.arsiv.data.Repo
 import com.emre.bilbakalim.arsiv.data.TopluKontrol
+import com.emre.bilbakalim.arsiv.data.BenzerKayitlar
 import com.emre.bilbakalim.arsiv.data.YapayZekaIstatistik
 import com.emre.bilbakalim.arsiv.util.DisaAktarimSirasi
 import com.emre.bilbakalim.arsiv.util.Exporters
@@ -201,6 +202,19 @@ class ArsivViewModel(app: Application) : AndroidViewModel(app) {
     fun setGroqKeys(v: List<String>) = prefs.setGroqKeys(v)
     fun setAiGuvenEsigi(v: Int) = prefs.setAiGuvenEsigi(v)
     val aiIstatistik = YapayZekaIstatistik.get(app).durum
+
+    // --- Benzer kayıtlar -----------------------------------------------------
+    private val benzer = BenzerKayitlar.get(app)
+    val benzerDurum = benzer.durum
+    val benzerCiftler = benzer.ciftler
+    val benzerGecmis = benzer.geriAlinabilir
+    fun benzerBul(kategori: String?, etiketsiz: Boolean) = benzer.bul(kategori, etiketsiz)
+    fun benzerDurdur() = benzer.durdur()
+    fun benzerBirlestir(c: BenzerKayitlar.Cift, tutulan: Long, sonuc: (String?) -> Unit) =
+        benzer.birlestir(c, tutulan) { m -> viewModelScope.launch { sonuc(m) } }
+    fun benzerAyriBirak(c: BenzerKayitlar.Cift) = benzer.ayriBirak(c)
+    fun benzerGeriAl(sonuc: (String) -> Unit) = benzer.geriAl { m -> viewModelScope.launch { sonuc(m) } }
+    fun benzerEleneniUnut() = benzer.eleneniUnut()
 
     // --- Toplu yapay zekâ kontrolü ------------------------------------------
     private val topluKontrol = TopluKontrol.get(app)

@@ -41,8 +41,8 @@ android {
         applicationId = "com.emre.bilbakalim.arsiv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 32
-        versionName = "4.1"
+        versionCode = 33
+        versionName = "4.2"
     }
 
     signingConfigs {

@@ -69,7 +69,8 @@ fun SettingsScreen(
     onPickApp: () -> Unit,
     onOpenDebug: () -> Unit,
     onOpenEkranAyarla: () -> Unit,
-    onOpenYzKontrol: () -> Unit
+    onOpenYzKontrol: () -> Unit,
+    onOpenBenzer: () -> Unit
 ) {
     val context = LocalContext.current
     val s by vm.settings.collectAsState()
@@ -233,6 +234,9 @@ fun SettingsScreen(
                         YapayZekaBasarisi(vm)
                         OutlinedButton(onClick = onOpenYzKontrol, modifier = Modifier.fillMaxWidth()) {
                             Text("Arşivi yapay zekâyla kontrol et")
+                        }
+                        OutlinedButton(onClick = onOpenBenzer, modifier = Modifier.fillMaxWidth()) {
+                            Text("Benzer kayıtları birleştir")
                         }
                         YapayZekaAyarlari(vm, s.groqKeys, s.geminiKeys)
                     }

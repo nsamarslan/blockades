@@ -60,14 +60,18 @@ object OtomatikYedek {
         yedekle(context)
     }
 
-    /** Hemen yedekler. Başarılıysa yerini, değilse sebebini döndürür. */
-    suspend fun yedekle(context: Context): Result<Son> = withContext(Dispatchers.IO) {
+    /**
+     * Hemen yedekler. Başarılıysa yerini, değilse sebebini döndürür. [ek]
+     * verilirse ("birlestirme_oncesi") dosya adına eklenir ve günlük yedek
+     * sayılmaz.
+     */
+    suspend fun yedekle(context: Context, ek: String? = null): Result<Son> = withContext(Dispatchers.IO) {
         kilit.withLock {
             runCatching {
                 val rows = Repo.get(context).allForExport()
                 require(rows.isNotEmpty()) { "arşiv boş" }
                 val gun = AnahtarKotasi.bugun()
-                val ad = "$ON_EK$gun.json"
+                val ad = "$ON_EK$gun${ek?.let { "_$it" } ?: ""}.json"
                 val metin = Exporters.jsonMetni(rows)
                 val yer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     indirilenlereYaz(context, ad, metin)
@@ -83,6 +87,7 @@ object OtomatikYedek {
                     dir.absolutePath
                 }
                 val son = Son(System.currentTimeMillis(), yer, rows.size)
+                if (ek != null) return@runCatching son
                 sp(context).edit()
                     .putString("gun", gun)
                     .putLong("zaman", son.zaman)

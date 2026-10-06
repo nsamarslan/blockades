@@ -655,6 +655,29 @@ class Repo private constructor(context: Context) {
         dao.setCorrect(id, index, YAPAY_ZEKA)
     }
 
+    /**
+     * İki kaydı birleştirir: [tutId] kalır (öteki bilgileriyle tamamlanır),
+     * [silId] silinir. Geri alma için (tutulanın önceki hâli, silinen)
+     * döner; kayıtlardan biri yoksa null.
+     */
+    suspend fun birlestir(tutId: Long, silId: Long): Pair<QuestionEntity, QuestionEntity>? {
+        if (tutId == silId) return null
+        val tut = dao.byId(tutId) ?: return null
+        val sil = dao.byId(silId) ?: return null
+        dao.update(BenzerKayitlar.birlesmis(tut, sil))
+        dao.delete(silId)
+        adaylariUnut()
+        return tut to sil
+    }
+
+    /** [birlestir]'i geri alır: tutulanı eski hâline döndürür, sileni geri koyar. */
+    suspend fun birlestirmeyiGeriAl(tutulanOnce: QuestionEntity, silinen: QuestionEntity): Boolean {
+        if (dao.byId(tutulanOnce.id) != null) dao.update(tutulanOnce)
+        val ok = dao.insertIgnore(silinen) > 0
+        adaylariUnut()
+        return ok
+    }
+
     /** Toplu kontrolde senin seçtiğin cevap: elle düzeltme sayılır. */
     suspend fun elleCevapYaz(id: Long, index: Int) {
         val q = dao.byId(id) ?: return

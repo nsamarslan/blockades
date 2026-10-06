@@ -79,10 +79,6 @@ class TopluKontrol private constructor(context: Context) {
     private val _bekleyenler = MutableStateFlow(bekleyenleriOku())
     val bekleyenler: StateFlow<List<Bekleyen>> = _bekleyenler
 
-    /** Anahtar dönüşümü, sağlayıcı başına. */
-    private var groqTur = 0
-    private var geminiTur = 0
-
     /**
      * Kontrolü başlatır. [kategori] null ve [etiketsiz] false ise bütün
      * arşiv. [cevap]: 0 hepsi, 1 cevabı olmayanlar, 2 cevabı olanlar.
@@ -151,53 +147,23 @@ class TopluKontrol private constructor(context: Context) {
     }
 
     /**
-     * Bir partiyi bir sağlayıcıya sorar; anahtarlar ve modeller arasında
-     * döner, hepsi kotadaysa bekler. Kota uzun süre (günlük) doluysa null
-     * döner ve sebebi mesaja yazar.
+     * Bir partiyi bir sağlayıcıya sorar (anahtarlar arasında dönerek, kota
+     * bekleyerek). Yapılamazsa null; sebebi mesaja yazılır.
      */
     private suspend fun partiyiSor(
         anahtarlar: List<YapayZeka.Anahtar>,
         sorular: List<Pair<String, List<String>>>,
         ad: String
-    ): List<Int?>? {
-        var hata = 0
-        while (true) {
-            val tur = if (ad == "Groq") groqTur++ else geminiTur++
-            val sira = YapayZeka.siralama(anahtarlar, tur)
-            var enKisa = Long.MAX_VALUE
-            var sonNeden = ""
-            for ((a, model) in sira) {
-                when (val r = yz.topluSor(a, model, sorular)) {
-                    is YapayZeka.Toplu.Tamam -> return r.cevaplar
-                    is YapayZeka.Toplu.Bekle -> {
-                        enKisa = minOf(enKisa, maxOf(r.ms, yz.bekleme(a, model)))
-                        sonNeden = "${a.ad}: ${r.neden}"
-                    }
-                    is YapayZeka.Toplu.Hata -> {
-                        hata++
-                        sonNeden = "${a.ad}: ${r.neden}"
-                        if (hata >= HATA_SINIRI) {
-                            _durum.value = _durum.value.copy(mesaj = "$ad cevap vermiyor ($sonNeden). Sonra yeniden dene.")
-                            return null
-                        }
-                    }
-                }
-            }
-            if (enKisa == Long.MAX_VALUE) {
-                delay(HATA_ARASI_MS)
-                continue
-            }
-            if (enKisa > UZUN_BEKLEME_MS) {
-                _durum.value = _durum.value.copy(
-                    mesaj = "$ad anahtarlarının hepsinin kotası dolu; yaklaşık " +
-                        "${enKisa / 60_000 + 1} dk sonra kaldığın yerden devam edebilirsin. ($sonNeden)"
-                )
-                return null
-            }
-            _durum.value = _durum.value.copy(mesaj = "$ad kotası bekleniyor (${enKisa / 1000 + 1} sn)…")
-            delay(enKisa + 500)
+    ): List<Int?>? = yz.donerekSor(
+        anahtarlar, ad,
+        bildir = { _durum.value = _durum.value.copy(mesaj = it) },
+        dene = { a, model -> yz.jsonSor(a, model, YapayZeka.TOPLU_SISTEM, YapayZeka.topluIstem(sorular)) },
+        coz = { metin ->
+            YapayZeka.topluCoz(metin, sorular.map { it.second.size })
+                // Hiçbirini anlayamadıysa cevap bozuk: başka anahtar denensin.
+                .takeIf { l -> l.any { it != null } }
         }
-    }
+    )
 
     private suspend fun karar(q: QuestionEntity, g: Int?, m: Int?) {
         val d = _durum.value
@@ -261,11 +227,6 @@ class TopluKontrol private constructor(context: Context) {
     }
 
     companion object {
-        private const val HATA_SINIRI = 6
-        private const val HATA_ARASI_MS = 5_000L
-        /** Bundan uzun kota beklemesi (günlük kota) işi durduruyor. */
-        private const val UZUN_BEKLEME_MS = 5 * 60_000L
-
         /** Oyunda hiç gözlenmemiş kaynaklar: iki yapay zekâ bunları düzeltebilir. */
         private val ZAYIF = setOf(null, Importers.ANSWER_SOURCE, Repo.YAPAY_ZEKA)
 

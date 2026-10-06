@@ -178,28 +178,104 @@ class YapayZeka(
         a: Anahtar,
         model: String,
         sorular: List<Pair<String, List<String>>>
-    ): Toplu = withContext(Dispatchers.IO) {
-        val k = bekleAnahtari(a, model)
-        bekleme(a, model).takeIf { it > 0 }?.let { return@withContext Toplu.Bekle(it, "kota bekleniyor") }
-        val govde = when (a.saglayici) {
-            Saglayici.GROQ -> topluGroqGovdesi(model, sorular)
-            Saglayici.GEMINI -> topluGeminiGovdesi(model, sorular)
-        }
-        val yanit = runCatching { gonder(a.saglayici, model, a.deger, govde, TOPLU_SURE_MS) }
-            .getOrElse { Yanit(-1, it.message ?: it.javaClass.simpleName) }
-        if (yanit.onlemMs > 0) synchronized(bekle) { bekle[k] = SystemClock.elapsedRealtime() + yanit.onlemMs }
-        if (yanit.kod == 200) {
-            val metin = runCatching { cevapMetni(a.saglayici, yanit.govde) }.getOrNull()
-                ?: return@withContext Toplu.Hata("boş cevap")
-            return@withContext Toplu.Tamam(topluCoz(metin, sorular.map { it.second.size }))
-        }
-        val ceza = cezaSuresiMs(yanit.kod, yanit.govde)
-        if (ceza > 0) {
-            synchronized(bekle) { bekle[k] = maxOf(bekle[k] ?: 0L, SystemClock.elapsedRealtime() + ceza) }
-            return@withContext Toplu.Bekle(ceza, hataOzeti(yanit.kod, yanit.govde))
-        }
-        Toplu.Hata(hataOzeti(yanit.kod, yanit.govde))
+    ): Toplu = when (val r = jsonSor(a, model, TOPLU_SISTEM, topluIstem(sorular))) {
+        is JsonSonuc.Tamam -> Toplu.Tamam(topluCoz(r.metin, sorular.map { it.second.size }))
+        is JsonSonuc.Bekle -> Toplu.Bekle(r.ms, r.neden)
+        is JsonSonuc.Hata -> Toplu.Hata(r.neden)
     }
+
+    /** [jsonSor] sonucu: modelin yazdığı JSON metni ya da neden yazamadığı. */
+    sealed interface JsonSonuc {
+        data class Tamam(val metin: String) : JsonSonuc
+        data class Bekle(val ms: Long, val neden: String) : JsonSonuc
+        data class Hata(val neden: String) : JsonSonuc
+    }
+
+    /**
+     * Bir anahtar/modelle JSON cevaplı tek istek. Toplu işler (arşiv kontrolü,
+     * benzer kayıtlar) bunu kullanıyor; kota cezaları oyunla ortak.
+     */
+    suspend fun jsonSor(a: Anahtar, model: String, sistem: String, istem: String): JsonSonuc =
+        withContext(Dispatchers.IO) {
+            val k = bekleAnahtari(a, model)
+            bekleme(a, model).takeIf { it > 0 }?.let { return@withContext JsonSonuc.Bekle(it, "kota bekleniyor") }
+            val govde = when (a.saglayici) {
+                Saglayici.GROQ -> jsonGroqGovdesi(model, sistem, istem)
+                Saglayici.GEMINI -> jsonGeminiGovdesi(model, sistem, istem)
+            }
+            val yanit = runCatching { gonder(a.saglayici, model, a.deger, govde, TOPLU_SURE_MS) }
+                .getOrElse { Yanit(-1, it.message ?: it.javaClass.simpleName) }
+            if (yanit.onlemMs > 0) synchronized(bekle) { bekle[k] = SystemClock.elapsedRealtime() + yanit.onlemMs }
+            if (yanit.kod == 200) {
+                val metin = runCatching { cevapMetni(a.saglayici, yanit.govde) }.getOrNull()
+                    ?: return@withContext JsonSonuc.Hata("boş cevap")
+                return@withContext JsonSonuc.Tamam(metin)
+            }
+            val ceza = cezaSuresiMs(yanit.kod, yanit.govde)
+            if (ceza > 0) {
+                synchronized(bekle) { bekle[k] = maxOf(bekle[k] ?: 0L, SystemClock.elapsedRealtime() + ceza) }
+                return@withContext JsonSonuc.Bekle(ceza, hataOzeti(yanit.kod, yanit.govde))
+            }
+            JsonSonuc.Hata(hataOzeti(yanit.kod, yanit.govde))
+        }
+
+    /**
+     * Bir işi bir sağlayıcının anahtarları arasında dönerek yaptırır: biri
+     * kotadaysa sıradakine geçer, hepsi kotadaysa bekler. Kota uzun süre
+     * (günlük) doluysa ya da sürekli hata alıyorsa null döner; sebebi
+     * [bildir] ile yazılır. [dene] null dönerse cevap anlaşılmadı sayılır
+     * (hata gibi).
+     */
+    suspend fun <T> donerekSor(
+        anahtarlar: List<Anahtar>,
+        ad: String,
+        bildir: (String) -> Unit,
+        dene: suspend (Anahtar, String) -> JsonSonuc,
+        coz: (String) -> T?
+    ): T? {
+        var hata = 0
+        while (true) {
+            val sira = siralama(anahtarlar, donusTuru++)
+            var enKisa = Long.MAX_VALUE
+            var sonNeden = ""
+            for ((a, model) in sira) {
+                when (val r = dene(a, model)) {
+                    is JsonSonuc.Tamam -> {
+                        coz(r.metin)?.let { return it }
+                        hata++
+                        sonNeden = "${a.ad}: anlaşılmayan cevap"
+                    }
+                    is JsonSonuc.Bekle -> {
+                        enKisa = minOf(enKisa, maxOf(r.ms, bekleme(a, model)))
+                        sonNeden = "${a.ad}: ${r.neden}"
+                    }
+                    is JsonSonuc.Hata -> {
+                        hata++
+                        sonNeden = "${a.ad}: ${r.neden}"
+                    }
+                }
+                if (hata >= DONEREK_HATA_SINIRI) {
+                    bildir("$ad cevap vermiyor ($sonNeden). Sonra yeniden dene.")
+                    return null
+                }
+            }
+            if (enKisa == Long.MAX_VALUE) {
+                kotlinx.coroutines.delay(5_000)
+                continue
+            }
+            if (enKisa > UZUN_BEKLEME_MS) {
+                bildir(
+                    "$ad anahtarlarının hepsinin kotası dolu; yaklaşık ${enKisa / 60_000 + 1} dk " +
+                        "sonra kaldığın yerden devam edebilirsin. ($sonNeden)"
+                )
+                return null
+            }
+            bildir("$ad kotası bekleniyor (${enKisa / 1000 + 1} sn)…")
+            kotlinx.coroutines.delay(enKisa + 500)
+        }
+    }
+
+    @Volatile private var donusTuru = 0
 
     private fun gonder(
         sag: Saglayici, model: String, anahtar: String, govde: String, okumaSuresi: Int
@@ -284,11 +360,21 @@ class YapayZeka(
             }
 
         internal fun topluGroqGovdesi(model: String, sorular: List<Pair<String, List<String>>>): String =
+            jsonGroqGovdesi(model, TOPLU_SISTEM, topluIstem(sorular))
+
+        internal fun topluGeminiGovdesi(model: String, sorular: List<Pair<String, List<String>>>): String =
+            jsonGeminiGovdesi(model, TOPLU_SISTEM, topluIstem(sorular))
+
+        private const val DONEREK_HATA_SINIRI = 6
+        /** Bundan uzun kota beklemesi (günlük kota) toplu işi durduruyor. */
+        private const val UZUN_BEKLEME_MS = 5 * 60_000L
+
+        internal fun jsonGroqGovdesi(model: String, sistem: String, istem: String): String =
             JSONObject().apply {
                 put("model", model)
                 put("messages", JSONArray().apply {
-                    put(JSONObject().put("role", "system").put("content", TOPLU_SISTEM))
-                    put(JSONObject().put("role", "user").put("content", topluIstem(sorular)))
+                    put(JSONObject().put("role", "system").put("content", sistem))
+                    put(JSONObject().put("role", "user").put("content", istem))
                 })
                 put("temperature", 0)
                 put("max_completion_tokens", 6000)
@@ -296,12 +382,12 @@ class YapayZeka(
                 put("response_format", JSONObject().put("type", "json_object"))
             }.toString()
 
-        internal fun topluGeminiGovdesi(model: String, sorular: List<Pair<String, List<String>>>): String =
+        internal fun jsonGeminiGovdesi(model: String, sistem: String, istem: String): String =
             JSONObject().apply {
-                put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", TOPLU_SISTEM))))
+                put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sistem))))
                 put("contents", JSONArray().put(
                     JSONObject().put("role", "user")
-                        .put("parts", JSONArray().put(JSONObject().put("text", topluIstem(sorular))))
+                        .put("parts", JSONArray().put(JSONObject().put("text", istem)))
                 ))
                 put("generationConfig", JSONObject().apply {
                     put("temperature", 0)

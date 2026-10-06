@@ -38,6 +38,7 @@ import com.emre.bilbakalim.arsiv.ui.MissesScreen
 import com.emre.bilbakalim.arsiv.ui.SettingsScreen
 import com.emre.bilbakalim.arsiv.ui.SoruArsiviTheme
 import com.emre.bilbakalim.arsiv.ui.YapayZekaKontrolScreen
+import com.emre.bilbakalim.arsiv.ui.BenzerKayitlarScreen
 
 sealed interface Screen {
     data object Home : Screen
@@ -48,6 +49,7 @@ sealed interface Screen {
     data object UygulamaSec : Screen
     data object EkranAyarla : Screen
     data object YzKontrol : Screen
+    data object Benzer : Screen
     data class Detay(val id: Long) : Screen
 }
 
@@ -123,8 +125,10 @@ private fun AppRoot(vm: ArsivViewModel) {
                 onPickApp = { go(Screen.UygulamaSec) },
                 onOpenDebug = { go(Screen.Teshis) },
                 onOpenEkranAyarla = { go(Screen.EkranAyarla) },
-                onOpenYzKontrol = { go(Screen.YzKontrol) }
+                onOpenYzKontrol = { go(Screen.YzKontrol) },
+                onOpenBenzer = { go(Screen.Benzer) }
             )
+            Screen.Benzer -> BenzerKayitlarScreen(vm = vm, onBack = { back() })
             Screen.YzKontrol -> YapayZekaKontrolScreen(vm = vm, onBack = { back() })
             Screen.EkranAyarla -> EkranAyarlaScreen(vm = vm, onBack = { back() })
             Screen.Teshis -> DebugScreen(vm = vm, onBack = { back() })

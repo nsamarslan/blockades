@@ -39,7 +39,45 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.emre.bilbakalim.arsiv.data.CategoryCount
 import com.emre.bilbakalim.arsiv.data.TopluKontrol
+
+/**
+ * Konu seçimi: bütün arşiv, bir kategori ya da etiketsizler.
+ * [sec] (kategori, etiketsiz) ile çağrılır.
+ */
+@Composable
+fun KonuSecici(
+    kategoriler: List<CategoryCount>,
+    kategori: String?,
+    etiketsiz: Boolean,
+    sec: (String?, Boolean) -> Unit
+) {
+    var menu by remember { mutableStateOf(false) }
+    Text("Konu", style = MaterialTheme.typography.labelLarge)
+    Box {
+        OutlinedButton(onClick = { menu = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                when {
+                    etiketsiz -> "Etiketsiz"
+                    kategori == null -> "Bütün arşiv"
+                    else -> kategori
+                },
+                modifier = Modifier.weight(1f)
+            )
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+        }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(text = { Text("Bütün arşiv") }, onClick = { sec(null, false); menu = false })
+            kategoriler.filter { it.adet > 0 }.forEach { c ->
+                DropdownMenuItem(
+                    text = { Text("${c.category ?: "Etiketsiz"} (${c.adet})") },
+                    onClick = { sec(c.category, c.category == null); menu = false }
+                )
+            }
+        }
+    }
+}
 
 /**
  * Arşivi yapay zekâyla toplu kontrol (bkz. [TopluKontrol]): kategori ve
@@ -56,7 +94,6 @@ fun YapayZekaKontrolScreen(vm: ArsivViewModel, onBack: () -> Unit) {
     var kategori by remember { mutableStateOf<String?>(null) }
     var etiketsiz by remember { mutableStateOf(false) }
     var cevap by remember { mutableStateOf(1) }
-    var menu by remember { mutableStateOf(false) }
     var sayi by remember { mutableStateOf<Int?>(null) }
     var temizleSor by remember { mutableStateOf(false) }
 
@@ -93,36 +130,7 @@ fun YapayZekaKontrolScreen(vm: ArsivViewModel, onBack: () -> Unit) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(12.dp))
-                    Text("Konu", style = MaterialTheme.typography.labelLarge)
-                    Box {
-                        OutlinedButton(onClick = { menu = true }, modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                when {
-                                    etiketsiz -> "Etiketsiz"
-                                    kategori == null -> "Bütün arşiv"
-                                    else -> kategori!!
-                                },
-                                modifier = Modifier.weight(1f)
-                            )
-                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                        }
-                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Bütün arşiv") },
-                                onClick = { kategori = null; etiketsiz = false; menu = false }
-                            )
-                            kategoriler.filter { it.adet > 0 }.forEach { c ->
-                                DropdownMenuItem(
-                                    text = { Text("${c.category ?: "Etiketsiz"} (${c.adet})") },
-                                    onClick = {
-                                        kategori = c.category
-                                        etiketsiz = c.category == null
-                                        menu = false
-                                    }
-                                )
-                            }
-                        }
-                    }
+                    KonuSecici(kategoriler, kategori, etiketsiz) { k, e -> kategori = k; etiketsiz = e }
                     Spacer(Modifier.height(8.dp))
                     Text("Hangi sorular", style = MaterialTheme.typography.labelLarge)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
